@@ -2,9 +2,10 @@
 # test-config.sh - config file: scalars, binds, bad lines, reload.
 # Usage: ./test-config.sh (needs Xvfb, xterm, xdotool)
 set -u
-D=:98
-export DISPLAY=$D
 TDIR=$(dirname "$0")
+. "$TDIR/find_display.sh"
+export DISPLAY=$D
+
 H=$(mktemp -d)
 mkdir -p "$H/.config/daniwm"
 cat > "$H/.config/daniwm/config" <<'EOF'

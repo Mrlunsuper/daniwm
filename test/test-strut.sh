@@ -1,11 +1,12 @@
 #!/bin/bash
 # test-strut.sh - test EWMH Struts and Dock handling in daniwm
 set -u
-D=:93
-export DISPLAY=$D
 TDIR=$(dirname "$0")
+. "$TDIR/find_display.sh"
+export DISPLAY=$D
 H=$(mktemp -d)
 mkdir -p "$H/.config/daniwm"
+
 cat > "$H/.config/daniwm/config" <<'CFG'
 bar_on = 0
 gaps_on = 1

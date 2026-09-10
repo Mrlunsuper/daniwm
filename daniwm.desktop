@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=daniwm
 Comment=Minimal tiling WM by Dani — Rosé Pine (tiling + monocle)
-Exec=/home/dani/daniwm/daniwm
-TryExec=/home/dani/daniwm/daniwm
+Exec=/usr/local/bin/daniwm
+TryExec=/usr/local/bin/daniwm
 Type=Application

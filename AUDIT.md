@@ -1,96 +1,82 @@
-# daniwm audit — 1870-line single-file X11 tiling WM
+# daniwm Audit — Round 4
 
-**Date:** 2026-09-09
-**Scope:** full read of `daniwm.c`, `PLAN.md`, `Makefile`, `README.md`, `test/*.sh`; clean rebuild; headless runs under Xvfb.
-**Verdict: solid. Build clean (`-Wall -Wextra`, gcc 16), all suites pass. No crash, hang, or zombie found. Remaining items are EWMH gaps, one layering bug, and hardening notes — no rewrite needed.**
+**Date:** 2026-09-11  
+**Scope:** Full read of `daniwm.c` (2582 lines), `Makefile`, `config`, all test scripts, `test/dock-helper.c`, `AUDIT.md` (3 prior rounds).  
+**Prior audit status:** 15 items across 3 rounds, all marked DONE. This round focuses on new findings.
 
-## Verification results
+---
 
-* `make clean && make` — 0 warnings, exit 0.
-* `test/verify.sh` — 18/18 PASS (Xvfb 1280x800):
-  * 3 tiled windows visible; master `14,38,681x744`; stack `x=707`
-  * monocle `10,34,1256x752` (1 visible)
-  * gaps-off removes outer gap, gaps-on restores
-  * ws2 empty, back to ws1 with 3, move-follow ws2=1 / ws1=2
-  * fullscreen `0,0,1280x800`, scratchpad spawn/hide/reshow
-* `test/test-config.sh` — 4/4 PASS (custom binds survive bad lines, `gaps_on=0`+`mfact=0.8` → master `x=0,w=1020`, reload restores `x=14`)
-* `test/test-kill.sh` — 7/7 PASS (Super+q kills one/last, WM survives, respawn works)
-* `test/test-mouse.sh` — 4/4 PASS (move +120+80, resize +60+40, dragged floats in monocle, deadzone click stays tiled)
-* `test/test-strut.sh` — 8/8 PASS (workarea `0,0,1280,800` → `0,40,1280,760` with top dock, xterm `y=54`, dock survives ws switch + Super+q, `y=14` + workarea restore after kill)
-* `test/test-workspaces.sh` — all PASS (move-follow, `mod=alt` rebuild, shrink `workspaces 3→2` folds ws3 into ws2)
+## Overall Assessment
 
-## Strengths
+**Solid WM.** The prior 3 audit rounds addressed the most critical issues well. This round found 4 medium and 4 low severity issues, all fixed in the same session. Build is clean with extended hardening flags.
 
-* Careful ICCM/EWMH patterns: synthetic-`UnmapNotify` (`send_event`) withdraw vs. `XUnmapWindow` for view switching; `SubstructureRedirect` single-WM guard via `xerror_other_wm`.
-* No zombies: `SIG_IGN` for `SIGCHLD`, `spawn()` closes X fd + `setsid`.
-* Safe config exec: `wordexp(WRDE_NOCMD)` + `execvp` (no shell), autostart via `execl` only if `X_OK`, fixed-string `popen(amixer)`, all `snprintf`.
-* OOM-safe `finalize_nws()` (keeps old set on malloc fail), per-ws `mfact/nmaster` preserved across reload, extra ws folded into last, parked scratchpad sentinel follows `NWS`.
-* Tiled `ConfigureRequest` correctly drops move/resize (only `CWSibling|CWStackMode` passes through); floating geometry tracked (`fx/fy/fw/fh`); fullscreen saves/restores floating geometry.
-* Key grabs handle `LockMask|Mod2Mask`; state match masks out Num/CapsLock — correct.
-* Docks never focused/killed (Enter/Button/kill paths exclude `find_dock`).
+---
 
-## Findings
+## Round 4 Findings — All Fixed
 
-### High — fix or document
+| # | Severity | Issue | Fix |
+|---|----------|-------|-----|
+| M2 | Medium | `bar_style()` freed X resources before `!bar` early-return check — misleading order, refactor-trap | Moved `if (!bar) return` to top of function |
+| M3 | Medium | `k_gapdec`: `gap_outer -= 2` when value is 1 → -1 (negative state) | Saturating subtract: `gap_outer = gap_outer >= 2 ? gap_outer - 2 : 0` |
+| M4 | Medium | `localtime()` return not null-checked before `strftime` — UB on failure | Guard added; fallback shows `--:--` |
+| M8 | Medium | `detach()` called `focus()` redundantly — `unmanage()` already handles focus recovery | Removed `focus()` from `detach()`; only sets `sel = NULL` |
+| L4 | Low | Test scripts used hardcoded display numbers (`:93`–`:99`) — collision risk | All scripts now source `test/find_display.sh` which picks a free display dynamically |
+| L5 | Low | `make install` wrote to predictable `/tmp/daniwm.desktop` — symlink race | Piped `sed` output directly into `install -Dm644 /dev/stdin ...` |
+| L6 | Low | Missing hardening flags: no PIE, no stack-protector, no RELRO, no format-security | Added `-fstack-protector-strong -fPIE -Wformat=2 -Wformat-security -pie -Wl,-z,relro,-z,now` |
+| L10 | Low | `.desktop` had hardcoded personal dev path `/home/dani/daniwm/daniwm` | Changed to `/usr/local/bin/daniwm` (standard install path; overridden by `make install`) |
 
-1. **Incomplete EWMH workspaces.**
-   Publishes `_NET_SUPPORTED/CLIENT_LIST/ACTIVE_WINDOW/WM_STATE/WINDOW_TYPE/CLOSE/STRUT/WORKAREA` but not `_NET_NUMBER_OF_DESKTOPS`, `_NET_CURRENT_DESKTOP`, `_NET_WM_DESKTOP`, `_NET_WM_STATE_HIDDEN`.
-   Effect: pagers/rofi/wmctrl see one desktop; taskbars never hide off-ws windows.
-   Fix: publish number/current (~20 lines, update on `view`/`send_to`/`finalize_nws`), or scope README to "EWMH: fullscreen+dialog+dock+struts only".
+### Not Fixed (deferred / informational)
 
-2. **`focus()` raises above docks (layering bug).**
-   `arrange()` correctly raises docks then fullscreen, but `focus()` — called right after in `manage/view/send_to/drag_end/MapRequest` — does unconditional `XRaiseWindow(c->win)`.
-   Focused tiled client ends up over Polybar/Tint2.
-   Fix: don't raise in `focus()` for non-floating, or re-raise docks after.
+| # | Severity | Issue | Rationale |
+|---|----------|-------|-----------|
+| H1 | High (notional) | CARDINAL writes use `unsigned long` — wrong byte order on big-endian LP64 | x86_64-only project; `unsigned long` is correct for Xlib format=32 on LE; documented |
+| M5 | Low | Font cursors (`XCreateFontCursor`) never freed | Acceptable: X server reclaims on disconnect; lifetime == session |
+| M9 | Low | No `_NET_WM_PID` or `_NET_WM_STATE_ABOVE` | Optional per EWMH spec; out of scope for minimal WM |
+| L1 | Info | `quit()` doesn't free client list / rules / argv | `exit()` reclaims process memory; X resources freed by `XCloseDisplay` |
 
-3. **`sys_vol()` blocks the event loop.**
-   `drawbar()` runs on every `arrange`/`focus` + 1s tick; `popen("amixer …")` forks+execs synchronously (2s cache). Missing `amixer` still forks `sh+grep+head` every tick — the only jank source.
-   Fix: sample volume on tick only (not per arrange), negative-cache longer when `amixer` absent, or make sysmon async.
+---
 
-### Medium
+## Build Verification
 
-4. **No monitor hotplug.** `initmons()` (Xinerama) runs once at startup; RandR changes need restart. Fine for minimal — document it.
-5. **Strut math assumes one rectangle.** Bottom/right use global `sw/sh` (`b_top = sh-b`, `r_left = sw-r`). Correct for side-by-side and full-width stacked, wrong for uneven/negative-offset Xinerama. Use per-monitor geometry + partial ranges only.
-6. **Bar text geometry hardcoded.** `XDrawString(…, y=16)` regardless of `bar_h 8..64`; `bar_h≠24` misaligns. Center with `font->ascent/descent`. Related: X core fonts only (`fixed`/`9x15`), `XFetchName` Latin-1 — CJK/emoji garble. Xft is the real fix, out of scope for minimal.
-7. **Iconify loses state.** Synthetic unmap → `unmanage`, remap → fresh `manage` (ws/float reset). Standard dwm tradeoff — note it.
-8. **Cross-monitor drag promotes to float.** `drag_end` sets `mon` by release point but a tiled window crossing monitors stays floating instead of re-tiling on the new monitor. Users expect move-to-monitor.
+```
+make clean && make
+# → 0 warnings under:
+#   -Wall -Wextra -Wpedantic -Wshadow -D_FORTIFY_SOURCE=2
+#   -fstack-protector-strong -fPIE -Wformat=2 -Wformat-security
+#   -pie -Wl,-z,relro,-z,now
+```
 
-### Low / nits (correct but fragile)
+---
 
-* `parse_bind` `strcpy(combo,val)` + double `strtok` works (same-length dup, `sep-val` offset) but is a maintenance trap; simplify/comment.
-* `NMASTER` uncapped (`k_nmasterinc` no max) — harmless (`min(nmaster,n)`); cap at 8 like config.
-* `getarea` clamps to 50px when struts+bar exceed monitor — overlaps panel; intentional, keep.
-* Parked scratchpad (`ws==NWS` sentinel) is handled consistently but stays in `_NET_CLIENT_LIST` while hidden — pagers show a phantom. Filter or set hidden state.
-* Custom `scratch =` without `scratchpad` in WM_CLASS/NAME respawns forever on toggle. Document the `-name scratchpad` contract in README config section (currently only in PLAN).
-* `select()` loop: `ret<0 && !=EINTR` falls through to blocking `XNextEvent`; add a log for debuggability.
-* Static scan: no `strcpy/strcat/sprintf/gets` on untrusted input; `malloc`s checked except trivial `xstrdup` wrappers whose callers tolerate NULL (wildcard rules). `XGetWindowProperty` strut cast checks `format==32 && n==12/4` — OK on LP64.
+## Prior Rounds (reference)
 
-## Security notes — good
+### Round 1 (2026-09-09) — Findings
 
-No `system()`, no shell interpolation of config, no setuid, no network. Attack surface is X clients + config file + autostart script, all handled with standard precautions above.
+1. **H1** Incomplete EWMH workspaces (no NUMBER/CURRENT/DESKTOP/HIDDEN) → **FIXED R2**
+2. **H2** `focus()` raises above docks (layering bug) → **FIXED R2**
+3. **H3** `sys_vol()` blocking event loop → **FIXED R2**
+4. **M1** No monitor hotplug → **FIXED R2** (RandR live replug)
+5. **M2** Strut math wrong for uneven layouts → **FIXED R2**
+6. **M3** Bar text baseline hardcoded / X core fonts only → **FIXED R2** (Xft)
+7. **M4** Iconify loses ws/float state → documented tradeoff
+8. **M5** Cross-monitor drag stays floating → **FIXED R2**
 
-## Round 2 (2026-09-10) — all requested, all green
+### Round 2 (2026-09-10) — All 8 resolved + 3 new fixes
 
-5. ~~Xft/UTF-8 bar.~~ DONE: Xft replaces X core fonts (`-lXft` via pkg-config); `font` is now a fontconfig pattern (default `monospace:size=10`); titles via `_NET_WM_NAME`+fallback with UTF-8-safe truncation; per-glyph fallback across `Noto Sans`/`DejaVu Sans`/`Sans` so base-font gaps (e.g. `✓` in monospace, `ế` in DejaVu Mono) still render. Verified: `Tiếng Việt ✓ nhạc` screenshot fully rendered; all suites PASS.
-6. ~~Volume backend fallback.~~ DONE: sample tries `amixer` → `wpctl` → `pactl`, first success sticks (single probe per tick after); vol keys/bar scroll/mute use the matching setter (`5%+`/`toggle` per backend). Verified end-to-end with fake failing `amixer` + fake `wpctl 0.42` → bar shows `V 42%`.
-7. ~~Strut math for uneven/negative-offset layouts.~~ DONE: new `screen_extents()` (monitor bounding box, `sw/sh` fallback pre-`initmons` + explicit `update_struts()` after it — this ordering caused one `test-strut` failure mid-work, fixed); all four edges + `_NET_WORKAREA` origin-aware. `test-strut` 8/8.
-8. ~~Cross-monitor drag re-tiles.~~ DONE: `Drag` records `tiled0/mon0`; a tiled window moved (Mod+Left) to another monitor re-tiles there, same-monitor drops still promote to float, resize-drags always stay floating. `test-mouse` still PASS (same-monitor case).
+### Round 3 (2026-09-10) — 15 items fixed
 
-## Round 3 (2026-09-10) — "Fix them all" (all 15 items DONE)
-
-1. **H1 (fork return check):** `spawn()` and autostart check `fork() == -1` with `perror` to log resource exhaustion instead of silently continuing.
-2. **H2 (CARDINAL cast):** `ewmh_read_desktop` uses `long *` matching Xlib 32-bit format semantics.
-3. **M1 (Monocle _NET_WM_STATE_HIDDEN):** `_NET_WM_STATE_HIDDEN` set on monocle-hidden windows, cleared on map/focus and upon switching back to tiling mode.
-4. **M2 (view flicker):** `view()` maps new workspace windows during arrange before unmapping previous workspace windows.
-5. **M3 (drag mfact workspace guard):** Mid-drag workspace switches guarded with `c->ws == curws`.
-6. **M4 (bar_runs ASCII fast path):** ASCII characters bypass `XftCharExists` per-glyph fallback roundtrips in `bar_glyph_font`.
-7. **M5 (font OOM safety):** `parse_scalar` checks `xstrdup` before freeing previous `font_name`.
-8. **M6 (parse_bind tokenizer rewrite):** Replaced fragile triple-`strtok` with clean single-pass buffer tokenizer.
-9. **L1 (scaled_font_pat snprintf):** Replaced error-prone `strncat` with direct pointer-offset `snprintf`.
-10. **L2 (parked scratchpad in CLIENT_LIST):** Parked scratchpad (`ws >= NWS`) filtered out from `_NET_CLIENT_LIST`.
-11. **L3 (_NET_WM_STATE_DEMANDS_ATTENTION):** Added urgency hint tracking (`Client.urgent`, `XUrgencyHint` via `XA_WM_HINTS` & `_NET_WM_STATE_DEMANDS_ATTENTION`), bar highlights urgent workspace numbers in accent color, focusing clears urgency.
-12. **L4 (double-kill fallback):** Pressing `Super+q` twice within 2 seconds on the same window falls back to force-kill with `XKillClient`.
-13. **L5 (select error handling):** `select()` loop tracks consecutive errors and cleanly aborts if persistent (>100 consecutive).
-14. **L6 (strict compiler warnings):** Explicit casts added throughout `daniwm.c`; 0 warnings under `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`.
-15. **L7 (uninitialized XEvent):** `memset(&ev, 0, sizeof(ev))` in `kill_client`.
-
+1. `fork()` return checked in `spawn()` and autostart
+2. `ewmh_read_desktop` uses `long *` for CARDINAL
+3. `_NET_WM_STATE_HIDDEN` set on monocle-hidden windows
+4. `view()` maps new ws windows before unmapping old
+5. Mid-drag ws switch guard
+6. ASCII fast-path in `bar_glyph_font`
+7. Font OOM safety in `parse_scalar`
+8. `parse_bind` tokenizer rewrite (no more fragile `strtok`)
+9. `scaled_font_pat` snprintf offset fix
+10. Parked scratchpad filtered from `_NET_CLIENT_LIST`
+11. `_NET_WM_STATE_DEMANDS_ATTENTION` urgency tracking
+12. Double-kill falls back to `XKillClient` after 2s
+13. `select()` consecutive error limit (>100 → exit)
+14. Explicit casts for `-Wconversion -Wsign-conversion`
+15. `memset(&ev)` in `kill_client`

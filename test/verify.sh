@@ -3,9 +3,11 @@
 # Tools: Xvfb, xterm, xdotool, import. No wmctrl (its -lG misreports here).
 # Usage: ./verify.sh
 set -u
-D=:99
-export DISPLAY=$D
 TDIR=$(dirname "$0")
+# shellcheck source=find_display.sh
+. "$TDIR/find_display.sh"   # sets D to a free display number
+export DISPLAY=$D
+
 SHOT=$TDIR/shots
 mkdir -p "$SHOT"
 rm -f "$SHOT"/*.png

@@ -2,10 +2,11 @@
 # test-mouse.sh - Mod+Left move, Mod+Right resize, float-promote, deadzone click.
 # Usage: ./test-mouse.sh (needs Xvfb, xterm, xdotool)
 set -u
-D=:97
-export DISPLAY=$D
 TDIR=$(dirname "$0")
+. "$TDIR/find_display.sh"
+export DISPLAY=$D
 H=$(mktemp -d)
+
 
 fail=0
 assert() { # assert <desc> <test...>

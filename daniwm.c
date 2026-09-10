@@ -203,11 +203,7 @@ static void detach(Client *c) {
     for (int i = 0; i < NWS; i++)
         if (ws_sel[i] == c)
             ws_sel[i] = NULL;
-    if (sel == c) {
-        sel = NULL;
-        Client *n = first_in_ws(curws);
-        if (n) focus(n);
-    }
+    if (sel == c) sel = NULL; /* unmanage() handles focus recovery after free */
 }
 
 /* ---- monitors (Xinerama; fallback: whole screen) ---- */
@@ -756,7 +752,8 @@ static void drawbar(void) {
         if (vol && *vol) snprintf(seg + strlen(seg), sizeof(seg) - strlen(seg), "V %s  ", vol);
         struct tm *tm = localtime(&now);
         char clk[32];
-        strftime(clk, sizeof(clk), "%H:%M", tm);
+        if (tm) strftime(clk, sizeof(clk), "%H:%M", tm);
+        else     snprintf(clk, sizeof(clk), "--:--");
         snprintf(right, sizeof(right), "%s%s", seg, clk);
     }
     XSetForeground(dpy, bargc, c_sys);
@@ -1622,7 +1619,7 @@ static void k_mfactinc(int)  { MFACT += 0.025f; if (MFACT > 0.9f) MFACT = 0.9f; 
 static void k_nmasterdec(int){ if (NMASTER > 1) NMASTER--; arrange(); }
 static void k_nmasterinc(int){ if (NMASTER < 8) NMASTER++; arrange(); } /* cap 8, like config */
 static void k_gap(int)       { gaps_on = !gaps_on; arrange(); }
-static void k_gapdec(int)    { if (gap_outer > 0) gap_outer -= 2; if (gap_inner > 0) gap_inner -= 1; arrange(); }
+static void k_gapdec(int)    { gap_outer = gap_outer >= 2 ? gap_outer - 2 : 0; if (gap_inner > 0) gap_inner -= 1; arrange(); }
 static void k_gapinc(int)    { gap_outer += 2; gap_inner += 1; arrange(); }
 static void k_bar(int) {
     bar_on = !bar_on;
@@ -2229,6 +2226,7 @@ static void scaled_font_pat(const char *pat, char *out, size_t n) {
 static void bar_style(void) {
     static const char *fallbacks[] = { NULL, "monospace:size=10", "monospace", "fixed", NULL };
     static const char *fb_cands[] = { "Noto Sans", "DejaVu Sans", "Sans", NULL };
+    if (!bar) return;  /* nothing to (re)style without a bar window */
     Visual *vis = DefaultVisual(dpy, screen);
     Colormap cmap = DefaultColormap(dpy, screen);
     if (barxd) { XftDrawDestroy(barxd); barxd = NULL; }
@@ -2249,7 +2247,6 @@ static void bar_style(void) {
         barcol_ok = 0;
     }
     if (bargc) { XFreeGC(dpy, bargc); bargc = NULL; }
-    if (!bar) return;
     XSetWindowBackground(dpy, bar, BAR_BG);
     bargc = XCreateGC(dpy, bar, 0, NULL);
     if (!bargc) return;

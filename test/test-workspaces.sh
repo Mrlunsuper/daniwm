@@ -2,11 +2,12 @@
 # test-workspaces.sh - workspaces=N bounds, mod-only bind rebuild, reload fold.
 # Usage: ./test-workspaces.sh (needs Xvfb, xterm, xdotool)
 set -u
-D=:96
-export DISPLAY=$D
 TDIR=$(dirname "$0")
+. "$TDIR/find_display.sh"
+export DISPLAY=$D
 H=$(mktemp -d)
 mkdir -p "$H/.config/daniwm"
+
 
 fail=0
 assert() { # assert <desc> <test...>

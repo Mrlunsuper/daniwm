@@ -5,7 +5,9 @@
 # RRScreenChangeNotify -> on_monitors_changed() path (multi-monitor
 # add/remove shares it: Xinerama re-query + bar/strut/arrange refresh).
 set -u
-D=:99
+TDIR=$(dirname "$0")
+. "$TDIR/find_display.sh"
+export DISPLAY=$D
 Xvfb $D -screen 0 1280x800x24 >/dev/null 2>&1 & XVFB=$!
 sleep 1
 export DISPLAY=$D

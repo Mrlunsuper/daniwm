@@ -2,10 +2,11 @@
 # test-kill.sh - Super+q kills the focused window, WM survives and respawns.
 # Usage: ./test-kill.sh (needs Xvfb, xterm, xdotool)
 set -u
-D=:94
-export DISPLAY=$D
 TDIR=$(dirname "$0")
+. "$TDIR/find_display.sh"
+export DISPLAY=$D
 H=$(mktemp -d)
+
 
 fail=0
 assert() { # assert <desc> <test...>
