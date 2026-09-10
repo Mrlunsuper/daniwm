@@ -66,4 +66,24 @@ xdotool key super+m; sleep 1
 read -r xk yk wk hk <<< "$(geom "$id2")"
 assert "click without motion stays tiled" "$xk" -eq 10 -a "$yk" -eq 34 -a "$wk" -eq 1256 -a "$hk" -eq 752
 
+# tiled Mod+Right drag resizes mfact (and stays tiled)
+xdotool key super+3; sleep 1
+xdotool key super+Return; sleep 1
+xdotool key super+Return; sleep 1
+i=0; while [ "$(xdotool search --onlyvisible --class xterm 2>/dev/null | wc -l)" -lt 2 ] && [ $i -lt 40 ]; do sleep 0.5; i=$((i+1)); done
+id_master=$(xdotool search --onlyvisible --class xterm 2>/dev/null | head -n1)
+read -r xm0 ym0 wm0 hm0 <<< "$(geom "$id_master")"
+read -r cx cy <<< "$(center "$id_master")"
+xdotool mousemove $cx $cy; sleep 0.3
+drag 3 60 0
+read -r xm1 ym1 wm1 hm1 <<< "$(geom "$id_master")"
+assert "tiled resize grows master" "$wm1" -gt "$wm0"
+
+# verify master stayed tiled (in monocle, it expands to 1256 and stack is unmapped)
+xdotool key super+m; sleep 1
+read -r xmono ymono wmono hmono <<< "$(geom "$id_master")"
+assert "resized master stays tiled in monocle" "$wmono" -eq 1256
+vis=$(xdotool search --onlyvisible --class xterm 2>/dev/null | wc -l)
+assert "stack hidden in monocle" "$vis" -eq 1
+
 exit $fail

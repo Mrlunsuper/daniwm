@@ -76,9 +76,21 @@ No `system()`, no shell interpolation of config, no setuid, no network. Attack s
 7. ~~Strut math for uneven/negative-offset layouts.~~ DONE: new `screen_extents()` (monitor bounding box, `sw/sh` fallback pre-`initmons` + explicit `update_struts()` after it — this ordering caused one `test-strut` failure mid-work, fixed); all four edges + `_NET_WORKAREA` origin-aware. `test-strut` 8/8.
 8. ~~Cross-monitor drag re-tiles.~~ DONE: `Drag` records `tiled0/mon0`; a tiled window moved (Mod+Left) to another monitor re-tiles there, same-monitor drops still promote to float, resize-drags always stay floating. `test-mouse` still PASS (same-monitor case).
 
-## Round 1 — suggested order (all DONE)
+## Round 3 (2026-09-10) — "Fix them all" (all 15 items DONE)
 
-1. ~~Add `_NET_NUMBER/CURRENT/WM_DESKTOP` — biggest compat win.~~ DONE (2026-09-10): root `NUMBER+CURRENT+NAMES`, per-client `WM_DESKTOP` (parked scratchpad → sticky `0xFFFFFFFF`), pager requests honored (`_NET_CURRENT_DESKTOP` → `view`, `_NET_WM_DESKTOP` → `move_to` without follow), initial hint honored on manage. Verified with `xprop` + `xdotool set_desktop_for_window`.
-2. ~~Fix focus-over-dock raise.~~ DONE (2026-09-10): new `keep_docks_on_top()` helper (docks, then fullscreen above all); `focus()` only raises floating/fullscreen and re-raises docks+fullscreen after — tiled focus does zero restacks (also less flicker on focus-follows-mouse). Same guard added to float-promote, unfloat-raise, and mouse-drag promotion. Verified live under Xvfb: `XQueryTree` bottom→top stays `… xterm, dock` before and after `windowactivate`+`super+j`; all suites still PASS.
-3. ~~Throttle `sys_vol()` to tick-only + negative cache.~~ DONE (2026-09-10): split into non-blocking `sys_vol()` (cache read) + `sys_vol_update()` (blocking `amixer`, 1s tick only). arrange/focus storms no longer fork. amixer-absent backoff 8s → 30s.
-4. ~~Center bar text from font metrics; document restart-for-hotplug + scratchpad naming.~~ DONE (2026-09-10): baseline `= (BAR_H + ascent - descent)/2` clamped, all 5 bar strings — verified `bar_h = 40` screenshot (centered, workarea y=40). README: Xinerama read-once → restart note; custom `scratch =` must yield `scratchpad` in class/name.
+1. **H1 (fork return check):** `spawn()` and autostart check `fork() == -1` with `perror` to log resource exhaustion instead of silently continuing.
+2. **H2 (CARDINAL cast):** `ewmh_read_desktop` uses `long *` matching Xlib 32-bit format semantics.
+3. **M1 (Monocle _NET_WM_STATE_HIDDEN):** `_NET_WM_STATE_HIDDEN` set on monocle-hidden windows, cleared on map/focus and upon switching back to tiling mode.
+4. **M2 (view flicker):** `view()` maps new workspace windows during arrange before unmapping previous workspace windows.
+5. **M3 (drag mfact workspace guard):** Mid-drag workspace switches guarded with `c->ws == curws`.
+6. **M4 (bar_runs ASCII fast path):** ASCII characters bypass `XftCharExists` per-glyph fallback roundtrips in `bar_glyph_font`.
+7. **M5 (font OOM safety):** `parse_scalar` checks `xstrdup` before freeing previous `font_name`.
+8. **M6 (parse_bind tokenizer rewrite):** Replaced fragile triple-`strtok` with clean single-pass buffer tokenizer.
+9. **L1 (scaled_font_pat snprintf):** Replaced error-prone `strncat` with direct pointer-offset `snprintf`.
+10. **L2 (parked scratchpad in CLIENT_LIST):** Parked scratchpad (`ws >= NWS`) filtered out from `_NET_CLIENT_LIST`.
+11. **L3 (_NET_WM_STATE_DEMANDS_ATTENTION):** Added urgency hint tracking (`Client.urgent`, `XUrgencyHint` via `XA_WM_HINTS` & `_NET_WM_STATE_DEMANDS_ATTENTION`), bar highlights urgent workspace numbers in accent color, focusing clears urgency.
+12. **L4 (double-kill fallback):** Pressing `Super+q` twice within 2 seconds on the same window falls back to force-kill with `XKillClient`.
+13. **L5 (select error handling):** `select()` loop tracks consecutive errors and cleanly aborts if persistent (>100 consecutive).
+14. **L6 (strict compiler warnings):** Explicit casts added throughout `daniwm.c`; 0 warnings under `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`.
+15. **L7 (uninitialized XEvent):** `memset(&ev, 0, sizeof(ev))` in `kill_client`.
+

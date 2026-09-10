@@ -5,7 +5,9 @@ Tiling + monocle, bar with sysmon, 5 workspaces, gaps, EWMH, multi-monitor (Xine
 ## Build
 
 ```sh
-make
+make            # build ./daniwm (strict warnings, fortified)
+make check      # build + run all headless suites (needs Xvfb, xterm, xdotool)
+sudo make install   # -> /usr/local/bin + xsessions entry (PREFIX/DESTDIR supported)
 ```
 
 Requires X11 + Xinerama + Xrandr + Xft headers (`libX11-devel libXinerama-devel libXrandr-devel libXft-devel` on Fedora).
@@ -36,7 +38,8 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 | Super+f | fullscreen toggle (EWMH) |
 | Super+s | scratchpad toggle |
 | Super+Shift+r | reload config file |
-| Super+Left / Right drag | move / resize window (promotes tiled → floating, motion-coalesced) |
+| Super+Left drag | move window (promotes tiled → floating on same monitor, re-tiles on cross-monitor drop) |
+| Super+Right drag | resize window (tiling: resizes master `mfact`; floating: resizes window geometry) |
 | Super+Ctrl+h/j/k/l | move floating window 20px (repeat = smooth; promotes tiled → floating) |
 | Super+Ctrl+Shift+h/l | resize floating width -/+20px (repeat = smooth) |
 | Super+Ctrl+Shift+k/j | resize floating height -/+20px (repeat = smooth) |
@@ -102,7 +105,8 @@ defaults); shrinking `workspaces` folds extra workspaces into the last one.
 Needs `xorg-x11-server-Xvfb` (or unpack its rpm userspace-side if no sudo).
 
 ```sh
-./test/verify.sh
+./test/verify.sh     # one suite
+./test/run-all.sh    # all suites: verify config kill mouse workspaces strut randr
 ```
 
 Dựng Xvfb 1280x800, spawn 3 xterm qua `Super+Return`, assert geometry bằng
