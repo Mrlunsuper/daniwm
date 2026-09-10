@@ -10,6 +10,7 @@
 #include <X11/XF86keysym.h>
 #include <X11/Xft/Xft.h>
 #include <X11/extensions/Xinerama.h>
+#include <X11/extensions/Xrandr.h>
 #include <X11/cursorfont.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -43,6 +44,9 @@ static unsigned long C_WS_ACT, C_WS_ACT_TX, C_WS_OCC, C_WS_EMP, C_MODE, C_TITLE,
 static int h_ws_act, h_ws_act_tx, h_ws_occ, h_ws_emp, h_mode, h_title, h_sys;
 static int BAR_H = 24;
 static int WS_W = 40;  /* width per workspace box in bar */
+static float ui_scale = 1.0f; /* manual HiDPI scale: multiplies chrome only */
+/* scale raw UI px -> device px; v<=0 stays 0 so border 0 / gap 0 keep meaning */
+static int S(int v) { if (v <= 0) return 0; return (int)(v * ui_scale + 0.5f); }
 static char *font_name = NULL; /* X font (XLFD) for bar, default "fixed" */
 static int bar_on = 1;
 static int gaps_on = 1;
@@ -95,6 +99,15 @@ static int nws_alloc = 0; /* array size currently allocated */
 #define MAXMONS 16
 static struct { int x, y, w, h; } mons[MAXMONS];
 static int nmons = 1;
+/* RandR hotplug: event base when XRRQueryExtension succeeds, else off */
+static int rr_event_base = 0, rr_error_base = 0, rr_present = 0;
+static void initmons(void);
+static int mon_at(int x, int y);
+static void getarea(int m, int *ax, int *ay, int *aw, int *ah);
+static void bar_style(void);
+static void update_struts(void);
+static void arrange(void);
+static void on_monitors_changed(void);
 typedef struct { int left, right, top, bottom; } StrutMargin;
 static StrutMargin mon_struts[MAXMONS];
 
@@ -234,10 +247,11 @@ static int mon_by_pointer(void) {
         return mon_at(x, y);
     return 0;
 }
-/* usable area of monitor m: minus bar (mon 0), struts, and outer gaps */
+/* usable area of monitor m: minus bar (mon 0), struts, and outer gaps.
+ * BAR/gaps are raw config values scaled by ui_scale; struts stay physical. */
 static void getarea(int m, int *ax, int *ay, int *aw, int *ah) {
-    int o = gaps_on ? gap_outer : 0;
-    int top = (m == 0 && bar_on) ? BAR_H : 0;
+    int o = gaps_on ? S(gap_outer) : 0;
+    int top = (m == 0 && bar_on) ? S(BAR_H) : 0;
     if (mon_struts[m].top > top) top = mon_struts[m].top;
     int bot = mon_struts[m].bottom;
     int left = mon_struts[m].left;
@@ -249,6 +263,32 @@ static void getarea(int m, int *ax, int *ay, int *aw, int *ah) {
     if (*aw < 50) *aw = 50;
     if (*ah < 50) *ah = 50;
 }
+/* Re-read monitors + refresh layout. Idempotent: no-op when geometry
+ * is unchanged (RandR fires bursts on a single replug). */
+static void on_monitors_changed(void) {
+    int ox[MAXMONS], oy[MAXMONS], ow[MAXMONS], oh[MAXMONS];
+    int on = nmons;
+    for (int i = 0; i < on; i++) { ox[i] = mons[i].x; oy[i] = mons[i].y; ow[i] = mons[i].w; oh[i] = mons[i].h; }
+    sw = DisplayWidth(dpy, screen);
+    sh = DisplayHeight(dpy, screen);
+    initmons();
+    int same = (nmons == on);
+    if (same)
+        for (int i = 0; i < nmons; i++)
+            if (mons[i].x != ox[i] || mons[i].y != oy[i] || mons[i].w != ow[i] || mons[i].h != oh[i]) { same = 0; break; }
+    if (same) return;
+    for (Client *c = clients; c; c = c->next) {
+        if (c->mon < 0 || c->mon >= nmons) c->mon = mon_at(c->fx + c->fw / 2, c->fy + c->fh / 2);
+        if (c->floating) { /* keep floating windows on-screen */
+            if (c->fx < mons[c->mon].x) c->fx = mons[c->mon].x;
+            if (c->fy < mons[c->mon].y) c->fy = mons[c->mon].y;
+        }
+    }
+    if (bar) XMoveResizeWindow(dpy, bar, mons[0].x, mons[0].y, barw, S(BAR_H));
+    bar_style(); /* rebuilds pixmap at new barw */
+    update_struts();
+    arrange();
+}
 /* ---- layouts (per monitor) ---- */
 static void tile_mon(int m) {
     int n = 0;
@@ -257,15 +297,16 @@ static void tile_mon(int m) {
     if (n == 0) return;
     int ax, ay, aw, ah;
     getarea(m, &ax, &ay, &aw, &ah);
-    int g = gaps_on ? gap_inner : 0;
+    int g = gaps_on ? S(gap_inner) : 0;
     int nm = NMASTER < n ? NMASTER : n;
     int mw = (n > nm) ? (int)(aw * MFACT) : aw;
     int i = 0, my = ay, sy = ay;
+    int bw = S(BORDER);
     for (Client *c = clients; c; c = c->next) {
         if (c->ws != curws || c->mon != m || c->floating || c->fullscreen) continue;
         if (i < nm) {
             int h = (ay + ah - my) / (nm - i);
-            int ww = mw - 2 * BORDER - g, wh = h - 2 * BORDER - g;
+            int ww = mw - 2 * bw - g, wh = h - 2 * bw - g;
             if (ww < 1) ww = 1;
             if (wh < 1) wh = 1;
             XMoveResizeWindow(dpy, c->win,
@@ -275,7 +316,7 @@ static void tile_mon(int m) {
         } else {
             int ns = n - nm, si = i - nm;
             int h = (ay + ah - sy) / (ns - si);
-            int ww = aw - mw - 2 * BORDER - g, wh = h - 2 * BORDER - g;
+            int ww = aw - mw - 2 * bw - g, wh = h - 2 * bw - g;
             if (ww < 1) ww = 1;
             if (wh < 1) wh = 1;
             XMoveResizeWindow(dpy, c->win,
@@ -302,7 +343,7 @@ static void monocle_mon(int m) {
     for (Client *c = clients; c; c = c->next) {
         if (c->ws != curws || c->mon != m || c->floating || c->fullscreen) continue;
         if (c == show) {
-            XMoveResizeWindow(dpy, c->win, ax, ay, aw - 2 * BORDER, ah - 2 * BORDER);
+            XMoveResizeWindow(dpy, c->win, ax, ay, aw - 2 * S(BORDER), ah - 2 * S(BORDER));
             XMapWindow(dpy, c->win);
         } else {
             XUnmapWindow(dpy, c->win);
@@ -332,7 +373,7 @@ static void arrange(void) {
             if (c->floating) {
                 XMapRaised(dpy, c->win);
             }
-            XSetWindowBorderWidth(dpy, c->win, BORDER);
+            XSetWindowBorderWidth(dpy, c->win, S(BORDER));
             XSetWindowBorder(dpy, c->win, (c == sel) ? BORDER_FOCUS : BORDER_NORMAL);
         }
     }
@@ -606,8 +647,11 @@ static int get_title(Window w, char *buf, size_t cap) {
 }
 static void drawbar(void) {
     if (!bar_on || !bar) return;
+    int bar_h = S(BAR_H), wsw = S(WS_W);
+    if (bar_h < 8) bar_h = 8;
+    if (wsw < 8) wsw = 8;
     if (!barpm)
-        barpm = XCreatePixmap(dpy, root, (unsigned)barw, (unsigned)BAR_H, (unsigned)DefaultDepth(dpy, screen));
+        barpm = XCreatePixmap(dpy, root, (unsigned)barw, (unsigned)bar_h, (unsigned)DefaultDepth(dpy, screen));
     if (!barpm) return;
     if (!barxd) {
         barxd = XftDrawCreate(dpy, barpm,
@@ -626,44 +670,44 @@ static void drawbar(void) {
 
     /* text baseline from font metrics so bar_h != 24 stays vertically centered */
     int baseline = 16;
-    if (barfont) baseline = (BAR_H + barfont->ascent - barfont->descent) / 2;
+    if (barfont) baseline = (bar_h + barfont->ascent - barfont->descent) / 2;
     if (baseline < 4) baseline = 4;
-    if (baseline > BAR_H - 2) baseline = BAR_H - 2;
+    if (baseline > bar_h - 2) baseline = bar_h - 2;
 
     /* clear background of pixmap */
     XSetForeground(dpy, bargc, BAR_BG);
-    XFillRectangle(dpy, barpm, bargc, 0, 0, (unsigned)barw, (unsigned)BAR_H);
+    XFillRectangle(dpy, barpm, bargc, 0, 0, (unsigned)barw, (unsigned)bar_h);
 
     int n = count_tiled();
     /* workspace boxes */
     for (int i = 0; i < NWS; i++) {
-        int x = i * WS_W;
+        int x = i * wsw;
         char label[16];
         snprintf(label, sizeof(label), "%s%d", ws_occupied(i) ? "*" : " ", i + 1);
         if (i == curws) {
             XSetForeground(dpy, bargc, c_ws_act);
-            XFillRectangle(dpy, barpm, bargc, x, 0, (unsigned)WS_W, (unsigned)BAR_H);
+            XFillRectangle(dpy, barpm, bargc, x, 0, (unsigned)wsw, (unsigned)bar_h);
             XSetForeground(dpy, bargc, c_ws_acttx);
-            bar_text(&barcol.ws_acttx, x + 12, baseline, label);
+            bar_text(&barcol.ws_acttx, x + S(12), baseline, label);
         } else {
             XSetForeground(dpy, bargc, ws_occupied(i) ? c_ws_occ : c_ws_emp);
-            bar_text(ws_occupied(i) ? &barcol.ws_occ : &barcol.ws_emp, x + 12, baseline, label);
+            bar_text(ws_occupied(i) ? &barcol.ws_occ : &barcol.ws_emp, x + S(12), baseline, label);
         }
     }
     XSetForeground(dpy, bargc, c_ws_emp);
-    XDrawLine(dpy, barpm, bargc, NWS * WS_W, 2, NWS * WS_W, BAR_H - 3);
+    XDrawLine(dpy, barpm, bargc, NWS * wsw, 2, NWS * wsw, bar_h - 3);
 
     /* layout + counts + gaps */
     char mode[64];
     snprintf(mode, sizeof(mode), "[%c] %dn%s", LAYOUT == L_TILE ? 'T' : 'M', n, gaps_on ? "" : " G-");
     XSetForeground(dpy, bargc, c_mode);
-    bar_text(&barcol.mode, NWS * WS_W + 10, baseline, mode);
+    bar_text(&barcol.mode, NWS * wsw + S(10), baseline, mode);
 
     /* focused title (UTF-8) */
     if (sel) {
         char t[128];
         if (get_title(sel->win, t, sizeof(t) - 16) > 0) {
-            int tx = NWS * WS_W + 110;
+            int tx = NWS * wsw + S(110);
             XSetForeground(dpy, bargc, c_title);
             bar_text(&barcol.title, tx, baseline, t);
         }
@@ -696,10 +740,10 @@ static void drawbar(void) {
     }
     XSetForeground(dpy, bargc, c_sys);
     int rw = bar_textw(right);
-    bar_text(&barcol.sys, barw - rw - 8, baseline, right);
+    bar_text(&barcol.sys, barw - rw - S(8), baseline, right);
 
     /* copy double-buffer to bar */
-    XCopyArea(dpy, barpm, bar, bargc, 0, 0, (unsigned)barw, (unsigned)BAR_H, 0, 0);
+    XCopyArea(dpy, barpm, bar, bargc, 0, 0, (unsigned)barw, (unsigned)bar_h, 0, 0);
     XFlush(dpy);
 }
 
@@ -1181,7 +1225,7 @@ static void update_struts(void) {
             if (d->strut[2] > max_t) max_t = d->strut[2];
             if (d->strut[3] > max_b) max_b = d->strut[3];
         }
-        if (bar_on && (unsigned long)BAR_H > max_t) max_t = BAR_H;
+        if (bar_on && (unsigned long)S(BAR_H) > max_t) max_t = S(BAR_H);
         long swidth = sx1 - sx0, sheight = sy1 - sy0;
         if (swidth < 0) swidth = 0;
         if (sheight < 0) sheight = 0;
@@ -1336,7 +1380,7 @@ static void manage(Window w) {
     if (ewmh_hasstate(w, A_NET_WM_STATE_FS)) c->fullscreen = 1;
     XSelectInput(dpy, w, EnterWindowMask | FocusChangeMask | PropertyChangeMask | StructureNotifyMask);
     grabbuttons(c);
-    XSetWindowBorderWidth(dpy, w, BORDER);
+    XSetWindowBorderWidth(dpy, w, S(BORDER));
     attach(c);
     c->ws = rulews;
     ewmh_client_list();
@@ -1413,7 +1457,8 @@ static void drag_motion(int px, int py) {
     if (!c) { drag.win = None; drag.mode = 0; XUngrabPointer(dpy, CurrentTime); return; }
     dx = px - drag.px; dy = py - drag.py;
     if (!drag.promoted) {
-        if (abs(dx) < 4 && abs(dy) < 4) return;
+        int dz = S(4); if (dz < 2) dz = 2;
+        if (abs(dx) < dz && abs(dy) < dz) return;
         c->floating = 1;
         drag.promoted = 1;
         XRaiseWindow(dpy, c->win);
@@ -1531,14 +1576,14 @@ static void float_rszby(int dw, int dh) {
     XResizeWindow(dpy, sel->win, (unsigned)sel->fw, (unsigned)sel->fh);
     XFlush(dpy);
 }
-static void k_move_left(int)  { float_moveby(-FLOAT_STEP, 0); }
-static void k_move_right(int) { float_moveby(FLOAT_STEP, 0); }
-static void k_move_up(int)    { float_moveby(0, -FLOAT_STEP); }
-static void k_move_down(int)  { float_moveby(0, FLOAT_STEP); }
-static void k_rsz_w_dec(int)  { float_rszby(-RSZ_STEP, 0); }
-static void k_rsz_w_inc(int)  { float_rszby(RSZ_STEP, 0); }
-static void k_rsz_h_dec(int)  { float_rszby(0, -RSZ_STEP); }
-static void k_rsz_h_inc(int)  { float_rszby(0, RSZ_STEP); }
+static void k_move_left(int)  { float_moveby(-S(FLOAT_STEP), 0); }
+static void k_move_right(int) { float_moveby(S(FLOAT_STEP), 0); }
+static void k_move_up(int)    { float_moveby(0, -S(FLOAT_STEP)); }
+static void k_move_down(int)  { float_moveby(0, S(FLOAT_STEP)); }
+static void k_rsz_w_dec(int)  { float_rszby(-S(RSZ_STEP), 0); }
+static void k_rsz_w_inc(int)  { float_rszby(S(RSZ_STEP), 0); }
+static void k_rsz_h_dec(int)  { float_rszby(0, -S(RSZ_STEP)); }
+static void k_rsz_h_inc(int)  { float_rszby(0, S(RSZ_STEP)); }
 static void k_reload(int);
 static const struct { const char *name; void (*fn)(int); } actions[] = {
     { "focus_next", k_focusnext }, { "focus_prev", k_focusprev },
@@ -1691,7 +1736,7 @@ static void config_defaults(void) {
     BAR_BG = 0x1e1e2e; BAR_FG = 0xcdd6f4; BAR_ACC = 0x7aa2f7; BAR_DIM = 0x6c7086;
     C_WS_ACT = C_WS_ACT_TX = C_WS_OCC = C_WS_EMP = C_MODE = C_TITLE = C_SYS = 0;
     h_ws_act = h_ws_act_tx = h_ws_occ = h_ws_emp = h_mode = h_title = h_sys = 0;
-    BAR_H = 24; WS_W = 40;
+    BAR_H = 24; WS_W = 40; ui_scale = 1.0f;
     free(font_name);
     font_name = xstrdup("monospace:size=10");
     bar_on = 1; gaps_on = 1; gap_outer = 10; gap_inner = 8;
@@ -1747,6 +1792,9 @@ static void parse_scalar(char *key, char *val) {
         if (parse_hex(val, &h)) { C_SYS = h; h_sys = 1; }
     } else if (!strcmp(key, "bar_h")) {
         v = strtol(val, NULL, 10); if (v >= 8 && v <= 64) BAR_H = (int)v;
+    } else if (!strcmp(key, "scale")) {
+        f = strtof(val, NULL); if (f >= 0.5f && f <= 3.0f) ui_scale = f;
+        else fprintf(stderr, "daniwm: bad scale '%s' (want 0.5..3.0)\n", val);
     } else if (!strcmp(key, "font")) {
         free(font_name);
         font_name = xstrdup(val);
@@ -1949,7 +1997,7 @@ static void load_config(const char *path) {
             strcmp(k, "bar_acc") && strcmp(k, "bar_dim") && strcmp(k, "bar_ws_active") &&
             strcmp(k, "bar_ws_active_text") && strcmp(k, "bar_ws_occ") && strcmp(k, "bar_ws_empty") &&
             strcmp(k, "bar_mode") && strcmp(k, "bar_title") && strcmp(k, "bar_sys") &&
-            strcmp(k, "bar_h") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "bar_on") && strcmp(k, "gaps_on") &&
+            strcmp(k, "bar_h") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "bar_on") && strcmp(k, "gaps_on") &&
             strcmp(k, "gap_outer") && strcmp(k, "gap_inner") && strcmp(k, "mfact") &&
             strcmp(k, "nmaster") && strcmp(k, "workspaces") && strcmp(k, "term") &&
             strcmp(k, "menu") && strcmp(k, "scratch")) {
@@ -2008,7 +2056,7 @@ static void k_reload(int) {
         if (c->ws == curws) XMapWindow(dpy, c->win);
         else XUnmapWindow(dpy, c->win);
     }
-    if (bar) XMoveResizeWindow(dpy, bar, mons[0].x, mons[0].y, barw, BAR_H);
+    if (bar) XMoveResizeWindow(dpy, bar, mons[0].x, mons[0].y, barw, S(BAR_H));
     if (!bar_on && bar) XUnmapWindow(dpy, bar);
     if (bar_on && bar) XMapWindow(dpy, bar);
     bar_style();
@@ -2030,6 +2078,28 @@ static void grabkeys(void) {
 }
 
 /* ---- main ---- */
+/* scale a fontconfig pattern's size= by ui_scale so `scale=` also
+ * enlarges bar text (fractional ok: size=10 @1.5 -> size=15).
+ * No size= -> append one based on 10px. Output always NUL-terminated. */
+static void scaled_font_pat(const char *pat, char *out, size_t n) {
+    if (!pat || !*pat) pat = "monospace:size=10";
+    const char *p = strstr(pat, "size=");
+    if (!p) {
+        snprintf(out, n, "%s:size=%.1f", pat, 10.0 * ui_scale);
+        return;
+    }
+    double sz = strtod(p + 5, NULL);
+    if (sz < 1.0 || sz > 128.0) sz = 10.0;
+    size_t pre = (size_t)(p + 5 - pat);
+    if (pre >= n) pre = n - 1;
+    memcpy(out, pat, pre);
+    out[pre] = 0;
+    char tail[64];
+    const char *q = p + 5;
+    while (*q && (isdigit((unsigned char)*q) || *q == '.')) q++;
+    snprintf(tail, sizeof(tail), "%.1f%s", sz * ui_scale, q);
+    strncat(out, tail, n - strlen(out) - 1);
+}
 /* (re)apply bar font + colors: call at startup and on config reload.
  * Recreates GC, Xft font/draw/colors so `font =`/color changes apply live.
  * `font` is a fontconfig pattern (e.g. "monospace:size=11"); fallbacks
@@ -2064,6 +2134,11 @@ static void bar_style(void) {
     XSetForeground(dpy, bargc, BAR_FG);
     XSetBackground(dpy, bargc, BAR_BG);
     fallbacks[0] = font_name ? font_name : "monospace:size=10";
+    char fscaled[256];
+    if (ui_scale != 1.0f) {
+        scaled_font_pat(fallbacks[0], fscaled, sizeof(fscaled));
+        fallbacks[0] = fscaled;
+    }
     for (int i = 0; fallbacks[i] && !barfont; i++)
         barfont = XftFontOpenName(dpy, screen, fallbacks[i]);
     for (int i = 0; fb_cands[i] && bar_nfb < 4; i++) {
@@ -2107,6 +2182,14 @@ int main(void) {
     XSetErrorHandler(xerror_ignore);
     ewmh_init();
 
+    /* RandR hotplug: re-tile on output connect/disconnect, no restart.
+     * Xinerama emulation sits on top of RandR, so re-querying it
+     * after RRNotify picks up the new layout. */
+    if (XRRQueryExtension(dpy, &rr_event_base, &rr_error_base)) {
+        rr_present = 1;
+        XRRSelectInput(dpy, root, RRScreenChangeNotifyMask | RRCrtcChangeNotifyMask | RROutputChangeNotifyMask);
+    }
+
     initmons();
     update_struts(); /* recompute with real monitor geometry + extents */
 
@@ -2114,7 +2197,7 @@ int main(void) {
     {
         XSetWindowAttributes wa = { .override_redirect = True,
             .background_pixel = BAR_BG, .event_mask = ExposureMask | ButtonPressMask };
-        bar = XCreateWindow(dpy, root, mons[0].x, mons[0].y, barw, BAR_H, 0,
+        bar = XCreateWindow(dpy, root, mons[0].x, mons[0].y, barw, S(BAR_H), 0,
             CopyFromParent, InputOutput, CopyFromParent,
             CWOverrideRedirect | CWBackPixel | CWEventMask, &wa);
         XSelectInput(dpy, bar, ExposureMask | ButtonPressMask);
@@ -2169,6 +2252,12 @@ int main(void) {
         }
         XEvent ev;
         XNextEvent(dpy, &ev);
+        if (rr_present && (ev.type == rr_event_base + RRScreenChangeNotify ||
+                            ev.type == rr_event_base + RRNotify)) {
+            XRRUpdateConfiguration(&ev);
+            on_monitors_changed();
+            continue; /* not break: we are before switch(), break would exit for(;;) */
+        }
         switch (ev.type) {
         case MapRequest: {
             XMapRequestEvent *e = &ev.xmaprequest;
@@ -2231,7 +2320,7 @@ int main(void) {
         case ConfigureRequest: {
             XConfigureRequestEvent *e = &ev.xconfigurerequest;
             if (e->window == bar) { /* keep bar fixed */
-                XMoveResizeWindow(dpy, bar, mons[0].x, mons[0].y, barw, BAR_H);
+                XMoveResizeWindow(dpy, bar, mons[0].x, mons[0].y, barw, S(BAR_H));
                 break;
             }
             XWindowChanges wc = {
@@ -2305,7 +2394,8 @@ int main(void) {
                 else if (e->button == Button5) { k_vol_down(0); } /* scroll down: quieter */
                 else if (e->button == Button2 || e->button == Button3) { k_vol_mute(0); } /* mid/right: mute */
                 else {
-                    int n = e->x / WS_W;
+                    int wsw = S(WS_W); if (wsw < 1) wsw = 1;
+                    int n = e->x / wsw;
                     if (n >= 0 && n < NWS) view(n);
                 }
             } else if (find_dock(e->window) || find_dock(e->subwindow)) {

@@ -1,7 +1,7 @@
 CC      ?= gcc
 CFLAGS  ?= -O2 -Wall -Wextra
 CFLAGS  += $(shell pkg-config --cflags xft 2>/dev/null)
-LDFLAGS ?= -lX11 -lXinerama
+LDFLAGS ?= -lX11 -lXinerama -lXrandr
 LDFLAGS += $(shell pkg-config --libs xft 2>/dev/null)
 
 all: daniwm
