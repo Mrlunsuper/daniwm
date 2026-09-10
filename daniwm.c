@@ -350,7 +350,11 @@ static void monocle_mon(int m) {
     for (Client *c = clients; c; c = c->next) {
         if (c->ws != curws || c->mon != m || c->floating || c->fullscreen) continue;
         if (c == show) {
-            XMoveResizeWindow(dpy, c->win, ax, ay, (unsigned)(aw - 2 * S(BORDER)), (unsigned)(ah - 2 * S(BORDER)));
+            int g = gaps_on ? S(gap_inner) : 0;
+            XMoveResizeWindow(dpy, c->win,
+                ax + g / 2, ay + g / 2,
+                (unsigned)(aw - 2 * S(BORDER) - g),
+                (unsigned)(ah - 2 * S(BORDER) - g));
             XMapWindow(dpy, c->win);
             if (c->hidden) { c->hidden = 0; ewmh_update_state(c); }
         } else {
