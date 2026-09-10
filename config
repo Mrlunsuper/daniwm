@@ -1,0 +1,96 @@
+# tilewm config — ~/.config/tilewm/config
+# key = value, # comment. Reload nóng bằng Super+Shift+r (không cần restart).
+# Dòng bind đầu tiên thay toàn bộ bảng phím mặc định; rule đầu tiên thay rules mặc định.
+
+# ---------- terminal & menu ----------
+# Đổi terminal: sửa 1 dòng term = ghostty | kitty | foot | xterm
+term = alacritty
+menu = rofi -show drun                     # hoặc: rofi -show drun
+scratch = alacritty --class scratchpad   # giữ chữ "scratchpad" để toggle tìm được
+
+# ---------- general ----------
+mod = super                          # super | alt | ctrl
+workspaces = 7                       # 1..10 — đồng bộ với bspwm (I-VII)
+mfact = 0.55                         # master chiếm 0.1..0.9 chiều ngang
+nmaster = 1                          # số cửa sổ master
+border = 2
+border_focus = c4a7e7                # Rosé Pine iris (focused)
+border_normal = 26233a               # Rosé Pine surface (unfocused)
+gaps_on = 1
+gap_outer = 10
+gap_inner = 8
+bar_on = 1
+bar_h = 24
+# màu bar: hex 6 số, có thể có #. Áp ngay khi reload.
+# 4 màu nền tảng Rosé Pine Main (đồng bộ bspwm/polybar):
+bar_bg = 191724
+bar_fg = e0def4
+bar_acc = c4a7e7
+bar_dim = 6e6a86
+# màu riêng từng component Rosé Pine:
+bar_ws_active      = c4a7e7   # nền ô workspace đang xem (iris)
+bar_ws_active_text = 191724   # chữ trên ô đang xem
+bar_ws_occ         = e0def4   # chữ workspace có cửa sổ
+bar_ws_empty       = 6e6a86   # chữ workspace trống (muted)
+bar_mode           = e0def4   # text [T] 3n
+bar_title          = e0def4   # tiêu đề cửa sổ
+bar_sys            = 6e6a86   # C/M/B/V + clock
+# font bar: tên X core font. Xem danh sách: xlsfonts | grep -i misc (chạy trong X)
+# Mặc định "fixed". Cỡ chữ phải đi kèm bar_h phù hợp.
+font = fixed                       # X core font; thử 10x20 hoặc xlsfonts nếu muốn to hơn
+#font = 10x20
+#font = -misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso10646-1
+
+# ---------- rules ----------
+# class:title:float:ws   (* = bất kỳ; float|tile; ws 1-based, ≤ workspaces)
+rule = scratchpad:*:float:*
+rule = Gimp:*:float:*
+rule = mpv:*:float:*
+rule = Firefox:*:tile:2               # tự mở vào ws2 (bỏ nếu không dùng)
+rule = zoom:*:float:*
+
+# ---------- bảng phím ----------
+# focus & cửa sổ
+bind = mod+j:focus_next
+bind = mod+k:focus_prev
+bind = mod+q:kill
+bind = mod+shift+space:float          # tiled <-> floating
+bind = mod+f:fullscreen
+bind = mod+space:toggle               # tile <-> monocle
+bind = mod+t:tile
+bind = mod+m:monocle
+
+# spawn
+bind = mod+Return:spawn_term
+bind = mod+d:spawn_menu
+bind = mod+s:scratch                  # hiện/ẩn scratchpad
+
+# master / layout / gaps / bar
+bind = mod+h:mfact_dec
+bind = mod+l:mfact_inc
+bind = mod+u:nmaster_dec
+bind = mod+i:nmaster_inc
+bind = mod+g:gap
+bind = mod+minus:gap_dec
+bind = mod+equal:gap_inc
+bind = mod+b:bar
+
+# workspace 1..7
+bind = mod+1:ws1
+bind = mod+2:ws2
+bind = mod+3:ws3
+bind = mod+4:ws4
+bind = mod+5:ws5
+bind = mod+6:ws6
+bind = mod+7:ws7
+bind = mod+Shift+1:mv1
+bind = mod+Shift+2:mv2
+bind = mod+Shift+3:mv3
+bind = mod+Shift+4:mv4
+bind = mod+Shift+5:mv5
+bind = mod+Shift+6:mv6
+bind = mod+Shift+7:mv7
+
+# hệ thống
+bind = mod+Shift+r:reload_config
+bind = mod+Shift+e:quit               # thoát WM (kết thúc session X)
