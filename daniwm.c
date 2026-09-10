@@ -991,6 +991,7 @@ static void ewmh_client_list(void) {
     int n = 0;
     for (Client *c = clients; c; c = c->next) n++;
     Window *ws = malloc(sizeof(Window) * (n > 0 ? n : 1));
+    if (!ws) return; /* OOM: keep the old property, never deref NULL */
     int i = 0;
     for (Client *c = clients; c; c = c->next) ws[i++] = c->win;
     XChangeProperty(dpy, root, A_NET_CLIENT_LIST, XA_WINDOW, 32,
@@ -1291,7 +1292,7 @@ static void matchrules(Window w, int *floating, int *ws) {
     XClassHint ch = { 0 };
     char *name = NULL;
     int gotclass = XGetClassHint(dpy, w, &ch);
-    XFetchName(dpy, w, &name);
+    if (!XFetchName(dpy, w, &name)) name = NULL; /* Xlib may leave it untouched on failure */
     for (unsigned i = 0; i < nrules; i++) {
         int cm = !rules[i].cls ||
             (gotclass && ((ch.res_class && strstr(ch.res_class, rules[i].cls)) ||
@@ -1358,6 +1359,7 @@ static void manage(Window w) {
         return;
     }
     Client *c = calloc(1, sizeof(Client));
+    if (!c) return; /* OOM: leave the window unmanaged, WM keeps running */
     c->win = w;
     c->mon = mon_by_pointer();
     int rulefloat = 0, rulews = curws;
@@ -1653,7 +1655,10 @@ static char **split_argv(const char *s) {
     if (w.we_wordc == 0) { wordfree(&w); return NULL; }
     char **out = calloc(w.we_wordc + 1, sizeof(*out));
     if (!out) { wordfree(&w); return NULL; }
-    for (size_t i = 0; i < w.we_wordc; i++) out[i] = xstrdup(w.we_wordv[i]);
+    for (size_t i = 0; i < w.we_wordc; i++) {
+        out[i] = xstrdup(w.we_wordv[i]);
+        if (!out[i]) { free_argv(out); wordfree(&w); return NULL; } /* all-or-nothing: no arg holes */
+    }
     wordfree(&w);
     return out;
 }
@@ -1948,7 +1953,9 @@ static void load_config(const char *path) {
             if (!nl) break;
             lines = nl; linecap = nc;
         }
-        lines[nlines++] = xstrdup(line);
+        lines[nlines] = xstrdup(line);
+        if (!lines[nlines]) break; /* OOM: parse what we have, never store NULL (trim would crash) */
+        nlines++;
     }
     free(line);
     fclose(f);
