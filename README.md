@@ -39,7 +39,7 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 | Super+s | scratchpad toggle |
 | Super+Shift+r | reload config file |
 | Super+Left drag | move window (promotes tiled → floating on same monitor, re-tiles on cross-monitor drop) |
-| Super+Right drag | resize window (tiling: resizes master `mfact`; floating: resizes window geometry) |
+| Super+Right drag | resize window (tiling: horizontal = `mfact`, vertical = `cfact` height weight, stays tiled; floating: resizes window geometry) |
 | Super+Ctrl+h/j/k/l | move floating window 20px (repeat = smooth; promotes tiled → floating) |
 | Super+Ctrl+Shift+h/l | resize floating width -/+20px (repeat = smooth) |
 | Super+Ctrl+Shift+k/j | resize floating height -/+20px (repeat = smooth) |
