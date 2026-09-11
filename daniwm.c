@@ -68,7 +68,6 @@ struct Client {
     int urgent;     /* demands attention: EWMH or WM_HINTS urgency */
     int mon;        /* monitor index */
     int fx, fy, fw, fh; /* saved floating geometry */
-    float cfact; /* tiled height weight, 0.25..4.0, 1.0 = equal */
     Client *next;
 };
 
@@ -303,34 +302,12 @@ static void tile_mon(int m) {
     int g = gaps_on ? S(gap_inner) : 0;
     int nm = NMASTER < n ? NMASTER : n;
     int mw = (n > nm) ? (int)((float)aw * MFACT) : aw;
-    /* per-client height weights (cfact, like dwm): master/stack sums */
-    float mtotal = 0, stotal = 0;
-    {
-        int k = 0;
-        for (Client *c = clients; c; c = c->next) {
-            if (c->ws != curws || c->mon != m || c->floating || c->fullscreen) continue;
-            float f = c->cfact < 0.1f ? 1.0f : c->cfact;
-            if (f < 0.25f) f = 0.25f;
-            if (f > 4.0f) f = 4.0f;
-            if (k < nm) mtotal += f;
-            else stotal += f;
-            k++;
-        }
-        if (mtotal < 0.1f) mtotal = (float)(nm > 0 ? nm : 1);
-        if (n > nm && stotal < 0.1f) stotal = (float)(n - nm);
-    }
-    float mrem = mtotal, srem = stotal;
     int i = 0, my = ay, sy = ay;
     int bw = S(BORDER);
     for (Client *c = clients; c; c = c->next) {
         if (c->ws != curws || c->mon != m || c->floating || c->fullscreen) continue;
         if (i < nm) {
-            float f = c->cfact < 0.1f ? 1.0f : c->cfact;
-            if (f < 0.25f) f = 0.25f;
-            if (f > 4.0f) f = 4.0f;
-            int h;
-            if (i == nm - 1) h = (ay + ah - my);
-            else { h = (int)((float)(ay + ah - my) * f / mrem); mrem -= f; }
+            int h = (ay + ah - my) / (nm - i);
             int ww = mw - 2 * bw - g, wh = h - 2 * bw - g;
             if (ww < 1) ww = 1;
             if (wh < 1) wh = 1;
@@ -340,12 +317,7 @@ static void tile_mon(int m) {
             my += h;
         } else {
             int ns = n - nm, si = i - nm;
-            float f = c->cfact < 0.1f ? 1.0f : c->cfact;
-            if (f < 0.25f) f = 0.25f;
-            if (f > 4.0f) f = 4.0f;
-            int h;
-            if (si == ns - 1) h = (ay + ah - sy);
-            else { h = (int)((float)(ay + ah - sy) * f / srem); srem -= f; }
+            int h = (ay + ah - sy) / (ns - si);
             int ww = aw - mw - 2 * bw - g, wh = h - 2 * bw - g;
             if (ww < 1) ww = 1;
             if (wh < 1) wh = 1;
@@ -1465,7 +1437,6 @@ static void manage(Window w) {
     { int d = ewmh_read_desktop(w); if (d >= 0 && d < NWS) rulews = d; }
     Window trans = None;
     c->fx = a.x; c->fy = a.y; c->fw = a.width; c->fh = a.height;
-    c->cfact = 1.0f;
     if (XGetTransientForHint(dpy, w, &trans) || ewmh_isfloating_type(w) || rulefloat) {
         c->floating = 1;
         int ax, ay, aw, ah;
@@ -1507,11 +1478,10 @@ static void manage(Window w) {
  * - Mod+Left move: promotes a tiled window to floating once pointer moves
  *   past a 4px deadzone. Dropping on another monitor re-tiles on that monitor;
  *   same-monitor drop stays floating.
- * - Mod+Right resize: in tiling mode (L_TILE), stays tiled: horizontal drag
- *   resizes mfact (master/stack split), vertical drag resizes cfact
- *   (window height weight 0.25..4.0); on floating windows or in
+ * - Mod+Right resize: in tiling mode (L_TILE), drags the master/stack split
+ *   (resizes mfact) while keeping windows tiled; on floating windows or in
  *   monocle mode, resizes the window geometry. */
-typedef struct { Window win; int mode; int px, py, x, y, w, h, promoted, tiled0, mon0; float mfact0, cfact0; } Drag;
+typedef struct { Window win; int mode; int px, py, x, y, w, h, promoted, tiled0, mon0; float mfact0; } Drag;
 static Drag drag = { 0 };
 static Cursor cur_move = None, cur_resize = None, cur_hsplit = None;
 
@@ -1565,7 +1535,6 @@ static void drag_start(Client *c, int mode, int px, int py) {
     drag.tiled0 = !c->floating;
     drag.mon0 = c->mon;
     drag.mfact0 = MFACT;
-    drag.cfact0 = (c->cfact < 0.1f) ? 1.0f : c->cfact;
 }
 static void drag_motion(int px, int py) {
     Client *c;
@@ -1581,16 +1550,10 @@ static void drag_motion(int px, int py) {
         int ax, ay, aw, ah;
         getarea(c->mon, &ax, &ay, &aw, &ah);
         if (aw < 50) aw = 50;
-        if (ah < 50) ah = 50;
         float new_mfact = drag.mfact0 + (float)dx / (float)aw;
         if (new_mfact < 0.1f) new_mfact = 0.1f;
         if (new_mfact > 0.9f) new_mfact = 0.9f;
         MFACT = new_mfact;
-        float base = (drag.cfact0 < 0.1f) ? 1.0f : drag.cfact0;
-        float new_cfact = base + (float)dy / 150.0f;
-        if (new_cfact < 0.25f) new_cfact = 0.25f;
-        if (new_cfact > 4.0f) new_cfact = 4.0f;
-        c->cfact = new_cfact;
         arrange();
         return;
     }
