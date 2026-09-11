@@ -110,6 +110,6 @@ Needs `xorg-x11-server-Xvfb` (or unpack its rpm userspace-side if no sudo).
 ```
 
 Dựng Xvfb 1280x800, spawn 3 xterm qua `Super+Return`, assert geometry bằng
-`xdotool` (master 14,38,681x744; stack x=707; monocle 10,34,1256x752;
+`xdotool` (master 14,38,681x744; stack x=707; monocle 14,38,1248x744;
 fullscreen 0,0,1280x800), đi qua gaps/ws/move-fullscreen/scratchpad,
 chụp từng bước vào `test/shots/`. 18/18 PASS.

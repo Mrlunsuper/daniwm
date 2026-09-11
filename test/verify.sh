@@ -62,12 +62,12 @@ done
 assert "one master" "$master" -eq 1
 assert "two stack" "$stack" -eq 2
 
-# monocle: exactly 1 visible, fills area (10,34,1256x752)
+# monocle: exactly 1 visible, fills area with gap_inner (14,38,1248x744)
 xdotool key super+m; settle
 assert "monocle shows 1" "$(nvis)" -eq 1
 read -r xm ym wm hm <<< "$(xywh "$(xdotool search --onlyvisible --class xterm 2>/dev/null | head -n1)")"
 echo "monocle: x=$xm y=$ym w=$wm h=$hm"
-assert "monocle geometry" "$xm" -eq 10 -a "$ym" -eq 34 -a "$wm" -eq 1256 -a "$hm" -eq 752
+assert "monocle geometry" "$xm" -eq 14 -a "$ym" -eq 38 -a "$wm" -eq 1248 -a "$hm" -eq 744
 shot 02-monocle
 
 # back to tile; gaps off -> master x~0; gaps on restores
