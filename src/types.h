@@ -32,6 +32,6 @@ struct Dock {
     Dock *next;
 };
 
-typedef struct { Window win; int mode; int px, py, x, y, w, h, promoted, tiled0, mon0; float mfact0, cfact0; } Drag;
+typedef struct { Window win; int mode; int px, py, x, y, w, h, promoted, tiled0, mon0; float mfact0, cfact0; Window nb_up, nb_dn; float nb_up0, nb_dn0; } Drag;
 
 typedef struct { KeySym keysym; unsigned int mod; void (*fn)(int); int arg; } Key;

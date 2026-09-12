@@ -87,4 +87,44 @@ assert "resized master stays tiled in monocle" "$wmono" -eq 1248
 vis=$(xdotool search --onlyvisible --class xterm 2>/dev/null | wc -l)
 assert "stack hidden in monocle" "$vis" -eq 1
 
+# tiled Mod+Right vertical drag is border-following (pairwise cfact):
+# 1 master + 2 stack on ws4. Top drag down grows; bottom drag down is a
+# clean no-op (screen edge); bottom drag up grows upward.
+pickstack() { # $1 = head|tail -> top/bottom stack window id (stack: x>700)
+  for id in $(xdotool search --onlyvisible --class xterm 2>/dev/null); do
+    set -- $(geom $id)
+    if [ "$1" -gt 700 ]; then echo "$2 $id"; fi
+  done | sort -n | "$1" -n1 | awk '{print $2}'
+}
+xdotool key super+4; sleep 1
+xdotool key super+Return; sleep 1
+xdotool key super+Return; sleep 1
+xdotool key super+Return; sleep 1
+i=0; while [ "$(xdotool search --onlyvisible --class xterm 2>/dev/null | wc -l)" -lt 3 ] && [ $i -lt 40 ]; do sleep 0.5; i=$((i+1)); done
+topstack=$(pickstack head)
+botstack=$(pickstack tail)
+read -r tx0 ty0 tw0 th0 <<< "$(geom "$topstack")"
+read -r cx cy <<< "$(center "$topstack")"
+xdotool mousemove $cx $cy; sleep 0.3
+drag 3 0 150
+read -r tx1 ty1 tw1 th1 <<< "$(geom "$topstack")"
+assert "top stack drag down grows" "$th1" -gt "$th0"
+read -r bx0 by0 bw0 bh0 <<< "$(geom "$botstack")"
+read -r cx cy <<< "$(center "$botstack")"
+xdotool mousemove $cx $cy; sleep 0.3
+drag 3 0 150
+read -r bx1 by1 bw1 bh1 <<< "$(geom "$botstack")"
+read -r tx1b ty1b tw1b th1b <<< "$(geom "$topstack")"
+assert "bottom drag down no-op (h)" "$bh1" -eq "$bh0"
+assert "bottom drag down no-op (y)" "$by1" -eq "$by0"
+assert "top untouched by bottom no-op" "$th1b" -eq "$th1"
+read -r cx cy <<< "$(center "$botstack")"
+xdotool mousemove $cx $cy; sleep 0.3
+drag 3 0 -150
+read -r bx2 by2 bw2 bh2 <<< "$(geom "$botstack")"
+read -r tx2 ty2 tw2 th2 <<< "$(geom "$topstack")"
+assert "bottom drag up grows" "$bh2" -gt "$bh1"
+assert "bottom drag up moves top edge up" "$by2" -lt "$by1"
+assert "top shrinks as bottom grows" "$th2" -lt "$th1"
+
 exit $fail
