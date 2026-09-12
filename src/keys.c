@@ -58,8 +58,9 @@ static void k_scratch(int) {
 }
 
 /* ---- keys ---- */
-static Key *keys = NULL;
-static unsigned nkeys = 0, capkeys = 0;
+Key *keys = NULL;
+unsigned nkeys = 0;
+static unsigned capkeys = 0;
 
 static void k_focusnext(int) { focus_step(+1); }
 static void k_focusprev(int) { focus_step(-1); }
@@ -97,9 +98,9 @@ static char *vol_mute_wp[] = { "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "tog
 static char *vol_up_pa[]   = { "pactl", "set-sink-volume", "@DEFAULT_SINK@", "+5%", NULL };
 static char *vol_down_pa[] = { "pactl", "set-sink-volume", "@DEFAULT_SINK@", "-5%", NULL };
 static char *vol_mute_pa[] = { "pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle", NULL };
-static void k_vol_up(int)   { spawn(vol_set_cmd(vol_up_am, vol_up_wp, vol_up_pa)); vol_ts = 0; }
-static void k_vol_down(int) { spawn(vol_set_cmd(vol_down_am, vol_down_wp, vol_down_pa)); vol_ts = 0; }
-static void k_vol_mute(int) { spawn(vol_set_cmd(vol_mute_am, vol_mute_wp, vol_mute_pa)); vol_ts = 0; }
+void k_vol_up(int)   { spawn(vol_set_cmd(vol_up_am, vol_up_wp, vol_up_pa)); vol_ts = 0; }
+void k_vol_down(int) { spawn(vol_set_cmd(vol_down_am, vol_down_wp, vol_down_pa)); vol_ts = 0; }
+void k_vol_mute(int) { spawn(vol_set_cmd(vol_mute_am, vol_mute_wp, vol_mute_pa)); vol_ts = 0; }
 /* Keyboard float move/resize: 20px steps, key repeat = smooth.
  * Tiled windows promote to floating first (same as mouse drag). */
 static void float_promote(void) {

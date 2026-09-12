@@ -8,25 +8,27 @@ CFLAGS  += -Wall -Wextra -Wpedantic -Wshadow -D_FORTIFY_SOURCE=2
 CFLAGS  += -fstack-protector-strong -fPIE
 CFLAGS  += -Wformat=2 -Wformat-security
 CFLAGS  += $(shell pkg-config --cflags xft 2>/dev/null)
+CFLAGS  += -MMD -MP
 LDFLAGS ?= -lX11 -lXinerama -lXrandr
 LDFLAGS += $(shell pkg-config --libs xft 2>/dev/null)
 LDFLAGS += -pie -Wl,-z,relro,-z,now
 
+SRCS = src/state.c src/monitor.c src/sysmon.c src/bar.c src/ewmh.c \
+       src/layout.c src/client.c src/mouse.c src/keys.c src/config.c src/main.c
+OBJS = $(SRCS:.c=.o)
+
 all: daniwm
 
-daniwm: daniwm.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+daniwm: $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-# TEMP (bỏ ở Phase 13): compile mọi src/*.c, không link, để verify từng phase.
-SRC_ALL := $(wildcard src/*.c)
-src-check: $(SRC_ALL:.c=.o)
-	@echo "src-check: OK ($(words $(SRC_ALL)) files)"
-
-src/%.o: src/%.c
+%.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+-include $(OBJS:.o=.d)
+
 test/dock-helper: test/dock-helper.c
-	$(CC) $(CFLAGS) -o $@ $< -lX11
+	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11
 
 check: daniwm test/dock-helper
 	./test/run-all.sh
@@ -40,6 +42,6 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/daniwm $(DESTDIR)$(SESSIONDIR)/daniwm.desktop
 
 clean:
-	rm -f daniwm test/dock-helper
+	rm -f daniwm test/dock-helper src/*.o src/*.d
 
 .PHONY: all clean check install uninstall
