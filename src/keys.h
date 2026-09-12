@@ -1,6 +1,10 @@
 #pragma once
 #include "state.h"
 
+typedef struct { const char *name; void (*fn)(int); } KeyAction;
+
+extern const KeyAction actions[];
+
 void grabkeys(void);
 void add_default_keys(void);
 void keys_reset(void);
