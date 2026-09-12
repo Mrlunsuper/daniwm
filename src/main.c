@@ -1,3 +1,5 @@
+/* main.c - daniwm entry point: init, event loop (module split of daniwm.c).
+ * Build with `make` (multi-object, see Makefile); binary lands at ./daniwm. */
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>

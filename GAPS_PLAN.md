@@ -27,6 +27,7 @@ Kết quả review: **G7, G10 không phải gap** (đã sửa lại trong `TASKS
 | **G14** | 🟡 Rủi ro | `-Wshadow` bật sẵn; khi `state.h` được include khắp nơi, biến local trùng tên global (vd `sel`, `keys`, `bar`) có thể phát warning | Trung bình | 3–12 |
 | **G15** | 🟡 Rủi ro | Header cycle tiềm ẩn `keys.h ↔ config.h` (`actions[]` cần `k_reload`, `config.c` cần `push_key_fn`) | Trung bình | 10 |
 | **G16** | 🟡 Gap vận hành | `test/*.sh` gọi `$TDIR/../daniwm` → binary **phải** ở repo root, không được để `src/daniwm` | Cao nếu sai | 13 |
+| **G17** | 🔴 Gap thật (phát hiện khi tách, Phase 11) | `parse_bind` dùng `sizeof(actions)/sizeof(actions[0])` trong khi `actions[]` giờ là `extern` (incomplete type) | `nactions` export từ `keys.c` (giữ `actions[]` nguyên byte) | 10–11 |
 
 ---
 
@@ -84,6 +85,8 @@ Vì `src/main.c` chưa tồn tại và `daniwm.c` vẫn là entry point. Build s
 | `ewmh_read_desktop` | `ewmh.c` | **public** | `ewmh.h` | `client.c:1465` |
 | `find_dock` | `ewmh.c` | **public** | `ewmh.h` | `ewmh.c` nội bộ + plan yêu cầu |
 | `push_key_fn`, `add_default_keys`, `keys_reset`, `grabkeys`, `k_reload` | `keys.c` | **public** | `keys.h` | `config.c` (G3/G11/G15) |
+| `actions`, `nactions` | `keys.c` | **public** | `keys.h` | `config.c:parse_bind` (G17) |
+| `keys`, `nkeys`, `k_vol_up`, `k_vol_down`, `k_vol_mute` | `keys.c` | **public** | `keys.h` | `main.c` event loop (KeyPress dispatch + scroll) — khớp baseline, `capkeys` vẫn `static` |
 | `keys`, `nkeys`, `capkeys` | `keys.c` | `static` | — | **không** cần `state.h` (sửa T2.1) |
 | `A_NET_*` atoms | `state.c` | `extern` | `state.h` | `ewmh.c`, `client.c:1481/1482`, `main.c:2462–2543` |
 | `float_promote`, `float_moveby`, `float_rszby` | `keys.c` | `static` | — | chỉ `k_move_*`/`k_rsz_*` |
@@ -199,6 +202,18 @@ src/*.d
 - → đồ thị include một chiều: `config.c → keys.h`, `keys.c → keys.h`. Không cycle.
 
 ### G16 — Binary ở repo root
+
+- Makefile: `daniwm: $(OBJS)` với `$(CC) -o daniwm ...` (output root), object nằm `src/*.o`.
+- `test/run-all.sh` và 7 script test giữ nguyên `$TDIR/../daniwm`.
+
+### G17 — `sizeof()` trên mảng cross-module (phát hiện ở Phase 11, đã duyệt qua supervisor)
+
+- Gốc: `parse_bind` duyệt `for (i = 0; i < sizeof(actions)/sizeof(actions[0]); i++)` (`daniwm.c:2019`).
+- Sau khi tách, `actions[]` chỉ còn `extern const KeyAction actions[];` trong `keys.h` → incomplete type, `sizeof` không compile.
+- Fix đã duyệt: `extern const unsigned nactions;` trong `keys.h`, define ngay sau mảng trong `keys.c`:
+  `const unsigned nactions = sizeof(actions) / sizeof(actions[0]);`, vòng lặp dùng `nactions`.
+- Bác bỏ sentinel `{ NULL, NULL }`: sửa mảng + sửa vòng lặp = deviation lớn hơn.
+- Quy tắc chung: mọi `sizeof(x)/sizeof(x[0])` trên symbol đã chuyển ra khỏi file → áp cùng pattern.
 - Makefile: `daniwm: $(OBJS)` với `$(CC) -o daniwm ...` (output root), object nằm `src/*.o`.
 - `test/run-all.sh` và 7 script test giữ nguyên `$TDIR/../daniwm`.
 
@@ -259,21 +274,22 @@ diff /tmp/sym.before /tmp/sym.after    # chỉ được khác các symbol static
 
 ## 7. Checklist thực thi gaps
 
-- [ ] **G0** — T0.6: thêm target TEMP `src-check` vào Makefile, commit riêng trước Phase 1.
-- [ ] **G0/T1.4** — tạo skeleton toàn bộ `.h` (prototype theo matrix §3) ở Phase 1.5.
-- [ ] **G4/G5/G8** — `state.h` có `S()` `static inline`, 3 macro layout, 4 hằng số; `ui_scale` extern.
-- [ ] **G7** — `screen_extents` trong `monitor.c`; `ewmh.c` include `monitor.h`.
-- [ ] **G12** — `get_strut` giữ `static` trong `ewmh.c`.
-- [ ] **G1** — `matchrules` vào `client.c`, giữ `static`.
-- [ ] **G10** — `last_kill_win/time` giữ `static` trong `client.c`, không vào `state.h`.
-- [ ] **G6** — `bar_style` public, `scaled_font_pat` + `bar_text*` + `utf8_*` + `get_title` + `xft_alloc` giữ `static`.
-- [ ] **G2** — `findscratch` (static) + `k_scratch` vào `keys.c`.
-- [ ] **G3/G11** — `keys/nkeys/capkeys` static trong `keys.c`; `push_key_fn`, `add_default_keys`, `keys_reset`, `grabkeys`, `k_reload` export ở `keys.h`.
-- [ ] **G15** — `keys.h` không include `config.h`; `k_reload` khai báo ở `keys.h`, impl ở `config.c`.
-- [ ] **G14** — 0 warning `-Wshadow` sau mỗi phase; rename local nếu cần.
-- [ ] **G13** — `.gitignore` thêm `src/*.o`, `src/*.d`.
-- [ ] **G16** — binary `daniwm` ở repo root, `src/*.o` cho object.
-- [ ] **G9** — `make ... -Wmissing-prototypes src-check` sạch; `nm -g` diff đúng kỳ vọng.
+- [x] **G0** — T0.6: thêm target TEMP `src-check` vào Makefile, commit riêng trước Phase 1.
+- [x] **G0/T1.4** — tạo skeleton toàn bộ `.h` (prototype theo matrix §3) ở Phase 1.5.
+- [x] **G4/G5/G8** — `state.h` có `S()` `static inline`, 3 macro layout, 4 hằng số; `ui_scale` extern.
+- [x] **G7** — `screen_extents` trong `monitor.c`; `ewmh.c` include `monitor.h`.
+- [x] **G12** — `get_strut` giữ `static` trong `ewmh.c`.
+- [x] **G1** — `matchrules` vào `client.c`, giữ `static`.
+- [x] **G10** — `last_kill_win/time` giữ `static` trong `client.c`, không vào `state.h`.
+- [x] **G6** — `bar_style` public, `scaled_font_pat` + `bar_text*` + `utf8_*` + `get_title` + `xft_alloc` giữ `static`.
+- [x] **G2** — `findscratch` (static) + `k_scratch` vào `keys.c`.
+- [x] **G3/G11** — `keys/nkeys/capkeys` static trong `keys.c`; `push_key_fn`, `add_default_keys`, `keys_reset`, `grabkeys`, `k_reload` export ở `keys.h`.
+- [x] **G15** — `keys.h` không include `config.h`; `k_reload` khai báo ở `keys.h`, impl ở `config.c`.
+- [x] **G14** — 0 warning `-Wshadow` sau mỗi phase; rename local nếu cần.
+- [x] **G13** — `.gitignore` thêm `src/*.o`, `src/*.d`.
+- [x] **G16** — binary `daniwm` ở repo root, `src/*.o` cho object.
+- [x] **G17** — `nactions` export ở `keys.h`, define ở `keys.c`, `parse_bind` dùng `nactions`.
+- [x] **G9** — `make ... -Wmissing-prototypes src-check` sạch; `nm -g` diff đúng kỳ vọng.
 
 ## 8. Sửa lại `TASKS.md` cho khớp
 
