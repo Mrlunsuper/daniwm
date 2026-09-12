@@ -50,11 +50,32 @@ static void k_scratch(int) {
         int ax, ay, aw, ah;
         getarea(s->mon, &ax, &ay, &aw, &ah);
         int fw = aw * 2 / 3, fh = ah * 2 / 3;
-        XMoveResizeWindow(dpy, s->win, ax + (aw - fw) / 2, ay + (ah - fh) / 2, (unsigned)fw, (unsigned)fh);
+        s->fx = ax + (aw - fw) / 2; s->fy = ay + (ah - fh) / 2;
+        s->fw = fw; s->fh = fh;
+        XMoveResizeWindow(dpy, s->win, s->fx, s->fy, (unsigned)fw, (unsigned)fh);
         XMapRaised(dpy, s->win);
         focus(s);
         arrange();
     }
+}
+
+/* ---- custom exec binds: bind = mod+x:exec some-cmd --flag ---- */
+static char ***exec_list = NULL;
+static unsigned nexec = 0, capexec = 0;
+void k_exec(int idx) {
+    if (idx < 0 || (unsigned)idx >= nexec) return;
+    spawn(exec_list[idx]);
+}
+int push_exec_cmd(char **argv) {
+    if (!argv || !argv[0]) return -1;
+    if (nexec == capexec) {
+        unsigned nc = capexec ? capexec * 2 : 8;
+        char ***nl = realloc(exec_list, nc * sizeof(*nl));
+        if (!nl) return -1;
+        exec_list = nl; capexec = nc;
+    }
+    exec_list[nexec] = argv;
+    return (int)(nexec++);
 }
 
 /* ---- keys ---- */
@@ -141,7 +162,7 @@ static void k_rsz_h_dec(int)  { float_rszby(0, -S(RSZ_STEP)); }
 static void k_rsz_h_inc(int)  { float_rszby(0, S(RSZ_STEP)); }
 const KeyAction actions[] = {
     { "focus_next", k_focusnext }, { "focus_prev", k_focusprev },
-    { "kill", k_kill }, { "tile", k_tile }, { "monocle", k_monocle },
+    { "zoom", zoom }, { "ws_toggle", ws_toggle }, { "kill", k_kill }, { "tile", k_tile }, { "monocle", k_monocle },
     { "toggle", k_toggle }, { "spawn_term", k_spawnterm },
     { "spawn_menu", k_spawnmenu }, { "quit", k_quit }, { "float", k_float },
     { "mfact_dec", k_mfactdec }, { "mfact_inc", k_mfactinc },
@@ -171,6 +192,8 @@ void add_default_keys(void) {
     unsigned int M = MOD;
     push_key_fn(XK_j, M, k_focusnext, 0);
     push_key_fn(XK_k, M, k_focusprev, 0);
+    push_key_fn(XK_z, M, zoom, 0);
+    push_key_fn(XK_Tab, M, ws_toggle, 0);
     push_key_fn(XK_q, M, k_kill, 0);
     push_key_fn(XK_t, M, k_tile, 0);
     push_key_fn(XK_m, M, k_monocle, 0);
@@ -211,6 +234,11 @@ void add_default_keys(void) {
 }
 void keys_reset(void) {
     nkeys = 0;
+    for (unsigned i = 0; i < nexec; i++) {
+        for (char **p = exec_list[i]; *p; p++) free(*p);
+        free(exec_list[i]);
+    }
+    nexec = 0;
 }
 void grabkeys(void) {
     unsigned int masks[] = { 0, LockMask, Mod2Mask, LockMask|Mod2Mask };

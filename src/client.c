@@ -15,6 +15,7 @@
 #include "monitor.h"
 #include "mouse.h"
 #include "state.h"
+#include "tray.h"
 
 /* ---- helpers ---- */
 Client *find(Window w) {
@@ -112,6 +113,7 @@ void view(int n) {
     if (n < 0 || n >= NWS || n == curws) return;
     ws_sel[curws] = sel;
     int old = curws;
+    prevws = old;
     curws = n;
     sel = ws_sel[n] && find(ws_sel[n]->win) && ws_sel[n]->ws == n ? ws_sel[n] : first_in_ws(n);
     ewmh_desktops();
@@ -139,6 +141,7 @@ void send_to(int n) {
     ewmh_set_wm_desktop(s);
     for (Client *c = clients; c; c = c->next)
         if (c->ws == old) XUnmapWindow(dpy, c->win);
+    prevws = old;
     curws = n;
     sel = s;
     ewmh_desktops();
@@ -177,6 +180,14 @@ void move_to(Client *c, int n) {
         arrange();
         focus(c);
     } else arrange();
+}
+
+/* Super+Tab: back-and-forth between current and last workspace.
+ * view() swaps prevws/curws, so repeated toggles bounce back. */
+void ws_toggle(int unused) {
+    (void)unused;
+    if (prevws < 0 || prevws >= NWS || prevws == curws) return;
+    view(prevws);
 }
 
 void kill_client(Client *c) {
@@ -249,6 +260,43 @@ void toggle_floating_sel(void) {
     focus(sel);
 }
 
+/* zoom (dwm-style): focused tiled window becomes master of its (ws, mon).
+ * Already master -> swap with 2nd tiled (toggle). Floating/fullscreen: no-op. */
+void zoom(int unused) {
+    Client *first = NULL, *second = NULL, *target;
+    Client **pp;
+    (void)unused;
+    if (!sel || sel->floating || sel->fullscreen || sel->ws != curws) return;
+    for (Client *c = clients; c; c = c->next) {
+        if (c->ws != curws || c->mon != sel->mon || c->floating || c->fullscreen) continue;
+        if (!first) first = c;
+        else { second = c; break; }
+    }
+    if (!first || !second) return; /* 0-1 tiled: nothing to swap */
+    target = (sel == first) ? second : sel;
+    if (target->ws != curws || target->mon != sel->mon ||
+        target->floating || target->fullscreen) return;
+    if (target == first) return;
+    pp = &clients;
+    while (*pp && *pp != target) pp = &(*pp)->next;
+    if (!*pp) return;
+    *pp = target->next; /* unlink */
+    pp = &clients;
+    while (*pp && *pp != first) pp = &(*pp)->next;
+    if (!*pp) { /* first vanished mid-op: re-append to keep list valid */
+        pp = &clients;
+        while (*pp) pp = &(*pp)->next;
+        target->next = NULL;
+        *pp = target;
+    } else {
+        target->next = first;
+        *pp = target;
+    }
+    ewmh_client_list();
+    arrange();
+    focus(sel);
+}
+
 void quit(void) { XCloseDisplay(dpy); exit(0); }
 
 /* ---- rules + scratchpad ---- */
@@ -272,9 +320,32 @@ static void matchrules(Window w, int *floating, int *ws) {
     if (name) XFree(name);
 }
 
+/* scratchpad windows always start centered at 2/3 of the work area.
+ * At MapRequest time xterm/alacritty still report a tiny placeholder
+ * geometry (1x1), so using a.width/a.height here makes the first
+ * show tiny while later toggles (k_scratch) force 2/3. */
+static int isscratchpad(Window w) {
+    XClassHint ch = { 0 };
+    char *name = NULL;
+    int m = 0;
+    if (XGetClassHint(dpy, w, &ch)) {
+        m = (ch.res_name && strstr(ch.res_name, "scratchpad")) ||
+            (ch.res_class && strstr(ch.res_class, "scratchpad"));
+        if (ch.res_name) XFree(ch.res_name);
+        if (ch.res_class) XFree(ch.res_class);
+        if (m) return 1;
+    }
+    if (XFetchName(dpy, w, &name)) {
+        if (name && strstr(name, "scratchpad")) m = 1;
+        if (name) XFree(name);
+    }
+    return m;
+}
+
 /* ---- manage ---- */
 void manage(Window w) {
-    if (w == bar) return;
+    if (w == bar || w == traywin || tray_has(w)) return;
+    if (tray_on && tray_is_icon_window(w)) { tray_add(w); return; }
     XWindowAttributes a;
     if (!XGetWindowAttributes(dpy, w, &a) || a.override_redirect) return;
     if (find(w) || find_dock(w)) return;
@@ -296,8 +367,9 @@ void manage(Window w) {
         c->floating = 1;
         int ax, ay, aw, ah;
         getarea(c->mon, &ax, &ay, &aw, &ah);
-        int fw = a.width > 0 ? a.width : aw / 2;
-        int fh = a.height > 0 ? a.height : ah / 2;
+        int fw, fh;
+        if (isscratchpad(w)) { fw = aw * 2 / 3; fh = ah * 2 / 3; }
+        else { fw = a.width > 0 ? a.width : aw / 2; fh = a.height > 0 ? a.height : ah / 2; }
         c->fx = ax + (aw - fw) / 2;
         c->fy = ay + (ah - fh) / 2;
         c->fw = fw;

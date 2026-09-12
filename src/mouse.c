@@ -125,7 +125,25 @@ void drag_motion(int px, int py) {
             if (nb && nb->ws == c->ws && nb->mon == c->mon &&
                 !nb->floating && !nb->fullscreen &&
                 nbi >= ncol0 && nbi < ncol1 && (nbi == idx - 1 || nbi == idx + 1)) {
-                float d = (dy > 0 ? (float)dy : -(float)dy) / 150.0f;
+                /* border-following 1:1: d scales with column total / area height
+                 * so the shared border tracks the pointer (old /150 was ~7x
+                 * too fast on 1080p and DPI-dependent). */
+                float col_total = 0;
+                {
+                    int k = 0;
+                    for (Client *t = clients; t; t = t->next) {
+                        if (t->ws != c->ws || t->mon != c->mon || t->floating || t->fullscreen) continue;
+                        if (k >= ncol0 && k < ncol1) {
+                            float f = t->cfact < 0.1f ? 1.0f : t->cfact;
+                            if (f < 0.25f) f = 0.25f;
+                            if (f > 4.0f) f = 4.0f;
+                            col_total += f;
+                        }
+                        k++;
+                    }
+                    if (col_total < 0.5f) col_total = 2.0f;
+                }
+                float d = ((dy > 0 ? (float)dy : -(float)dy) / (float)ah) * col_total;
                 float base = (drag.cfact0 < 0.1f) ? 1.0f : drag.cfact0;
                 float fc = base + d, fn = (nb0 < 0.1f ? 1.0f : nb0) - d;
                 if (fc < 0.25f) fc = 0.25f;

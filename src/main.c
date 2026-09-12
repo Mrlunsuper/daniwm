@@ -25,6 +25,7 @@
 #include "keys.h"
 #include "mouse.h"
 #include "sysmon.h"
+#include "tray.h"
 
 static int xerror_other_wm(Display *d, XErrorEvent *e) {
     (void)d; (void)e;
@@ -34,7 +35,34 @@ static int xerror_other_wm(Display *d, XErrorEvent *e) {
 }
 static int xerror_ignore(Display *d, XErrorEvent *e) { (void)d; (void)e; return 0; }
 
+/* systemd/D-Bus env propagation (fix portal + notifications).
+ * WM custom mà quên bước này thì systemd user services không thấy DISPLAY,
+ * xdg-desktop-portal D-Bus activate fail. Fork non-blocking, auto-reap
+ * nhờ SIGCHLD=SIG_IGN. NOTE Fedora 44: graphical-session.target có
+ * RefuseManualStart=yes nên không start tay được; portal đã có override
+ * ở ~/.config/systemd/user/xdg-desktop-portal.service để chạy không cần
+ * target đó. Flameshot trên X11 dùng legacy capture (xem flameshot.ini). */
+static void session_init(void) {
+    if (!getenv("XDG_CURRENT_DESKTOP") || !*getenv("XDG_CURRENT_DESKTOP"))
+        setenv("XDG_CURRENT_DESKTOP", "daniwm", 1);
+    if (!getenv("XDG_SESSION_TYPE") || !*getenv("XDG_SESSION_TYPE"))
+        setenv("XDG_SESSION_TYPE", "x11", 1);
+    pid_t pid = fork();
+    if (pid == -1) { perror("daniwm: fork session_init"); return; }
+    if (pid == 0) {
+        setsid();
+        signal(SIGCHLD, SIG_DFL);
+        /* propagate X env vào systemd user + dbus activation */
+        execl("/bin/sh", "sh", "-c",
+            "dbus-update-activation-environment --systemd DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE WAYLAND_DISPLAY >/dev/null 2>&1; "
+            "systemctl --user import-environment DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE WAYLAND_DISPLAY >/dev/null 2>&1",
+            NULL);
+        _exit(1);
+    }
+}
+
 int main(void) {
+    session_init();
     signal(SIGCHLD, SIG_IGN); /* auto-reap spawn()ed children, no zombies */
     dpy = XOpenDisplay(NULL);
     if (!dpy) { fprintf(stderr, "daniwm: cannot open display\n"); return 1; }
@@ -66,14 +94,17 @@ int main(void) {
     /* bar (mon 0) */
     {
         XSetWindowAttributes wa = { .override_redirect = True,
-            .background_pixel = BAR_BG, .event_mask = ExposureMask | ButtonPressMask };
+            .background_pixel = BAR_BG,
+            .event_mask = ExposureMask | ButtonPressMask | SubstructureNotifyMask };
         bar = XCreateWindow(dpy, root, mons[0].x, mons[0].y, (unsigned)barw, (unsigned)S(BAR_H), 0,
             CopyFromParent, InputOutput, CopyFromParent,
             CWOverrideRedirect | CWBackPixel | CWEventMask, &wa);
-        XSelectInput(dpy, bar, ExposureMask | ButtonPressMask);
+        XSelectInput(dpy, bar, ExposureMask | ButtonPressMask | SubstructureNotifyMask);
         if (bar_on) XMapWindow(dpy, bar);
         bar_style();
     }
+
+    tray_init();
 
     grabkeys();
 
@@ -81,7 +112,7 @@ int main(void) {
     if (XQueryTree(dpy, root, &r, &p, &kids, &nk))
         for (unsigned i = 0; i < nk; i++) {
             XWindowAttributes a;
-            if (kids[i] == bar) continue;
+            if (kids[i] == bar || kids[i] == traywin) continue;
             if (XGetWindowAttributes(dpy, kids[i], &a) && !a.override_redirect && a.map_state == IsViewable)
                 manage(kids[i]);
         }
@@ -143,7 +174,8 @@ int main(void) {
         switch (ev.type) {
         case MapRequest: {
             XMapRequestEvent *e = &ev.xmaprequest;
-            if (e->window == bar) break;
+            if (e->window == bar || e->window == traywin || tray_has(e->window)) break;
+            if (tray_on && tray_is_icon_window(e->window)) { tray_add(e->window); break; }
             if (find_dock(e->window)) {
                 XMapWindow(dpy, e->window);
                 break;
@@ -155,9 +187,13 @@ int main(void) {
             } else manage(e->window);
             break;
         }
+        case MapNotify:
+            if (tray_has(ev.xmap.window)) { tray_handle_map(ev.xmap.window); break; }
+            break;
         case UnmapNotify: {
             XUnmapEvent *e = &ev.xunmap;
             if (e->window == bar) break;
+            if (tray_has(e->window)) { tray_handle_unmap(e->window); break; }
             if (find_dock(e->window)) {
                 unmanage_dock(e->window);
                 break;
@@ -166,8 +202,20 @@ int main(void) {
             if (c && e->send_event) unmanage(e->window);
             break;
         }
+        case SelectionClear: {
+            XSelectionClearEvent *e = &ev.xselectionclear;
+            tray_handle_selection_clear(e->selection);
+            break;
+        }
+        case ResizeRequest:
+            if (tray_has(ev.xresizerequest.window)) {
+                tray_handle_resize(ev.xresizerequest.window);
+                break;
+            }
+            break;
         case ClientMessage: {
             XClientMessageEvent *e = &ev.xclient;
+            if (tray_handle_opcode(e)) break;
             Client *c = find(e->window);
             if (e->message_type == A_NET_ACTIVE_WINDOW) {
                 if (c) {
@@ -196,7 +244,11 @@ int main(void) {
             break;
         }
         case DestroyNotify:
-            if (ev.xdestroywindow.window != bar) {
+            if (ev.xdestroywindow.window != bar && ev.xdestroywindow.window != traywin) {
+                if (tray_has(ev.xdestroywindow.window)) {
+                    tray_remove(ev.xdestroywindow.window);
+                    break;
+                }
                 if (find_dock(ev.xdestroywindow.window))
                     unmanage_dock(ev.xdestroywindow.window);
                 else
@@ -207,6 +259,11 @@ int main(void) {
             XConfigureRequestEvent *e = &ev.xconfigurerequest;
             if (e->window == bar) { /* keep bar fixed */
                 XMoveResizeWindow(dpy, bar, mons[0].x, mons[0].y, (unsigned)barw, (unsigned)S(BAR_H));
+                tray_layout_icons();
+                break;
+            }
+            if (e->window == traywin || tray_has(e->window)) {
+                tray_handle_resize(e->window);
                 break;
             }
             XWindowChanges wc = {
@@ -244,6 +301,10 @@ int main(void) {
         }
         case PropertyNotify: {
             XPropertyEvent *pe = &ev.xproperty;
+            if (tray_has(pe->window)) {
+                tray_handle_property(pe->window, pe->atom);
+                break;
+            }
             if (find_dock(pe->window)) {
                 if (pe->atom == A_NET_WM_STRUT || pe->atom == A_NET_WM_STRUT_PARTIAL)
                     update_dock_strut(pe->window);
@@ -286,12 +347,28 @@ int main(void) {
         case ButtonPress: {
             XButtonEvent *e = &ev.xbutton;
             if (e->window == bar) {
+                /* mute (trái/giữa/phải) chỉ khi bấm trúng cụm volume,
+                 * bấm trượt chỗ khác = no-op (trước đây phải/trái bấm đâu cũng mute) */
+                int on_vol = (vol_hit_x0 >= 0 && e->x >= vol_hit_x0 && e->x <= vol_hit_x1);
                 if (e->button == Button4) { k_vol_up(0); }        /* scroll up: louder */
                 else if (e->button == Button5) { k_vol_down(0); } /* scroll down: quieter */
-                else if (e->button == Button2 || e->button == Button3) { k_vol_mute(0); } /* mid/right: mute */
+                else if (e->button == Button2 || e->button == Button3) {
+                    if (on_vol) k_vol_mute(0); /* mid/right: mute */
+                }
                 else {
+                    /* left-click on the volume segment mutes; anywhere
+                     * else falls through to workspace view as before */
+                    if (on_vol) {
+                        k_vol_mute(0);
+                        break;
+                    }
                     int wsw = S(WS_W); if (wsw < 1) wsw = 1;
-                    int n = e->x / wsw;
+                    /* ws block starts at bar_pad_l: clicks left of it
+                     * are padding -> no-op (note: C truncates -1/40 to
+                     * 0, so an explicit bound check is required) */
+                    int pad = S(BAR_PAD_L);
+                    if (e->x < pad) break;
+                    int n = (e->x - pad) / wsw;
                     if (n >= 0 && n < NWS) view(n);
                 }
             } else if (find_dock(e->window) || find_dock(e->subwindow)) {

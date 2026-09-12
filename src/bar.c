@@ -12,6 +12,7 @@
 #include "ewmh.h"
 #include "state.h"
 #include "sysmon.h"
+#include "tray.h"
 
 /* Nerd Font icons (UTF-8 via \U escapes so the source stays ASCII).
  * Verified against JetBrainsMono Nerd Font with fontTools (all present).
@@ -21,6 +22,7 @@
 #define ICO_BAT  "\U000F0079"
 #define ICO_VOL  "\U000F057E"
 #define ICO_MUTE "\U000F0581"
+#define ICO_CLK  "\U0000F017"
 #define SEP_DOT  "\u00B7"
 #define ELLIPSIS "\u2026"
 
@@ -46,6 +48,19 @@ static int bar_textw(const char *s) {
     if (!barfont || !s || !*s) return s ? (int)strlen(s) * 6 : 0;
     return bar_runs(s, NULL, 0, 0);
 }
+/* Text fallbacks (Noto/DejaVu/Sans) open lazily on first missing glyph so
+ * startup only pays for the main font + 2 Nerd icon fonts. One-shot per
+ * bar_style(): after the attempt, misses just use barfont (tofu) instead
+ * of re-probing fontconfig on every draw. */
+static int text_fb_done = 0;
+static void ensure_text_fbs(void) {
+    static const char *text_cands[] = { "Noto Sans", "DejaVu Sans", "Sans", NULL };
+    text_fb_done = 1;
+    for (int i = 0; text_cands[i] && bar_nfb < 6; i++) {
+        XftFont *f = XftFontOpenName(dpy, screen, text_cands[i]);
+        if (f) barfont_fbs[bar_nfb++] = f;
+    }
+}
 /* font holding ucs4 u: main first, then first fallback that has it */
 static XftFont *bar_glyph_font(FcChar32 u) {
     /* fast path: ASCII almost always in the primary font */
@@ -53,6 +68,12 @@ static XftFont *bar_glyph_font(FcChar32 u) {
     if (barfont && XftCharExists(dpy, barfont, u)) return barfont;
     for (int i = 0; i < bar_nfb; i++)
         if (barfont_fbs[i] && XftCharExists(dpy, barfont_fbs[i], u)) return barfont_fbs[i];
+    if (!text_fb_done) {
+        int before = bar_nfb;
+        ensure_text_fbs();
+        for (int i = before; i < bar_nfb; i++)
+            if (barfont_fbs[i] && XftCharExists(dpy, barfont_fbs[i], u)) return barfont_fbs[i];
+    }
     return barfont;
 }
 static int utf8_decode(const unsigned char *s, size_t left, FcChar32 *out) {
@@ -129,6 +150,19 @@ static void utf8_pop(char *s) {
     while (j > 0 && (s[j] & 0xC0) == 0x80) j--;
     s[j] = 0;
 }
+/* module separator: BAR_GAP spaces around U+00B7, built fresh per draw so
+ * measure and draw always use the identical string (alignment stays exact).
+ * BAR_GAP = 2 reproduces the old hardcoded "  ·  ". */
+static void build_msep(char *out, size_t n) {
+    int g = BAR_GAP;
+    size_t k = 0;
+    if (g < 0) g = 0;
+    if (g > 8) g = 8;
+    for (int i = 0; i < g && k + 1 < n; i++) out[k++] = ' ';
+    if (k + 2 < n) { memcpy(out + k, SEP_DOT, 2); k += 2; }
+    for (int i = 0; i < g && k + 1 < n; i++) out[k++] = ' ';
+    out[k < n ? k : n - 1] = 0;
+}
 /* icon or ASCII fallback: first codepoint must exist in barfont/fallbacks,
  * else return ascii so machines without a Nerd Font never show tofu. */
 static const char *pick_icon(const char *icon_utf8, const char *ascii) {
@@ -204,15 +238,22 @@ void drawbar(void) {
     if (baseline < 4) baseline = 4;
     if (baseline > bar_h - 2) baseline = bar_h - 2;
 
+    /* vol hitbox is only valid for the frame being drawn: drop it first so
+     * a vanished backend can't leave a stale mute zone behind */
+    vol_hit_x0 = vol_hit_x1 = -1;
+
     /* clear background of pixmap */
     XSetForeground(dpy, bargc, BAR_BG);
     XFillRectangle(dpy, barpm, bargc, 0, 0, (unsigned)barw, (unsigned)bar_h);
 
     int n = count_tiled();
+    /* edge padding: left inset before the ws block, right margin after
+     * text/tray (tray.c uses the same pad_r so icons line up with text) */
+    int pad_l = S(BAR_PAD_L), pad_r = S(BAR_PAD_R);
     /* ---- workspaces: underline (default) or block (rollback) ---- */
     if (BAR_WS_STYLE == 1) {
         for (int i = 0; i < NWS; i++) {
-            int x = i * wsw;
+            int x = pad_l + i * wsw;
             char label[16];
             snprintf(label, sizeof(label), "%s%d", ws_occupied(i) ? "*" : " ", i + 1);
             if (i == curws) {
@@ -236,7 +277,7 @@ void drawbar(void) {
         if (uh < 2) uh = 2;
         int wpad = S(6);
         for (int i = 0; i < NWS; i++) {
-            int x = i * wsw;
+            int x = pad_l + i * wsw;
             char label[16];
             snprintf(label, sizeof(label), "%d", i + 1);
             int tw = bar_textw(label);
@@ -264,7 +305,7 @@ void drawbar(void) {
     }
     /* short vertical separator after the ws block */
     {
-        int sx = NWS * wsw + S(4);
+        int sx = pad_l + NWS * wsw + S(4);
         int y1 = 6, y2 = bar_h - 7;
         if (y2 > y1 && sx < barw) {
             XSetForeground(dpy, bargc, c_sep);
@@ -275,13 +316,13 @@ void drawbar(void) {
     /* ---- layout + counts + gaps ---- */
     char mode[64];
     snprintf(mode, sizeof(mode), "[%c] %dn%s", LAYOUT == L_TILE ? 'T' : 'M', n, gaps_on ? "" : " G-");
-    int mx = NWS * wsw + S(10);
+    int mx = pad_l + NWS * wsw + S(10);
     XSetForeground(dpy, bargc, c_mode);
     bar_text(&barcol.mode, mx, baseline, mode);
     int mode_end = mx + bar_textw(mode);
 
     /* ---- right segments: measure first (for title clipping), draw later ---- */
-    struct RSeg { const char *icon; char val[24]; int alert; int draw; };
+    struct RSeg { const char *icon; char val[24]; int alert; int draw; int isvol; };
     struct RSeg segs[4];
     int nsegs = 0;
     char clk[32] = "";
@@ -300,29 +341,29 @@ void drawbar(void) {
         }
         const char *vol = sys_vol();
         if (cached_cpu >= 0 && nsegs < 4) {
-            segs[nsegs].icon = pick_icon(ICO_CPU, "C");
+            segs[nsegs].icon = pick_icon(ico_cpu ? ico_cpu : ICO_CPU, "C");
             snprintf(segs[nsegs].val, sizeof(segs[nsegs].val), "%d%%", cached_cpu);
-            segs[nsegs].alert = 0; segs[nsegs].draw = 1; nsegs++;
+            segs[nsegs].alert = 0; segs[nsegs].draw = 1; segs[nsegs].isvol = 0; nsegs++;
         }
         if (cached_mem >= 0 && nsegs < 4) {
-            segs[nsegs].icon = pick_icon(ICO_MEM, "M");
+            segs[nsegs].icon = pick_icon(ico_mem ? ico_mem : ICO_MEM, "M");
             snprintf(segs[nsegs].val, sizeof(segs[nsegs].val), "%d%%", cached_mem);
-            segs[nsegs].alert = 0; segs[nsegs].draw = 1; nsegs++;
+            segs[nsegs].alert = 0; segs[nsegs].draw = 1; segs[nsegs].isvol = 0; nsegs++;
         }
         if (cached_bat >= 0 && nsegs < 4) {
             int low = cached_bat < 20 && cached_bat_chg[0] != '+';
-            segs[nsegs].icon = pick_icon(ICO_BAT, "B");
+            segs[nsegs].icon = pick_icon(ico_bat ? ico_bat : ICO_BAT, "B");
             snprintf(segs[nsegs].val, sizeof(segs[nsegs].val), "%d%s",
                 cached_bat, cached_bat_chg);
-            segs[nsegs].alert = low; segs[nsegs].draw = 1; nsegs++;
+            segs[nsegs].alert = low; segs[nsegs].draw = 1; segs[nsegs].isvol = 0; nsegs++;
         }
         if (vol && *vol) {
             int mute = !strcmp(vol, "MUTE");
             if (nsegs < 4) {
-                segs[nsegs].icon = mute ? pick_icon(ICO_MUTE, "V") : pick_icon(ICO_VOL, "V");
+                segs[nsegs].icon = mute ? pick_icon(ico_mute ? ico_mute : ICO_MUTE, "V") : pick_icon(ico_vol ? ico_vol : ICO_VOL, "V");
                 snprintf(segs[nsegs].val, sizeof(segs[nsegs].val), "%.15s",
                     mute ? "MUTE" : vol);
-                segs[nsegs].alert = mute; segs[nsegs].draw = 1; nsegs++;
+                segs[nsegs].alert = mute; segs[nsegs].draw = 1; segs[nsegs].isvol = 1; nsegs++;
             }
         } else if (nsegs == 4) {
             /* slots full and no room for vol: vol dropped, like before when
@@ -334,20 +375,29 @@ void drawbar(void) {
             else snprintf(clk, sizeof(clk), "--:--");
         }
     }
+    int trayw = tray_width_px();
+    char msep[24];
+    build_msep(msep, sizeof(msep));
     int space_w = bar_textw(" ");
-    int mid_w = bar_textw("  " SEP_DOT "  ");
+    int mid_w = bar_textw(msep);
+    /* clock icon: default Nerd clock (verified in JetBrainsMono Nerd Font);
+     * empty (no Nerd Font, or `ico_clk =`) -> no icon, exactly the old look */
+    const char *clk_icon = pick_icon(ico_clk ? ico_clk : ICO_CLK, "");
+    int clk_icon_w = bar_textw(clk_icon);
     int right_w = bar_textw(clk);
+    if (clk_icon_w > 0) right_w += clk_icon_w + space_w; /* icon + gap */
     for (int i = 0; i < nsegs; i++)
         right_w += bar_textw(segs[i].icon) + space_w + bar_textw(segs[i].val);
     if (nsegs > 0) right_w += mid_w; /* gap before clock */
     if (nsegs > 1) right_w += (nsegs - 1) * mid_w;
+    if (trayw > 0) right_w += mid_w; /* separator between clock and tray */
 
     /* ---- focused title (UTF-8), clipped to the free space ---- */
     if (sel) {
         char t[128];
         if (get_title(sel->win, t, sizeof(t) - 16) > 0) {
             int tx = mode_end + S(12);
-            int avail = (barw - right_w - S(8)) - tx - S(8);
+            int avail = (barw - right_w - trayw - pad_r) - tx - S(8);
             if (avail > 0) {
                 XSetForeground(dpy, bargc, c_title);
                 if (bar_textw(t) <= avail) {
@@ -370,19 +420,32 @@ void drawbar(void) {
 
     /* ---- draw right segments left-to-right ---- */
     {
-        int x = barw - right_w - S(8);
+        int x = barw - right_w - trayw - pad_r;
         for (int i = 0; i < nsegs; i++) {
             XftColor *ic = segs[i].alert ? &barcol.urgent : &barcol.ws_act;
             XftColor *vc = segs[i].alert ? &barcol.urgent : &barcol.sys;
+            int seg_x0 = x;
             bar_text(ic, x, baseline, segs[i].icon);
             x += bar_textw(segs[i].icon) + space_w;
             bar_text(vc, x, baseline, segs[i].val);
             x += bar_textw(segs[i].val);
-            bar_text(&barcol.sep, x, baseline, "  " SEP_DOT "  ");
+            /* mute zone: icon + value only, not the trailing separator */
+            if (segs[i].isvol) { vol_hit_x0 = seg_x0; vol_hit_x1 = x; }
+            bar_text(&barcol.sep, x, baseline, msep);
             x += mid_w;
         }
+        if (clk_icon_w > 0) {
+            bar_text(&barcol.ws_act, x, baseline, clk_icon);
+            x += clk_icon_w + space_w;
+        }
         bar_text(&barcol.sys, x, baseline, clk);
+        if (trayw > 0) {
+            x += bar_textw(clk);
+            bar_text(&barcol.sep, x, baseline, msep);
+        }
     }
+
+    tray_layout_icons();
 
     /* bottom border: 1px, sits right below the active underline */
     XSetForeground(dpy, bargc, c_sep);
@@ -428,6 +491,7 @@ void bar_style(void) {
     for (int i = 0; i < bar_nfb; i++)
         if (barfont_fbs[i]) XftFontClose(dpy, barfont_fbs[i]);
     bar_nfb = 0;
+    text_fb_done = 0; /* lazy text fallbacks reopen on next glyph miss */
     if (barcol_ok) {
         XftColorFree(dpy, vis, cmap, &barcol.bg);
         XftColorFree(dpy, vis, cmap, &barcol.ws_act);
@@ -455,8 +519,12 @@ void bar_style(void) {
     }
     for (int i = 0; fallbacks[i] && !barfont; i++)
         barfont = XftFontOpenName(dpy, screen, fallbacks[i]);
-    /* fallback chain: Nerd Fonts (same point size as the main font, scaled)
-     * first so icons resolve, then text fallbacks for VN/symbols. */
+    /* Eager fallback chain: Nerd Fonts only (same point size as the main
+     * font, scaled) so icons resolve on the very first draw. Text fallbacks
+     * (Noto/DejaVu/Sans for VN/symbols) open lazily via ensure_text_fbs()
+     * on the first glyph miss — see bar_glyph_font(). NOTE: a custom
+     * ico_* glyph living only in a text font falls back to ASCII until the
+     * lazy load triggers; the 1s tick redraw then picks the real icon. */
     {
         double base_sz = 10.0;
         if (font_name) {
@@ -471,7 +539,7 @@ void bar_style(void) {
             base_sz * (double)ui_scale);
         snprintf(nerd2, sizeof(nerd2), "Symbols Nerd Font Mono:size=%.1f",
             base_sz * (double)ui_scale);
-        const char *fb_cands[] = { nerd1, nerd2, "Noto Sans", "DejaVu Sans", "Sans", NULL };
+        const char *fb_cands[] = { nerd1, nerd2, NULL };
         for (int i = 0; fb_cands[i] && bar_nfb < 6; i++) {
             XftFont *f = XftFontOpenName(dpy, screen, fb_cands[i]);
             if (f) barfont_fbs[bar_nfb++] = f;

@@ -18,5 +18,7 @@ void    kill_sel(void);
 void    kill_client(Client *c);
 void    spawn(char **argv);
 void    toggle_floating_sel(void);
+void    zoom(int n);
+void    ws_toggle(int n);
 void    keep_docks_on_top(void);
 void    quit(void);

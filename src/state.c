@@ -16,7 +16,11 @@ unsigned long BAR_DIM = 0x6c7086;
 unsigned long C_WS_ACT, C_WS_ACT_TX, C_WS_OCC, C_WS_EMP, C_MODE, C_TITLE, C_SYS, C_URGENT, C_SEP;
 int h_ws_act, h_ws_act_tx, h_ws_occ, h_ws_emp, h_mode, h_title, h_sys, h_urgent, h_sep;
 int BAR_WS_STYLE = 0;
+int vol_hit_x0 = -1, vol_hit_x1 = -1;
 int BAR_H = 24;
+int BAR_GAP = 2;
+int BAR_PAD_L = 0, BAR_PAD_R = 8;
+char *ico_cpu = NULL, *ico_mem = NULL, *ico_bat = NULL, *ico_vol = NULL, *ico_mute = NULL, *ico_clk = NULL;
 int WS_W = 40;
 float ui_scale = 1.0f;
 char *font_name = NULL;
@@ -48,6 +52,7 @@ Client *clients = NULL;
 Client *sel = NULL;
 Client **ws_sel = NULL;
 int curws = 0;
+int prevws = 0;
 Layout *ws_layout = NULL;
 float *ws_mfact = NULL;
 int *ws_nmaster = NULL;
@@ -60,8 +65,14 @@ int rr_event_base = 0, rr_error_base = 0, rr_present = 0;
 StrutMargin mon_struts[MAXMONS];
 
 Dock *docks = NULL;
+TrayIcon *trayicons = NULL;
+Window traywin = None;
+int tray_on = 1;
+int tray_active = 0;
 int barw = 0;
 
+Atom A_TRAY_SEL = None, A_TRAY_OPCODE = None, A_XEMBED = None, A_XEMBED_INFO = None,
+    A_TRAY_ORIENT = None, A_MANAGER = None;
 Atom A_NET_SUPPORTED, A_NET_CLIENT_LIST, A_NET_ACTIVE_WINDOW,
     A_NET_WM_STATE, A_NET_WM_STATE_FS, A_NET_WM_STATE_HIDDEN,
     A_NET_WM_STATE_DA, A_NET_WM_WINDOW_TYPE,

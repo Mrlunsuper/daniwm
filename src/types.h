@@ -34,4 +34,11 @@ struct Dock {
 
 typedef struct { Window win; int mode; int px, py, x, y, w, h, promoted, tiled0, mon0; float mfact0, cfact0; Window nb_up, nb_dn; float nb_up0, nb_dn0; } Drag;
 
+typedef struct TrayIcon TrayIcon;
+struct TrayIcon {
+    Window win;
+    int mapped; /* _XEMBED_INFO MAPPED flag */
+    TrayIcon *next;
+};
+
 typedef struct { KeySym keysym; unsigned int mod; void (*fn)(int); int arg; } Key;

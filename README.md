@@ -24,6 +24,8 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 | Key | Action |
 |---|---|
 | Super+j / k | focus next / prev |
+| Super+z | zoom: focused window → master (master → swap with 2nd) |
+| Super+Tab | toggle previous workspace |
 | Super+t / m | tiling / monocle |
 | Super+Space | toggle tile/monocle |
 | Super+Enter / p | xterm / dmenu_run |
@@ -46,7 +48,8 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 | Super+Shift+e | quit |
 
 Bar click on `1..5` switches workspace. `*` = occupied.
-Scroll on the bar = volume up/down, middle/right-click = mute toggle
+Scroll on the bar = volume up/down, left-click on the volume module = mute toggle
+(middle/right-click anywhere on the bar also mutes)
 (backend auto: `amixer` → `wpctl` → `pactl`; laptop `XF86Audio*` keys work out of the box).
 Bar text is UTF-8 via Xft with per-glyph fallback (Vietnamese, symbols).
 Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL HH:MM`, `·` separators; falls back to `C/M/B/V` letters without a Nerd Font; low battery/MUTE in the urgent color; battery/volume hidden if unavailable, volume cached 2s)
@@ -68,12 +71,22 @@ Scalars: `mod` (super|alt|ctrl), `border`, `border_focus/border_normal`,
 `scale` (0.5–3.0, default 1.0 — HiDPI multiplier for WM chrome only:
 `bar_h`/`ws_w`/`border`/`gap_outer`/`gap_inner`/float-step/drag-deadzone
 plus bar font `size=`; fractional ok, e.g. `scale = 1.5`; reload applies live),
-`bar_on/gaps_on` (1/true/yes/on), `gap_outer/gap_inner`, `mfact` (0.1–0.9),
+`bar_on/gaps_on` (1/true/yes/on), `tray` (system tray on/off, default on),
+`gap_outer/gap_inner`, `mfact` (0.1–0.9),
 `nmaster`, `workspaces` (1–10, default 5),
 `font` (fontconfig pattern, e.g. `monospace:size=11`, `JetBrainsMono Nerd Font Mono:size=10`;
 default `monospace:size=10`, fallbacks built in: Nerd Fonts for icons, then
 `Noto Sans`/`DejaVu Sans`/`Sans`; without a Nerd Font the sysmon falls back to `C/M/B/V` letters),
 `bar_ws_style` (`underline` default | `block` = old full-height fill),
+`bar_gap` (0–8, default 2 — spaces around the `·` between right-side modules),
+`bar_pad_l` (0–32, default 0 — left inset before the workspace block;
+workspace clicks are remapped so the padding is a no-op),
+`bar_pad_r` (0–32, default 8 — right margin after clock/tray; tray icons align to it),
+`ico_cpu/ico_mem/ico_bat/ico_vol/ico_mute/ico_clk` (custom icon glyph, e.g. `ico_cpu = C`
+for plain letters, empty = no icon; defaults = Nerd Font icons with automatic ASCII
+fallback — `ico_clk` falls back to nothing, preserving the old clock look),
+vertical padding: text/icons are always vertically centered, so top/bottom air is just
+`bar_h` (taller bar = more air; tray icons stay `bar_h-6`, capped at 24px),
 `term/menu/scratch` (commands split with `wordexp`, quotes work).
 
 Bar colors: base `bar_bg/bar_fg/bar_acc/bar_dim` cover everything; optional
@@ -83,6 +96,10 @@ per-component overrides fall back to those when unset:
 `bar_sep` (separators + bottom border), `bar_mode` (`[T] 3n`),
 `bar_title` (focused window title, clipped with `…`), `bar_sys` (sysmon values; icons use the accent color).
 
+System tray: XEmbed (`_NET_SYSTEM_TRAY_Sn`) on the bar's right edge — `nm-applet --indicator`/
+`volumeicon`/`cbatticon` dock automatically; `tray = 0` disables (reload applies live).
+Classic XEmbed only — StatusNotifier/AppIndicator apps need `snixembed` bridge.
+
 ```ini
 workspaces = 3
 rule = Gimp:*:float:*
@@ -91,7 +108,7 @@ bind = mod+3:ws3
 
 `rule = class:title:float:ws` (`*` = any, float = `float`|`tile`, ws 1-based, ≤ `workspaces`).
 `bind = mod+key:action` (modifiers `mod/super/alt/ctrl/shift` + X keysym;
-actions: `focus_next/prev`, `kill`, `tile/monocle/toggle`, `spawn_term/menu`,
+actions: `focus_next/prev`, `zoom`, `ws_toggle`, `kill`, `tile/monocle/toggle`, `spawn_term/menu`,
 `mfact_dec/inc` (0.025 steps), `nmaster_dec/inc`, `gap/gap_dec/gap_inc`, `bar`,
 `move_left/right/up/down` (float 20px), `resize_w_dec/inc`, `resize_h_dec/inc`,
 `vol_up/vol_down/vol_mute` (`amixer set Master 5%+/5%-/toggle`),

@@ -1,5 +1,6 @@
 daniwm
 test/dock-helper
+test/tray-icon-helper
 test/shots/
 src/*.o
 src/*.d

@@ -12,7 +12,7 @@ scratch = alacritty --class scratchpad   # giữ chữ "scratchpad" để toggle
 mod = super                          # super | alt | ctrl
 workspaces = 7                       # 1..10 — đồng bộ với bspwm (I-VII)
 mfact = 0.55                         # master chiếm 0.1..0.9 chiều ngang
-nmaster = 1                          # số cửa sổ master
+nmaster = 2                          # số cửa sổ master
 border = 2
 border_focus = c4a7e7                # Rosé Pine iris (focused)
 border_normal = 26233a               # Rosé Pine surface (unfocused)
@@ -20,7 +20,8 @@ gaps_on = 1
 gap_outer = 10
 gap_inner = 8
 bar_on = 1
-bar_h = 24
+tray = 1                          # system tray XEmbed ở mép phải bar (1/0)
+bar_h = 48
 # màu bar: hex 6 số, có thể có #. Áp ngay khi reload.
 # 4 màu nền tảng Rosé Pine Main (đồng bộ bspwm/polybar):
 bar_bg = 191724
@@ -35,6 +36,13 @@ bar_ws_occ         = e0def4   # chữ workspace có cửa sổ
 bar_ws_empty       = 6e6a86   # chữ workspace trống (muted)
 bar_urgent         = eb6f92   # ws urgent + pin yếu + MUTE (rose)
 bar_sep            = 6e6a86   # separator + bottom border (default = bar_dim)
+bar_gap            = 2        # spaces quanh dấu · giữa các module phải (0..8)
+# icon cụm phải: ký tự Nerd Font tùy ý, hoặc chữ thường để khỏi lệ thuộc font.
+# (mặc định là icon Nerd Font, tự rớt về C/M/B/V nếu máy thiếu font)
+ico_cpu = CPU
+ico_vol = VOL
+ico_mem = MEM
+
 bar_mode           = e0def4   # text [T] 3n
 bar_title          = e0def4   # tiêu đề cửa sổ
 bar_sys            = 9ccfd8   # giá trị sysmon (icon dùng bar_acc)
@@ -47,14 +55,16 @@ bar_sys            = 9ccfd8   # giá trị sysmon (icon dùng bar_acc)
 rule = scratchpad:*:float:*
 rule = Gimp:*:float:*
 rule = mpv:*:float:*
-rule = Firefox:*:tile:2               # tự mở vào ws2 (bỏ nếu không dùng)
+rule = org.mozilla.firefox:*:tile:2               # tự mở vào ws2 (bỏ nếu không dùng)
 rule = zoom:*:float:*
 
 # ---------- bảng phím ----------
 # focus & cửa sổ
 bind = mod+j:focus_next
 bind = mod+k:focus_prev
-bind = mod+q:kill
+bind = mod+z:zoom
+bind = mod+Tab:ws_toggle
+bind = mod+shift+q:kill
 bind = mod+shift+space:float          # tiled <-> floating
 bind = mod+f:fullscreen
 bind = mod+space:toggle               # tile <-> monocle
@@ -65,7 +75,7 @@ bind = mod+m:monocle
 bind = mod+Return:spawn_term
 bind = mod+d:spawn_menu
 bind = mod+s:scratch                  # hiện/ẩn scratchpad
-
+bind = mod+Print:exec flameshot gui
 # master / layout / gaps / bar
 bind = mod+h:mfact_dec
 bind = mod+l:mfact_inc
@@ -95,3 +105,5 @@ bind = mod+Shift+7:mv7
 # hệ thống
 bind = mod+Shift+r:reload_config
 bind = mod+Shift+e:quit               # thoát WM (kết thúc session X)
+rule = flameshot:*:float:*
+rule = telegram:*:float:*

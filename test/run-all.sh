@@ -4,7 +4,7 @@
 set -u
 TDIR=$(dirname "$0")
 fail=0
-for t in verify test-config test-kill test-mouse test-workspaces test-strut test-randr; do
+for t in verify test-config test-kill test-mouse test-workspaces test-strut test-randr test-tray; do
     echo "=== $t ==="
     out=$(mktemp)
     "$TDIR/$t.sh" >"$out" 2>&1

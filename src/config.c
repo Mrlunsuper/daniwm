@@ -15,6 +15,7 @@
 #include "keys.h"
 #include "layout.h"
 #include "mouse.h"
+#include "tray.h"
 
 static char *xstrdup(const char *s) {
     if (!s) return NULL;
@@ -104,6 +105,15 @@ void config_defaults(void) {
     h_ws_act = h_ws_act_tx = h_ws_occ = h_ws_emp = h_mode = h_title = h_sys = 0;
     C_URGENT = 0xe64553; C_SEP = 0; h_urgent = h_sep = 0; BAR_WS_STYLE = 0;
     BAR_H = 24; WS_W = 40; ui_scale = 1.0f;
+    BAR_GAP = 2;
+    BAR_PAD_L = 0; BAR_PAD_R = 8;
+    free(ico_cpu); ico_cpu = xstrdup("\U000F06E0");
+    free(ico_mem); ico_mem = xstrdup("\U000F035B");
+    free(ico_bat); ico_bat = xstrdup("\U000F0079");
+    free(ico_vol); ico_vol = xstrdup("\U000F057E");
+    free(ico_mute); ico_mute = xstrdup("\U000F0581");
+    free(ico_clk); ico_clk = xstrdup("\U0000F017");
+    tray_on = 1;
     free(font_name);
     font_name = xstrdup("monospace:size=10");
     bar_on = 1; gaps_on = 1; gap_outer = 10; gap_inner = 8;
@@ -165,6 +175,33 @@ static void parse_scalar(char *key, char *val) {
         if (!strcasecmp(val, "underline")) BAR_WS_STYLE = 0;
         else if (!strcasecmp(val, "block")) BAR_WS_STYLE = 1;
         else fprintf(stderr, "daniwm: bad bar_ws_style '%s' (want underline|block)\n", val);
+    } else if (!strcmp(key, "bar_gap")) {
+        v = strtol(val, NULL, 10); if (v >= 0 && v <= 8) BAR_GAP = (int)v;
+        else fprintf(stderr, "daniwm: bad bar_gap '%s' (want 0..8)\n", val);
+    } else if (!strcmp(key, "ico_cpu")) {
+        char *dup = xstrdup(val);
+        if (dup) { free(ico_cpu); ico_cpu = dup; }
+    } else if (!strcmp(key, "ico_mem")) {
+        char *dup = xstrdup(val);
+        if (dup) { free(ico_mem); ico_mem = dup; }
+    } else if (!strcmp(key, "ico_bat")) {
+        char *dup = xstrdup(val);
+        if (dup) { free(ico_bat); ico_bat = dup; }
+    } else if (!strcmp(key, "ico_vol")) {
+        char *dup = xstrdup(val);
+        if (dup) { free(ico_vol); ico_vol = dup; }
+    } else if (!strcmp(key, "ico_mute")) {
+        char *dup = xstrdup(val);
+        if (dup) { free(ico_mute); ico_mute = dup; }
+    } else if (!strcmp(key, "ico_clk")) {
+        char *dup = xstrdup(val);
+        if (dup) { free(ico_clk); ico_clk = dup; }
+    } else if (!strcmp(key, "bar_pad_l")) {
+        v = strtol(val, NULL, 10); if (v >= 0 && v <= 32) BAR_PAD_L = (int)v;
+        else fprintf(stderr, "daniwm: bad bar_pad_l '%s' (want 0..32)\n", val);
+    } else if (!strcmp(key, "bar_pad_r")) {
+        v = strtol(val, NULL, 10); if (v >= 0 && v <= 32) BAR_PAD_R = (int)v;
+        else fprintf(stderr, "daniwm: bad bar_pad_r '%s' (want 0..32)\n", val);
     } else if (!strcmp(key, "bar_h")) {
         v = strtol(val, NULL, 10); if (v >= 8 && v <= 64) BAR_H = (int)v;
     } else if (!strcmp(key, "scale")) {
@@ -175,6 +212,8 @@ static void parse_scalar(char *key, char *val) {
         if (dup) { free(font_name); font_name = dup; }
     } else if (!strcmp(key, "ws_w")) {
         v = strtol(val, NULL, 10); if (v >= 16 && v <= 128) WS_W = (int)v;
+    } else if (!strcmp(key, "tray")) {
+        if (parse_bool(val, &b)) tray_on = b;
     } else if (!strcmp(key, "bar_on")) {
         if (parse_bool(val, &b)) bar_on = b;
     } else if (!strcmp(key, "gaps_on")) {
@@ -237,8 +276,8 @@ static void parse_bind(const char *val, int lineno, const char *path) {
         fprintf(stderr, "daniwm: %s:%d: bad bind '%s' (want mod+key:action)\n", path, lineno, val);
         return;
     }
-    /* action name (after last ':') */
-    char aname_buf[64];
+    /* action name (after last ':') — 512 để chứa `exec ...` dài */
+    char aname_buf[512];
     size_t alen = strlen(sep + 1);
     if (alen >= sizeof(aname_buf)) {
         fprintf(stderr, "daniwm: %s:%d: action too long in '%s'\n", path, lineno, val);
@@ -248,6 +287,25 @@ static void parse_bind(const char *val, int lineno, const char *path) {
     char *aname = trim(aname_buf);
     void (*fn)(int) = NULL;
     int arg = 0;
+    /* generic command: bind = mod+Print:exec flameshot gui */
+    if ((!strncasecmp(aname, "exec", 4) && (aname[4] == ' ' || aname[4] == ':' || aname[4] == '=')) ||
+        (!strncasecmp(aname, "spawn", 5) && (aname[5] == ' ' || aname[5] == ':' || aname[5] == '='))) {
+        char *cmd = trim(aname + (aname[0] == 'e' || aname[0] == 'E' ? 5 : 6));
+        if (!*cmd) {
+            fprintf(stderr, "daniwm: %s:%d: empty exec command\n", path, lineno);
+            return;
+        }
+        char **argv = split_argv(cmd);
+        if (!argv || !argv[0]) {
+            fprintf(stderr, "daniwm: %s:%d: bad exec '%s'\n", path, lineno, cmd);
+            free_argv(argv);
+            return;
+        }
+        int idx = push_exec_cmd(argv);
+        if (idx < 0) { free_argv(argv); return; }
+        fn = k_exec; arg = idx;
+        goto have_action;
+    }
     for (unsigned i = 0; i < nactions; i++)
         if (!strcmp(actions[i].name, aname)) { fn = actions[i].fn; break; }
     if (!fn && (!strncmp(aname, "ws", 2) || !strncmp(aname, "mv", 2))) {
@@ -259,6 +317,7 @@ static void parse_bind(const char *val, int lineno, const char *path) {
         fprintf(stderr, "daniwm: %s:%d: unknown action '%s'\n", path, lineno, aname);
         return;
     }
+have_action:
     /* combo (before last ':'): split on '+', collect tokens in one pass */
     size_t clen = (size_t)(sep - val);
     char combo[256];
@@ -392,7 +451,10 @@ void load_config(const char *path) {
             strcmp(k, "bar_ws_active_text") && strcmp(k, "bar_ws_occ") && strcmp(k, "bar_ws_empty") &&
             strcmp(k, "bar_mode") && strcmp(k, "bar_title") && strcmp(k, "bar_sys") &&
             strcmp(k, "bar_urgent") && strcmp(k, "bar_sep") && strcmp(k, "bar_ws_style") &&
-            strcmp(k, "bar_h") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "bar_on") && strcmp(k, "gaps_on") &&
+            strcmp(k, "bar_h") && strcmp(k, "bar_gap") && strcmp(k, "ico_cpu") &&
+            strcmp(k, "ico_mem") && strcmp(k, "ico_bat") && strcmp(k, "ico_vol") &&
+            strcmp(k, "ico_mute") && strcmp(k, "ico_clk") && strcmp(k, "bar_pad_l") &&
+            strcmp(k, "bar_pad_r") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "tray") && strcmp(k, "bar_on") && strcmp(k, "gaps_on") &&
             strcmp(k, "gap_outer") && strcmp(k, "gap_inner") && strcmp(k, "mfact") &&
             strcmp(k, "nmaster") && strcmp(k, "workspaces") && strcmp(k, "term") &&
             strcmp(k, "menu") && strcmp(k, "scratch")) {
@@ -433,6 +495,7 @@ void finalize_nws(void) {
     }
     nws_alloc = NWS;
     if (curws >= NWS) curws = 0;
+    if (prevws >= NWS || prevws == curws) prevws = curws;
     for (i = 0; i < NWS; i++)
         if (ws_sel[i] && ws_sel[i]->ws != i) ws_sel[i] = NULL;
     update_struts();
@@ -454,6 +517,7 @@ void k_reload(int) {
     if (bar) XMoveResizeWindow(dpy, bar, mons[0].x, mons[0].y, (unsigned)barw, (unsigned)S(BAR_H));
     if (!bar_on && bar) XUnmapWindow(dpy, bar);
     if (bar_on && bar) XMapWindow(dpy, bar);
+    tray_enable(tray_on);
     bar_style();
     grabkeys();
     for (Client *c = clients; c; c = c->next) grabbuttons(c);

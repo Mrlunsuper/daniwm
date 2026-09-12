@@ -17,6 +17,7 @@ extern Client *clients;
 extern Client *sel;
 extern Client **ws_sel;
 extern int curws;
+extern int prevws;
 extern int nws_alloc;
 
 /* ---- per-workspace layout arrays ---- */
@@ -33,6 +34,10 @@ extern int rr_event_base, rr_error_base, rr_present;
 
 /* ---- docks / bar ---- */
 extern Dock *docks;
+extern TrayIcon *trayicons;
+extern Window traywin;
+extern int tray_on;
+extern int tray_active;
 extern int barw;
 extern Pixmap barpm;
 extern GC bargc;
@@ -65,7 +70,13 @@ extern unsigned long BAR_DIM;
 extern unsigned long C_WS_ACT, C_WS_ACT_TX, C_WS_OCC, C_WS_EMP, C_MODE, C_TITLE, C_SYS, C_URGENT, C_SEP;
 extern int h_ws_act, h_ws_act_tx, h_ws_occ, h_ws_emp, h_mode, h_title, h_sys, h_urgent, h_sep;
 extern int BAR_WS_STYLE;
+/* vol segment hitbox (bar-relative x), refreshed every drawbar();
+ * -1 when volume is unavailable so clicks fall through to ws view */
+extern int vol_hit_x0, vol_hit_x1;
 extern int BAR_H;
+extern int BAR_GAP;
+extern int BAR_PAD_L, BAR_PAD_R;
+extern char *ico_cpu, *ico_mem, *ico_bat, *ico_vol, *ico_mute, *ico_clk;
 extern int WS_W;
 extern float ui_scale;
 extern char *font_name;
@@ -78,6 +89,8 @@ extern int def_nmaster;
 extern int NWS;
 
 /* ---- EWMH atoms ---- */
+extern Atom A_TRAY_SEL, A_TRAY_OPCODE, A_XEMBED, A_XEMBED_INFO,
+    A_TRAY_ORIENT, A_MANAGER;
 extern Atom A_NET_SUPPORTED, A_NET_CLIENT_LIST, A_NET_ACTIVE_WINDOW,
     A_NET_WM_STATE, A_NET_WM_STATE_FS, A_NET_WM_STATE_HIDDEN,
     A_NET_WM_STATE_DA, A_NET_WM_WINDOW_TYPE,

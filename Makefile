@@ -14,7 +14,7 @@ LDFLAGS += $(shell pkg-config --libs xft 2>/dev/null)
 LDFLAGS += -pie -Wl,-z,relro,-z,now
 
 SRCS = src/state.c src/monitor.c src/sysmon.c src/bar.c src/ewmh.c \
-       src/layout.c src/client.c src/mouse.c src/keys.c src/config.c src/main.c
+       src/layout.c src/client.c src/mouse.c src/keys.c src/config.c src/tray.c src/main.c
 OBJS = $(SRCS:.c=.o)
 
 all: daniwm
@@ -30,7 +30,10 @@ daniwm: $(OBJS)
 test/dock-helper: test/dock-helper.c
 	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11
 
-check: daniwm test/dock-helper
+test/tray-icon-helper: test/tray-icon-helper.c
+	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11
+
+check: daniwm test/dock-helper test/tray-icon-helper
 	./test/run-all.sh
 
 install: daniwm
@@ -42,6 +45,6 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/daniwm $(DESTDIR)$(SESSIONDIR)/daniwm.desktop
 
 clean:
-	rm -f daniwm test/dock-helper src/*.o src/*.d
+	rm -f daniwm test/dock-helper test/tray-icon-helper src/*.o src/*.d
 
 .PHONY: all clean check install uninstall
