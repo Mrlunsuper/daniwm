@@ -155,6 +155,7 @@ const KeyAction actions[] = {
     { "vol_up", k_vol_up }, { "vol_down", k_vol_down }, { "vol_mute", k_vol_mute },
     { "reload_config", k_reload },
 };
+const unsigned nactions = sizeof(actions) / sizeof(actions[0]);
 
 void push_key_fn(KeySym ks, unsigned int mod, void (*fn)(int), int arg) {
     if (nkeys == capkeys) {
