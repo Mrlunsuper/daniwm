@@ -17,6 +17,14 @@ all: daniwm
 daniwm: daniwm.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
+# TEMP (bỏ ở Phase 13): compile mọi src/*.c, không link, để verify từng phase.
+SRC_ALL := $(wildcard src/*.c)
+src-check: $(SRC_ALL:.c=.o)
+	@echo "src-check: OK ($(words $(SRC_ALL)) files)"
+
+src/%.o: src/%.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 test/dock-helper: test/dock-helper.c
 	$(CC) $(CFLAGS) -o $@ $< -lX11
 
