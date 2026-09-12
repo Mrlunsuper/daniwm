@@ -20,7 +20,7 @@ struct Client {
 
 typedef enum { L_TILE = 0, L_MONOCLE = 1 } Layout;
 
-typedef struct { XftColor bg, ws_act, ws_acttx, ws_occ, ws_emp, mode, title, sys; } BarColors;
+typedef struct { XftColor bg, ws_act, ws_acttx, ws_occ, ws_emp, mode, title, sys, urgent, sep; } BarColors;
 
 typedef struct { int left, right, top, bottom; } StrutMargin;
 

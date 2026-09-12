@@ -28,18 +28,19 @@ bar_fg = e0def4
 bar_acc = c4a7e7
 bar_dim = 6e6a86
 # màu riêng từng component Rosé Pine:
-bar_ws_active      = c4a7e7   # nền ô workspace đang xem (iris)
-bar_ws_active_text = 191724   # chữ trên ô đang xem
+bar_ws_style       = underline  # underline (default) | block (khối fill kiểu cũ)
+bar_ws_active      = c4a7e7   # underline/block của workspace đang xem (iris)
+bar_ws_active_text = e0def4   # chữ ws đang xem (underline mode; block mode nên để nền tối)
 bar_ws_occ         = e0def4   # chữ workspace có cửa sổ
 bar_ws_empty       = 6e6a86   # chữ workspace trống (muted)
+bar_urgent         = eb6f92   # ws urgent + pin yếu + MUTE (rose)
+bar_sep            = 6e6a86   # separator + bottom border (default = bar_dim)
 bar_mode           = e0def4   # text [T] 3n
 bar_title          = e0def4   # tiêu đề cửa sổ
-bar_sys            = 6e6a86   # C/M/B/V + clock
-# font bar: tên X core font. Xem danh sách: xlsfonts | grep -i misc (chạy trong X)
-# Mặc định "fixed". Cỡ chữ phải đi kèm bar_h phù hợp.
-font = fixed                       # X core font; thử 10x20 hoặc xlsfonts nếu muốn to hơn
-#font = 10x20
-#font = -misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso10646-1
+bar_sys            = 9ccfd8   # giá trị sysmon (icon dùng bar_acc)
+# font bar: fontconfig pattern. Muốn icon Nerd Font ở cụm phải:
+#   font = JetBrainsMono Nerd Font Mono:size=10
+# Không có Nerd Font vẫn đẹp (tự rớt về chữ C/M/B/V).
 
 # ---------- rules ----------
 # class:title:float:ws   (* = bất kỳ; float|tile; ws 1-based, ≤ workspaces)

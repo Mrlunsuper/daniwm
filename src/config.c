@@ -102,6 +102,7 @@ void config_defaults(void) {
     BAR_BG = 0x1e1e2e; BAR_FG = 0xcdd6f4; BAR_ACC = 0x7aa2f7; BAR_DIM = 0x6c7086;
     C_WS_ACT = C_WS_ACT_TX = C_WS_OCC = C_WS_EMP = C_MODE = C_TITLE = C_SYS = 0;
     h_ws_act = h_ws_act_tx = h_ws_occ = h_ws_emp = h_mode = h_title = h_sys = 0;
+    C_URGENT = 0xe64553; C_SEP = 0; h_urgent = h_sep = 0; BAR_WS_STYLE = 0;
     BAR_H = 24; WS_W = 40; ui_scale = 1.0f;
     free(font_name);
     font_name = xstrdup("monospace:size=10");
@@ -156,6 +157,14 @@ static void parse_scalar(char *key, char *val) {
         if (parse_hex(val, &h)) { C_TITLE = h; h_title = 1; }
     } else if (!strcmp(key, "bar_sys")) {
         if (parse_hex(val, &h)) { C_SYS = h; h_sys = 1; }
+    } else if (!strcmp(key, "bar_urgent")) {
+        if (parse_hex(val, &h)) { C_URGENT = h; h_urgent = 1; }
+    } else if (!strcmp(key, "bar_sep")) {
+        if (parse_hex(val, &h)) { C_SEP = h; h_sep = 1; }
+    } else if (!strcmp(key, "bar_ws_style")) {
+        if (!strcasecmp(val, "underline")) BAR_WS_STYLE = 0;
+        else if (!strcasecmp(val, "block")) BAR_WS_STYLE = 1;
+        else fprintf(stderr, "daniwm: bad bar_ws_style '%s' (want underline|block)\n", val);
     } else if (!strcmp(key, "bar_h")) {
         v = strtol(val, NULL, 10); if (v >= 8 && v <= 64) BAR_H = (int)v;
     } else if (!strcmp(key, "scale")) {
@@ -382,6 +391,7 @@ void load_config(const char *path) {
             strcmp(k, "bar_acc") && strcmp(k, "bar_dim") && strcmp(k, "bar_ws_active") &&
             strcmp(k, "bar_ws_active_text") && strcmp(k, "bar_ws_occ") && strcmp(k, "bar_ws_empty") &&
             strcmp(k, "bar_mode") && strcmp(k, "bar_title") && strcmp(k, "bar_sys") &&
+            strcmp(k, "bar_urgent") && strcmp(k, "bar_sep") && strcmp(k, "bar_ws_style") &&
             strcmp(k, "bar_h") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "bar_on") && strcmp(k, "gaps_on") &&
             strcmp(k, "gap_outer") && strcmp(k, "gap_inner") && strcmp(k, "mfact") &&
             strcmp(k, "nmaster") && strcmp(k, "workspaces") && strcmp(k, "term") &&

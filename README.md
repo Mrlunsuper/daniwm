@@ -49,7 +49,7 @@ Bar click on `1..5` switches workspace. `*` = occupied.
 Scroll on the bar = volume up/down, middle/right-click = mute toggle
 (backend auto: `amixer` → `wpctl` → `pactl`; laptop `XF86Audio*` keys work out of the box).
 Bar text is UTF-8 via Xft with per-glyph fallback (Vietnamese, symbols).
-Bar right side: `C cpu%  M mem%  B bat%  V vol  HH:MM` (battery/volume hidden if unavailable; volume via `amixer`, cached 2s).
+Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL HH:MM`, `·` separators; falls back to `C/M/B/V` letters without a Nerd Font; low battery/MUTE in the urgent color; battery/volume hidden if unavailable, volume cached 2s)
 
 ## Features
 
@@ -71,15 +71,17 @@ plus bar font `size=`; fractional ok, e.g. `scale = 1.5`; reload applies live),
 `bar_on/gaps_on` (1/true/yes/on), `gap_outer/gap_inner`, `mfact` (0.1–0.9),
 `nmaster`, `workspaces` (1–10, default 5),
 `font` (fontconfig pattern, e.g. `monospace:size=11`, `JetBrainsMono Nerd Font Mono:size=10`;
-default `monospace:size=10`, fallbacks built in; missing glyphs auto-fall-back via
-`Noto Sans`/`DejaVu Sans`/`Sans`),
+default `monospace:size=10`, fallbacks built in: Nerd Fonts for icons, then
+`Noto Sans`/`DejaVu Sans`/`Sans`; without a Nerd Font the sysmon falls back to `C/M/B/V` letters),
+`bar_ws_style` (`underline` default | `block` = old full-height fill),
 `term/menu/scratch` (commands split with `wordexp`, quotes work).
 
 Bar colors: base `bar_bg/bar_fg/bar_acc/bar_dim` cover everything; optional
 per-component overrides fall back to those when unset:
-`bar_ws_active` (box of current ws), `bar_ws_active_text` (label on it),
-`bar_ws_occ` (occupied ws label), `bar_ws_empty`, `bar_mode` (`[T] 3n`),
-`bar_title` (focused window title), `bar_sys` (cpu/mem/bat/vol/clock).
+`bar_ws_active` (underline — or box in `block` mode — of current ws), `bar_ws_active_text` (label on it),
+`bar_ws_occ` (occupied ws label), `bar_ws_empty`, `bar_urgent` (urgent ws + low battery + MUTE),
+`bar_sep` (separators + bottom border), `bar_mode` (`[T] 3n`),
+`bar_title` (focused window title, clipped with `…`), `bar_sys` (sysmon values; icons use the accent color).
 
 ```ini
 workspaces = 3
