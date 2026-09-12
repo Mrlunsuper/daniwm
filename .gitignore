@@ -1,3 +1,5 @@
 daniwm
 test/dock-helper
 test/shots/
+src/*.o
+src/*.d

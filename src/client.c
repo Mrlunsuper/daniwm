@@ -1,0 +1,349 @@
+#include "client.h"
+
+#include <X11/Xutil.h>
+
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "bar.h"
+#include "ewmh.h"
+#include "layout.h"
+#include "monitor.h"
+#include "mouse.h"
+#include "state.h"
+
+/* ---- helpers ---- */
+Client *find(Window w) {
+    for (Client *c = clients; c; c = c->next)
+        if (c->win == w) return c;
+    return NULL;
+}
+
+int ws_occupied(int n) {
+    for (Client *c = clients; c; c = c->next)
+        if (c->ws == n) return 1;
+    return 0;
+}
+
+Client *first_in_ws(int n) {
+    for (Client *c = clients; c; c = c->next)
+        if (c->ws == n) return c;
+    return NULL;
+}
+
+int count_tiled(void) {
+    int n = 0;
+    for (Client *c = clients; c; c = c->next)
+    if (c->ws == curws && !c->floating && !c->fullscreen) n++;
+    return n;
+}
+
+void attach(Client *c) {
+    c->next = NULL;
+    c->ws = curws;
+    if (!clients) clients = c;
+    else { Client *t = clients; while (t->next) t = t->next; t->next = c; }
+}
+
+void detach(Client *c) {
+    Client **p = &clients;
+    while (*p && *p != c) p = &(*p)->next;
+    if (*p) *p = c->next;
+    for (int i = 0; i < NWS; i++)
+        if (ws_sel[i] == c)
+            ws_sel[i] = NULL;
+    if (sel == c) sel = NULL; /* unmanage() handles focus recovery after free */
+}
+
+/* ---- actions ---- */
+/* Stacking: docks/panels always on top of normal windows, fullscreen above
+ * everything (covers bar/panels). Tiled needs no raise (non-overlapping). */
+void keep_docks_on_top(void) {
+    for (Dock *d = docks; d; d = d->next) XRaiseWindow(dpy, d->win);
+    for (Client *c = clients; c; c = c->next)
+        if (c->ws == curws && c->fullscreen) XRaiseWindow(dpy, c->win);
+}
+void focus(Client *c) {
+    if (!c) return;
+    sel = c;
+    ws_sel[curws] = c;
+    if (c->urgent) set_urgent(c, 0);
+    if (LAYOUT == L_MONOCLE) arrange(); /* show only sel */
+    else {
+        for (Client *t = clients; t; t = t->next)
+            if (t->ws == curws)
+                XSetWindowBorder(dpy, t->win, (t == sel) ? BORDER_FOCUS : BORDER_NORMAL);
+        drawbar();
+    }
+    if (c->floating || c->fullscreen) {
+        XRaiseWindow(dpy, c->win);
+        keep_docks_on_top();
+    }
+    XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+    ewmh_active();
+}
+
+void focus_step(int dir) {
+    Client *first = first_in_ws(curws);
+    if (!first) return;
+    if (!sel || sel->ws != curws) { focus(first); return; }
+    if (dir > 0) {
+        /* next in same ws, wrap */
+        Client *t = sel->next;
+        while (t && t->ws != curws) t = t->next;
+        focus(t ? t : first);
+    } else {
+        Client *prev = NULL;
+        for (Client *t = clients; t && t != sel; t = t->next)
+            if (t->ws == curws) prev = t;
+        if (!prev) { /* wrap to last */
+            for (Client *t = clients; t; t = t->next)
+                if (t->ws == curws) prev = t;
+        }
+        focus(prev);
+    }
+}
+
+void view(int n) {
+    if (n < 0 || n >= NWS || n == curws) return;
+    ws_sel[curws] = sel;
+    int old = curws;
+    curws = n;
+    sel = ws_sel[n] && find(ws_sel[n]->win) && ws_sel[n]->ws == n ? ws_sel[n] : first_in_ws(n);
+    ewmh_desktops();
+    arrange();  /* maps new workspace's windows */
+    for (Client *c = clients; c; c = c->next)
+        if (c->ws == old) XUnmapWindow(dpy, c->win);
+    if (sel) focus(sel);
+    else {
+        XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+        ewmh_active();
+        drawbar();
+    }
+}
+
+void send_to(int n) {
+    if (!sel || n < 0 || n >= NWS || n == curws) return;
+    Client *s = sel;
+    int old = curws;
+    Client *next = NULL; /* focus fallback cho ws cũ */
+    for (Client *t = clients; t; t = t->next)
+        if (t != s && t->ws == old) { next = t; break; }
+    ws_sel[old] = next;
+    s->ws = n;
+    ws_sel[n] = s;
+    ewmh_set_wm_desktop(s);
+    for (Client *c = clients; c; c = c->next)
+        if (c->ws == old) XUnmapWindow(dpy, c->win);
+    curws = n;
+    sel = s;
+    ewmh_desktops();
+    arrange();
+    focus(s); /* follow: nhảy theo luôn */
+}
+/* external pager move: same as send_to but stays on current ws */
+void move_to(Client *c, int n) {
+    int old;
+    if (!c || n < 0 || n >= NWS || n == c->ws) return;
+    old = c->ws;
+    if (old >= 0 && old < NWS && ws_sel[old] == c) {
+        Client *nx = NULL;
+        for (Client *t = clients; t; t = t->next)
+            if (t != c && t->ws == old) { nx = t; break; }
+        ws_sel[old] = nx;
+    }
+    c->ws = n;
+    if (!ws_sel[n]) ws_sel[n] = c;
+    ewmh_set_wm_desktop(c);
+    if (old == curws && n != curws) {
+        XUnmapWindow(dpy, c->win);
+        if (sel == c) {
+            Client *nx = first_in_ws(curws);
+            sel = NULL;
+            arrange();
+            if (nx) focus(nx);
+            else {
+                XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+                ewmh_active();
+                drawbar();
+            }
+        } else arrange();
+    } else if (n == curws) {
+        XMapWindow(dpy, c->win);
+        arrange();
+        focus(c);
+    } else arrange();
+}
+
+void kill_client(Client *c) {
+    Atom *protos = NULL, del;
+    int n = 0, i, has_delete = 0;
+    XEvent ev;
+    if (!c) return;
+    del = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+    if (XGetWMProtocols(dpy, c->win, &protos, &n)) {
+        for (i = 0; i < n; i++)
+            if (protos[i] == del) { has_delete = 1; break; }
+    }
+    if (protos) XFree(protos);
+    if (!has_delete) { XKillClient(dpy, c->win); return; }
+    memset(&ev, 0, sizeof(ev));
+    ev.xclient.type = ClientMessage;
+    ev.xclient.window = c->win;
+    ev.xclient.message_type = XInternAtom(dpy, "WM_PROTOCOLS", True);
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = (long)del;
+    ev.xclient.data.l[1] = CurrentTime;
+    XSendEvent(dpy, c->win, False, NoEventMask, &ev);
+}
+/* double-kill within 2s force-kills hung windows (L4) */
+static Window last_kill_win = None;
+static time_t last_kill_time = 0;
+void kill_sel(void) {
+    if (!sel) return;
+    time_t now = time(NULL);
+    if (sel->win == last_kill_win && now - last_kill_time <= 2) {
+        XKillClient(dpy, sel->win);
+        last_kill_win = None;
+        return;
+    }
+    last_kill_win = sel->win;
+    last_kill_time = now;
+    kill_client(sel);
+}
+
+void spawn(char **argv) {
+    if (!argv || !argv[0]) return;
+    pid_t pid = fork();
+    if (pid == -1) { perror("daniwm: fork"); return; }
+    if (pid == 0) {
+        if (dpy) close(ConnectionNumber(dpy));
+        setsid();
+        signal(SIGCHLD, SIG_DFL);
+        execvp(argv[0], (char *const *)argv);
+        fprintf(stderr, "daniwm: exec %s failed\n", argv[0]);
+        _exit(1);
+    }
+}
+
+void toggle_floating_sel(void) {
+    if (!sel) return;
+    sel->floating = !sel->floating;
+    if (sel->floating) {
+        if (sel->fw <= 0 || sel->fh <= 0) {
+            XWindowAttributes wa;
+            if (XGetWindowAttributes(dpy, sel->win, &wa)) {
+                sel->fx = wa.x; sel->fy = wa.y; sel->fw = wa.width; sel->fh = wa.height;
+            }
+        } else {
+            XMoveResizeWindow(dpy, sel->win, sel->fx, sel->fy, (unsigned)sel->fw, (unsigned)sel->fh);
+        }
+        XRaiseWindow(dpy, sel->win);
+        keep_docks_on_top();
+    }
+    arrange();
+    focus(sel);
+}
+
+void quit(void) { XCloseDisplay(dpy); exit(0); }
+
+/* ---- rules + scratchpad ---- */
+static void matchrules(Window w, int *floating, int *ws) {
+    XClassHint ch = { 0 };
+    char *name = NULL;
+    int gotclass = XGetClassHint(dpy, w, &ch);
+    if (!XFetchName(dpy, w, &name)) name = NULL; /* Xlib may leave it untouched on failure */
+    for (unsigned i = 0; i < nrules; i++) {
+        int cm = !rules[i].cls ||
+            (gotclass && ((ch.res_class && strstr(ch.res_class, rules[i].cls)) ||
+                          (ch.res_name && strstr(ch.res_name, rules[i].cls))));
+        int tm = !rules[i].title || (name && strstr(name, rules[i].title));
+        if (cm && tm) {
+            *floating = rules[i].floating;
+            if (rules[i].ws >= 0 && rules[i].ws < NWS) *ws = rules[i].ws;
+        }
+    }
+    if (ch.res_class) XFree(ch.res_class);
+    if (ch.res_name) XFree(ch.res_name);
+    if (name) XFree(name);
+}
+
+/* ---- manage ---- */
+void manage(Window w) {
+    if (w == bar) return;
+    XWindowAttributes a;
+    if (!XGetWindowAttributes(dpy, w, &a) || a.override_redirect) return;
+    if (find(w) || find_dock(w)) return;
+    if (ewmh_isdock(w)) {
+        manage_dock(w);
+        return;
+    }
+    Client *c = calloc(1, sizeof(Client));
+    if (!c) return; /* OOM: leave the window unmanaged, WM keeps running */
+    c->win = w;
+    c->mon = mon_by_pointer();
+    int rulefloat = 0, rulews = curws;
+    matchrules(w, &rulefloat, &rulews);
+    { int d = ewmh_read_desktop(w); if (d >= 0 && d < NWS) rulews = d; }
+    Window trans = None;
+    c->fx = a.x; c->fy = a.y; c->fw = a.width; c->fh = a.height;
+    c->cfact = 1.0f;
+    if (XGetTransientForHint(dpy, w, &trans) || ewmh_isfloating_type(w) || rulefloat) {
+        c->floating = 1;
+        int ax, ay, aw, ah;
+        getarea(c->mon, &ax, &ay, &aw, &ah);
+        int fw = a.width > 0 ? a.width : aw / 2;
+        int fh = a.height > 0 ? a.height : ah / 2;
+        c->fx = ax + (aw - fw) / 2;
+        c->fy = ay + (ah - fh) / 2;
+        c->fw = fw;
+        c->fh = fh;
+        XMoveResizeWindow(dpy, w, c->fx, c->fy, (unsigned)c->fw, (unsigned)c->fh);
+    }
+    if (ewmh_hasstate(w, A_NET_WM_STATE_FS)) c->fullscreen = 1;
+    if (ewmh_hasstate(w, A_NET_WM_STATE_DA)) c->urgent = 1;
+    else {
+        XWMHints *wmh = XGetWMHints(dpy, w);
+        if (wmh) {
+            if (wmh->flags & XUrgencyHint) c->urgent = 1;
+            XFree(wmh);
+        }
+    }
+    XSelectInput(dpy, w, EnterWindowMask | FocusChangeMask | PropertyChangeMask | StructureNotifyMask);
+    grabbuttons(c);
+    XSetWindowBorderWidth(dpy, w, (unsigned)S(BORDER));
+    attach(c);
+    c->ws = rulews;
+    ewmh_client_list();
+    ewmh_set_wm_desktop(c);
+    if (c->ws == curws) {
+        XMapWindow(dpy, w);
+        focus(c);
+    }
+    arrange();
+}
+
+void unmanage(Window w) {
+    Client *c = find(w);
+    if (!c) return;
+    if (drag.win == w) {
+        drag.win = None;
+        drag.mode = 0;
+        XUngrabPointer(dpy, CurrentTime);
+    }
+    detach(c);
+    free(c);
+    ewmh_client_list();
+    arrange();
+    if (sel) focus(sel);
+    else if (first_in_ws(curws)) focus(first_in_ws(curws));
+    else {
+        XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+        ewmh_active();
+        drawbar();
+    }
+}
