@@ -45,6 +45,7 @@ bar_modules        = cpu mem vol clock  # thứ tự + ẩn/hiện (xóa tên l�
 clock_fmt          = %d/%m - %H:%M  # strftime (vd: "%H:%M" gọn, "%a %d/%m %H:%M" đầy đủ)
 bar_show_title     = 1        # tiêu đề cửa sổ trái (1/0)
 bar_show_tasks     = 1        # nút task Awesome: click-trái focus, click-giữa đóng (1/0)
+bar_task_w         = 0        # rộng mỗi nút task (px, 0 = auto chia đều; vd 160)
 bar_show_layout    = 0        # icon tile/monocle + số cửa sổ (1/0)
 # icon cụm phải: mặc định là icon Nerd Font (đẹp nhất với font Nerd bên dưới),
 # tự rớt về C/M/B/V nếu máy thiếu font. Muốn chữ thường thì mở 3 dòng này:

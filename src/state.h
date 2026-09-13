@@ -77,6 +77,7 @@ extern char *BAR_SEP_STR;  /* separator between right modules, default "·" */
 extern int BAR_SHOW_TITLE; /* 1/0 */
 extern int BAR_SHOW_LAYOUT;/* 1/0 */
 extern int BAR_SHOW_TASKS; /* 1/0: Awesome-style clickable task buttons */
+extern int BAR_TASK_W; /* px per task button, 0 = auto equal-share */
 /* tasklist hitboxes (bar-relative x), refreshed every drawbar() */
 extern int task_nhit;
 extern int task_hit_x0[MAXTASKHIT];

@@ -22,6 +22,7 @@ char *BAR_SEP_STR = NULL;
 int BAR_SHOW_TITLE = 1;
 int BAR_SHOW_LAYOUT = 1;
 int BAR_SHOW_TASKS = 1;
+int BAR_TASK_W = 0;
 int task_nhit = 0;
 int task_hit_x0[MAXTASKHIT];
 int task_hit_x1[MAXTASKHIT];

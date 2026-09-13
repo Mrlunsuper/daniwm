@@ -111,7 +111,7 @@ void config_defaults(void) {
     free(BAR_MODULES); BAR_MODULES = xstrdup("cpu mem bat vol clock");
     free(CLOCK_FMT); CLOCK_FMT = xstrdup("%d/%m %H:%M");
     free(BAR_SEP_STR); BAR_SEP_STR = xstrdup("\u00B7");
-    BAR_SHOW_TITLE = 1; BAR_SHOW_LAYOUT = 1; BAR_SHOW_TASKS = 1;
+    BAR_SHOW_TITLE = 1; BAR_SHOW_LAYOUT = 1; BAR_SHOW_TASKS = 1; BAR_TASK_W = 0;
     free(ico_cpu); ico_cpu = xstrdup("\U000F06E0");
     free(ico_mem); ico_mem = xstrdup("\U000F035B");
     free(ico_bat); ico_bat = xstrdup("\U000F0079");
@@ -196,6 +196,10 @@ static void parse_scalar(char *key, char *val) {
         if (parse_bool(val, &b)) BAR_SHOW_LAYOUT = b;
     } else if (!strcmp(key, "bar_show_tasks") || !strcmp(key, "show_tasks")) {
         if (parse_bool(val, &b)) BAR_SHOW_TASKS = b;
+    } else if (!strcmp(key, "bar_task_w") || !strcmp(key, "task_w")) {
+        v = strtol(val, NULL, 10);
+        if (v >= 0 && v <= 512) BAR_TASK_W = (int)v;
+        else fprintf(stderr, "daniwm: bad bar_task_w '%s' (want 0..512, 0=auto)\n", val);
     } else if (!strcmp(key, "bar_gap")) {
         v = strtol(val, NULL, 10); if (v >= 0 && v <= 8) BAR_GAP = (int)v;
         else fprintf(stderr, "daniwm: bad bar_gap '%s' (want 0..8)\n", val);
@@ -477,6 +481,7 @@ void load_config(const char *path) {
             strcmp(k, "bar_show_title") && strcmp(k, "bar_title_on") && strcmp(k, "show_title") &&
             strcmp(k, "bar_show_layout") && strcmp(k, "bar_layout_on") && strcmp(k, "show_layout") &&
             strcmp(k, "bar_show_tasks") && strcmp(k, "show_tasks") &&
+            strcmp(k, "bar_task_w") && strcmp(k, "task_w") &&
             strcmp(k, "bar_h") && strcmp(k, "bar_gap") && strcmp(k, "ico_cpu") &&
             strcmp(k, "ico_mem") && strcmp(k, "ico_bat") && strcmp(k, "ico_vol") &&
             strcmp(k, "ico_mute") && strcmp(k, "ico_clk") && strcmp(k, "bar_pad_l") &&

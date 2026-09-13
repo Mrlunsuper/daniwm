@@ -66,5 +66,27 @@ wait_n 1 60 || { echo "FAIL: middle-click did not close A"; exit 1; }
 echo "PASS: middle-click closed A"
 assert "B focused after close" "$(active_dec)" -eq "$idB"
 
+# Phase 2: fixed width (bar_task_w=200 -> buttons [~291,491] [491,691]).
+kill $WM 2>/dev/null
+pkill -x xterm 2>/dev/null; sleep 1
+printf 'bar_modules = clock\nbar_task_w = 200\n' > "$H/.config/daniwm/config"
+HOME=$H "${WM_BIN:-$TDIR/../daniwm}" &
+WM=$!
+sleep 1
+xdotool key super+Return; sleep 1
+idC=$(xdotool search --onlyvisible --class xterm | tail -1)
+xdotool key super+Return; sleep 1
+idD=$(xdotool search --onlyvisible --class xterm | grep -v "^${idC}$" | tail -1)
+wait_n 2 60 || { echo "FAIL: phase2 terms never appeared"; exit 1; }
+echo "PASS: phase2 spawned C=$idC D=$idD"
+
+xdotool mousemove 370 12 click 1; settle
+assert "fixed task 1 focuses C" "$(active_dec)" -eq "$idC"
+xdotool mousemove 570 12 click 1; settle
+assert "fixed task 2 focuses D" "$(active_dec)" -eq "$idD"
+# Clicking the empty area past fixed buttons is a no-op.
+xdotool mousemove 950 12 click 1; settle
+assert "click past tasks is no-op" "$(active_dec)" -eq "$idD"
+
 if [ "$fail" -ne 0 ]; then echo "RESULT: FAIL"; else echo "RESULT: PASS"; fi
 exit $fail
