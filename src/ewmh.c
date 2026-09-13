@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "bar.h"
 #include "client.h"
@@ -29,6 +30,7 @@ void ewmh_init(void) {
     A_NET_CLOSE_WINDOW = XInternAtom(dpy, "_NET_CLOSE_WINDOW", False);
     A_NET_SUPPORTING_WM_CHECK = XInternAtom(dpy, "_NET_SUPPORTING_WM_CHECK", False);
     A_NET_WM_NAME = XInternAtom(dpy, "_NET_WM_NAME", False);
+    A_NET_WM_PID = XInternAtom(dpy, "_NET_WM_PID", False);
     A_NET_WM_STRUT = XInternAtom(dpy, "_NET_WM_STRUT", False);
     A_NET_WM_STRUT_PARTIAL = XInternAtom(dpy, "_NET_WM_STRUT_PARTIAL", False);
     A_NET_WORKAREA = XInternAtom(dpy, "_NET_WORKAREA", False);
@@ -43,13 +45,19 @@ void ewmh_init(void) {
         PropModeReplace, (unsigned char *)&checkwin, 1);
     XChangeProperty(dpy, checkwin, A_NET_WM_NAME, utf8, 8,
         PropModeReplace, (unsigned char *)"daniwm", 6);
+    /* EWMH: the WM identifies itself with its PID on the supporting window. */
+    {
+        unsigned long pid = (unsigned long)getpid();
+        XChangeProperty(dpy, checkwin, A_NET_WM_PID, XA_CARDINAL, 32,
+            PropModeReplace, (unsigned char *)&pid, 1);
+    }
     XChangeProperty(dpy, root, A_NET_SUPPORTING_WM_CHECK, XA_WINDOW, 32,
         PropModeReplace, (unsigned char *)&checkwin, 1);
 
     Atom sup[] = { A_NET_SUPPORTED, A_NET_CLIENT_LIST, A_NET_ACTIVE_WINDOW,
         A_NET_WM_STATE, A_NET_WM_STATE_FS, A_NET_WM_STATE_HIDDEN,
         A_NET_WM_STATE_DA, A_NET_WM_WINDOW_TYPE, A_NET_CLOSE_WINDOW,
-        A_NET_SUPPORTING_WM_CHECK, A_NET_WM_NAME,
+        A_NET_SUPPORTING_WM_CHECK, A_NET_WM_NAME, A_NET_WM_PID,
         A_NET_WM_STRUT, A_NET_WM_STRUT_PARTIAL, A_NET_WORKAREA,
         A_NET_NUMBER_OF_DESKTOPS, A_NET_CURRENT_DESKTOP,
         A_NET_WM_DESKTOP, A_NET_DESKTOP_NAMES };

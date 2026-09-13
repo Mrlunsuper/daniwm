@@ -133,4 +133,13 @@ if [ -n "${scratch_all:-}" ]; then
 fi
 
 echo "shots in $SHOT"
+
+# EWMH: supporting window carries _NET_WM_NAME + _NET_WM_PID == WM pid
+cw=$(xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | awk '{print $NF}')
+wmpid=$(xprop -id "$cw" _NET_WM_PID 2>/dev/null | awk -F' = ' '{print $2}')
+if [ "$wmpid" = "$WM" ]; then echo "PASS: _NET_WM_PID $wmpid == WM pid";
+else echo "FAIL: _NET_WM_PID $wmpid != WM pid $WM"; fail=1; fi
+if xprop -root _NET_SUPPORTED 2>/dev/null | grep -q _NET_WM_PID; then echo "PASS: _NET_WM_PID advertised";
+else echo "FAIL: _NET_WM_PID not in _NET_SUPPORTED"; fail=1; fi
+
 exit $fail
