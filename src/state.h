@@ -69,7 +69,12 @@ extern unsigned long BAR_ACC;
 extern unsigned long BAR_DIM;
 extern unsigned long C_WS_ACT, C_WS_ACT_TX, C_WS_OCC, C_WS_EMP, C_MODE, C_TITLE, C_SYS, C_URGENT, C_SEP;
 extern int h_ws_act, h_ws_act_tx, h_ws_occ, h_ws_emp, h_mode, h_title, h_sys, h_urgent, h_sep;
-extern int BAR_WS_STYLE;
+extern int BAR_WS_STYLE; /* 0=underline 1=block 2=pill (default) */
+extern char *BAR_MODULES;  /* order+visibility: e.g. "cpu mem bat vol clock" */
+extern char *CLOCK_FMT;    /* strftime fmt, default "%d/%m %H:%M" */
+extern char *BAR_SEP_STR;  /* separator between right modules, default "·" */
+extern int BAR_SHOW_TITLE; /* 1/0 */
+extern int BAR_SHOW_LAYOUT;/* 1/0 */
 /* vol segment hitbox (bar-relative x), refreshed every drawbar();
  * -1 when volume is unavailable so clicks fall through to ws view */
 extern int vol_hit_x0, vol_hit_x1;

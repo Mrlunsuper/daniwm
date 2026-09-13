@@ -23,9 +23,9 @@
 
 int tray_icon_size(void) {
     int bh = S(BAR_H);
-    int sz = bh - 6;
+    int sz = bh - 10;
     if (sz < 8) sz = 8;
-    if (sz > 24) sz = 24;
+    if (sz > 22) sz = 22; /* breathing room: 32px overpowered text, 22px sits level */
     return sz;
 }
 
@@ -294,6 +294,31 @@ void tray_handle_selection_clear(Atom selatom) {
         tray_active = 0; /* another manager took over */
         drawbar();
     }
+}
+
+/* v2: icon-group bounds (bar-relative px, no padding) for the tray
+ * container box in drawbar() and the click guard in main.c.
+ * Returns 0 when no mapped icons (nothing to box/guard). */
+int tray_box(int *x0, int *x1) {
+    int w = tray_width_px();
+    if (w <= 0) return 0;
+    if (x0) *x0 = barw - S(BAR_PAD_R) - w;
+    if (x1) *x1 = barw - S(BAR_PAD_R);
+    return 1;
+}
+
+/* v2: re-acquire the selection when it is ownerless (e.g. a standalone
+ * tray like stalonetray took over, then exited). Only steals back from
+ * None — never from a live manager. Called from the 1s tick, throttled
+ * to one probe per 5s so an owned-by-other state costs a single X call. */
+void tray_poll(void) {
+    static time_t last = 0;
+    time_t now;
+    if (!tray_on || tray_active || !dpy || A_TRAY_SEL == None) return;
+    now = time(NULL);
+    if (now - last < 5) return;
+    last = now;
+    if (XGetSelectionOwner(dpy, A_TRAY_SEL) == None) acquire_selection();
 }
 
 int tray_width_px(void) {

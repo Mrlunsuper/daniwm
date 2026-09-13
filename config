@@ -12,7 +12,7 @@ scratch = alacritty --class scratchpad   # giữ chữ "scratchpad" để toggle
 mod = super                          # super | alt | ctrl
 workspaces = 7                       # 1..10 — đồng bộ với bspwm (I-VII)
 mfact = 0.55                         # master chiếm 0.1..0.9 chiều ngang
-nmaster = 2                          # số cửa sổ master
+nmaster = 1                          # số cửa sổ master
 border = 2
 border_focus = c4a7e7                # Rosé Pine iris (focused)
 border_normal = 26233a               # Rosé Pine surface (unfocused)
@@ -21,33 +21,42 @@ gap_outer = 10
 gap_inner = 8
 bar_on = 1
 tray = 1                          # system tray XEmbed ở mép phải bar (1/0)
-bar_h = 48
+bar_h = 36
+ws_w = 46
+bar_pad_l = 12
+bar_pad_r = 16
+bar_gap = 3
 # màu bar: hex 6 số, có thể có #. Áp ngay khi reload.
 # 4 màu nền tảng Rosé Pine Main (đồng bộ bspwm/polybar):
 bar_bg = 191724
 bar_fg = e0def4
 bar_acc = c4a7e7
 bar_dim = 6e6a86
-# màu riêng từng component Rosé Pine:
-bar_ws_style       = underline  # underline (default) | block (khối fill kiểu cũ)
-bar_ws_active      = c4a7e7   # underline/block của workspace đang xem (iris)
-bar_ws_active_text = e0def4   # chữ ws đang xem (underline mode; block mode nên để nền tối)
+# style active ws: pill (default, gọn) | underline | block (khối fill kiểu cũ)
+bar_ws_style       = underline
+bar_ws_active      = c4a7e7   # pill / underline / block của ws đang xem (iris)
+bar_ws_active_text = e0def4   # chữ ws đang xem
 bar_ws_occ         = e0def4   # chữ workspace có cửa sổ
 bar_ws_empty       = 6e6a86   # chữ workspace trống (muted)
 bar_urgent         = eb6f92   # ws urgent + pin yếu + MUTE (rose)
 bar_sep            = 6e6a86   # separator + bottom border (default = bar_dim)
-bar_gap            = 2        # spaces quanh dấu · giữa các module phải (0..8)
-# icon cụm phải: ký tự Nerd Font tùy ý, hoặc chữ thường để khỏi lệ thuộc font.
-# (mặc định là icon Nerd Font, tự rớt về C/M/B/V nếu máy thiếu font)
-ico_cpu = CPU
-ico_vol = VOL
-ico_mem = MEM
+bar_gap            = 3        # spaces quanh separator giữa các module phải (0..8)
+bar_sep_str        = -        # separator phải (vd: · | / • : — để trống = chỉ cách spaces)
+bar_modules        = cpu mem vol clock  # thứ tự + ẩn/hiện (xóa tên là ẩn, vd: "bat vol clock")
+clock_fmt          = %d/%m - %H:%M  # strftime (vd: "%H:%M" gọn, "%a %d/%m %H:%M" đầy đủ)
+bar_show_title     = 1        # tiêu đề cửa sổ trái (1/0)
+bar_show_layout    = 0        # icon tile/monocle + số cửa sổ (1/0)
+# icon cụm phải: mặc định là icon Nerd Font (đẹp nhất với font Nerd bên dưới),
+# tự rớt về C/M/B/V nếu máy thiếu font. Muốn chữ thường thì mở 3 dòng này:
+# ico_cpu = CPU
+# ico_vol = VOL
+# ico_mem = MEM
 
-bar_mode           = e0def4   # text [T] 3n
-bar_title          = e0def4   # tiêu đề cửa sổ
-bar_sys            = 9ccfd8   # giá trị sysmon (icon dùng bar_acc)
-# font bar: fontconfig pattern. Muốn icon Nerd Font ở cụm phải:
-#   font = JetBrainsMono Nerd Font Mono:size=10
+bar_mode           = e0def4   # số cửa sổ (icon tile/monocle dùng bar_acc)
+bar_title          = 6e6a86   # tiêu đề cửa sổ trái, chìm để nhường sysmon (cũ: e0def4)
+bar_sys            = e0def4   # giá trị sysmon sáng dễ đọc (icon dùng bar_acc)
+# font bar: fontconfig pattern. bar_h=28 hợp với size=10-11.
+font = SpaceMono Nerd Font:size=11
 # Không có Nerd Font vẫn đẹp (tự rớt về chữ C/M/B/V).
 
 # ---------- rules ----------
@@ -76,6 +85,8 @@ bind = mod+Return:spawn_term
 bind = mod+d:spawn_menu
 bind = mod+s:scratch                  # hiện/ẩn scratchpad
 bind = mod+Print:exec flameshot gui
+bind = mod+e:exec thunar
+
 # master / layout / gaps / bar
 bind = mod+h:mfact_dec
 bind = mod+l:mfact_inc

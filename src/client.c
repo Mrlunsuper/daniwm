@@ -60,6 +60,24 @@ void detach(Client *c) {
     if (sel == c) sel = NULL; /* unmanage() handles focus recovery after free */
 }
 
+/* swap list positions of a and b: tiling order follows the list, so this
+ * swaps their tiles (bspwm-style swap drag). Pointers (sel/ws_sel) name
+ * clients, not slots, so they stay valid. Adjacent-aware, missing-safe. */
+void swap_order(Client *a, Client *b) {
+    Client **pa = NULL, **pb = NULL, **p;
+    Client *ta, *tb;
+    if (!a || !b || a == b) return;
+    for (p = &clients; *p; p = &(*p)->next) {
+        if (*p == a) pa = p;
+        if (*p == b) pb = p;
+    }
+    if (!pa || !pb) return;
+    ta = a->next; tb = b->next;
+    if (ta == b) { a->next = tb; b->next = a; *pa = b; }
+    else if (tb == a) { b->next = ta; a->next = b; *pb = a; }
+    else { *pa = b; b->next = ta; *pb = a; a->next = tb; }
+}
+
 /* ---- actions ---- */
 /* Stacking: docks/panels always on top of normal windows, fullscreen above
  * everything (covers bar/panels). Tiled needs no raise (non-overlapping). */
@@ -139,13 +157,13 @@ void send_to(int n) {
     s->ws = n;
     ws_sel[n] = s;
     ewmh_set_wm_desktop(s);
-    for (Client *c = clients; c; c = c->next)
-        if (c->ws == old) XUnmapWindow(dpy, c->win);
     prevws = old;
     curws = n;
     sel = s;
     ewmh_desktops();
-    arrange();
+    arrange(); /* map new workspace windows first, like view() */
+    for (Client *c = clients; c; c = c->next)
+        if (c->ws == old) XUnmapWindow(dpy, c->win);
     focus(s); /* follow: nhảy theo luôn */
 }
 /* external pager move: same as send_to but stays on current ws */
@@ -297,7 +315,11 @@ void zoom(int unused) {
     focus(sel);
 }
 
-void quit(void) { XCloseDisplay(dpy); exit(0); }
+void quit(void) {
+    tray_enable(0); /* un-embed tray icons back to root before disconnect */
+    XCloseDisplay(dpy);
+    exit(0);
+}
 
 /* ---- rules + scratchpad ---- */
 static void matchrules(Window w, int *floating, int *ws) {

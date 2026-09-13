@@ -113,8 +113,24 @@ assert "scratchpad spawned" "$(ns)" -ge 1
 shot 07-scratch
 xdotool key super+s; settle
 assert "scratchpad hidden" "$(ns)" -eq 0
+# EWMH: parked scratchpad must be filtered from _NET_CLIENT_LIST
+scratch_all=$(xdotool search --classname scratchpad 2>/dev/null | head -n1 || true)
+if [ -n "${scratch_all:-}" ]; then
+    scratch_hex=$(printf "0x%x" "$scratch_all")
+    cl_hide=$(xprop -root _NET_CLIENT_LIST 2>/dev/null || true)
+    echo "client_list while parked: $cl_hide"
+    if echo "$cl_hide" | grep -qi "${scratch_hex#0x}"; then echo "FAIL: parked scratchpad leaked into _NET_CLIENT_LIST"; fail=1; else echo "PASS: parked scratchpad filtered from _NET_CLIENT_LIST"; fi
+else
+    echo "FAIL: scratchpad window id not found for EWMH check"; fail=1
+fi
 xdotool key super+s; settle
 assert "scratchpad reshown" "$(ns)" -ge 1
+# EWMH: reshown scratchpad must re-appear in _NET_CLIENT_LIST
+if [ -n "${scratch_all:-}" ]; then
+    cl_show=$(xprop -root _NET_CLIENT_LIST 2>/dev/null || true)
+    echo "client_list while shown: $cl_show"
+    if echo "$cl_show" | grep -qi "${scratch_hex#0x}"; then echo "PASS: reshown scratchpad in _NET_CLIENT_LIST"; else echo "FAIL: reshown scratchpad missing from _NET_CLIENT_LIST"; fail=1; fi
+fi
 
 echo "shots in $SHOT"
 exit $fail

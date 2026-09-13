@@ -18,9 +18,15 @@ int sys_cpu(void) { /* 0..100, -1 = unknown */
     fclose(f);
     unsigned long long idle = id + io;
     unsigned long long total = u + n + s + id + io + ir + so + st;
+    /* guard against tick anomalies / counter reset: unsigned wrap would
+     * otherwise produce a bogus 0% or 100% spike */
+    if (total < cpu_prev_total || idle < cpu_prev_idle) {
+        cpu_prev_total = total; cpu_prev_idle = idle;
+        return -1;
+    }
     unsigned long long dt = total - cpu_prev_total, di = idle - cpu_prev_idle;
     cpu_prev_total = total; cpu_prev_idle = idle;
-    if (dt == 0) return -1;
+    if (dt == 0 || dt < di) return -1;
     return (int)(100 * (dt - di) / dt);
 }
 int sys_mem(void) { /* used % 0..100, -1 = unknown */
@@ -69,13 +75,29 @@ const char *sys_vol(void) { /* "40%" / "MUTE" / "" */
     return vol_cache[0] ? vol_cache : "";
 }
 static int vol_try_amixer(void) {
-    FILE *p = popen("amixer get Master 2>/dev/null | grep -oE '\\[[0-9]+%\\]|\\[(on|off)\\]' | head -n2", "r");
+    /* single amixer invocation: scan "amixer get Master" output in C
+     * instead of a 4-process pipeline (grep | head per 2s tick) */
+    FILE *p = popen("amixer get Master 2>/dev/null", "r");
     char pct[16] = "", st[16] = "";
-    char line[32];
+    char line[256];
     if (!p) return 0;
     while (fgets(line, sizeof(line), p)) {
-        if (strchr(line, '%')) snprintf(pct, sizeof(pct), "%.10s", line + 1);
-        else if (line[1] == 'o' || line[1] == 'O') snprintf(st, sizeof(st), "%.8s", line + 1);
+        /* percent: first "[NN%]" token on the line */
+        char *lb = strchr(line, '[');
+        while (lb) {
+            char *pc = strchr(lb, '%');
+            if (pc && pc == lb + 1 + strspn(lb + 1, "0123456789")) {
+                size_t nd = (size_t)(pc - (lb + 1));
+                if (nd > 0 && nd < sizeof(pct) - 1 && !pct[0]) {
+                    memcpy(pct, lb + 1, nd);
+                    pct[nd] = '%'; pct[nd + 1] = 0;
+                }
+            }
+            /* mute state: "[on]" / "[off]" token */
+            if (!strncmp(lb, "[on]", 4)) snprintf(st, sizeof(st), "on");
+            else if (!strncmp(lb, "[off]", 5)) snprintf(st, sizeof(st), "off");
+            lb = strchr(lb + 1, '[');
+        }
     }
     pclose(p);
     if (!pct[0]) return 0;

@@ -80,3 +80,38 @@ make clean && make
 13. `select()` consecutive error limit (>100 → exit)
 14. Explicit casts for `-Wconversion -Wsign-conversion`
 15. `memset(&ev)` in `kill_client`
+
+---
+
+# daniwm Audit — Round 5 (2026-09-13)
+
+**Baseline:** `make` 0 warnings; `make check` failed at `test-randr` (ambient config leakage).
+**Objective:** Resolve F01–F12, 8/8 suites PASS, strict ISO C11, stronger ICCCM/EWMH compliance.
+**Result:** 8/8 PASS, `RESULT: ALL PASS`; `gcc` + `clang` clean under `-Wall -Wextra -Wpedantic -Wshadow -D_FORTIFY_SOURCE=2`; strict `-std=c11 -pedantic-errors` clean.
+
+## Findings & Fixes (all DONE)
+
+| ID | Area | Issue | Rationale | Fix |
+|----|------|-------|-----------|-----|
+| F01 | test harness | `test-randr.sh` inherited `$HOME`/`$XDG_CONFIG_HOME`, so a dev config leaked into headless runs | Hermetic tests must not depend on ambient machine state | Sandboxed `HOME=$(mktemp -d)`, `unset XDG_CONFIG_HOME`, `HOME=$H WM_BIN` launch, `trap` + `rm -rf $H` cleanup |
+| F01b | toolchain | `test-tray.sh` hardcoded `gcc -O2`, ignoring `CC`/`CFLAGS` while `Makefile` already builds the helper | Ad-hoc toolchain forks drift from the real build | Respect `${CC:-gcc} ${CFLAGS:--O2}` |
+| F02 | EWMH/scratchpad | `k_scratch()` updated `_NET_WM_DESKTOP` but never refreshed `_NET_CLIENT_LIST` on park/unpark | Parked sentinel (`ws==NWS`) is filtered from the list; without refresh pagers see a stale entry | Call `ewmh_client_list()` on both park and unpark paths |
+| F06 | EWMH focus | `_NET_ACTIVE_WINDOW` on a parked window called `view(NWS)` (out-of-range no-op) then focused an unmapped window | Focusing invisible windows steals input and breaks pagers | Guard `if (c->ws >= NWS) break` — ignore until unparked |
+| F03 | lifecycle | `quit()` closed the display without releasing tray icons | Icons stay reparented to a dead embedder; must return to root | `tray_enable(0)` before `XCloseDisplay` |
+| F04 | mouse resize | Tiled vertical drag only wrote the active pair, leaving the idle-side neighbor at a stale tweaked `cfact` | Reversing direction compounded; border no longer tracked the pointer symmetrically | Restore idle side to `nb_*0` baseline each motion; pure-horizontal (`dy==0`) restores both |
+| F07 | workspace follow | `send_to()` unmapped old-ws windows before `arrange()` mapped the new ws | Flash of empty desktop; diverges from `view()` order (map-then-unmap) | Reordered to `curws=n; arrange(); unmap(old)` mirroring `view()` |
+| F10 | RandR | `on_monitors_changed()` only clamped floating windows to left/top edges | After shrink, windows could hang off right/bottom off-screen | Clamp `fx+fw` / `fy+fh` against monitor right/bottom, then re-clamp to origin for oversized windows |
+| F08 | bar render | Title ellipsis path drew even when `avail <= ellipsis width`, overflowing into status indicators | Clipping must never paint over sys segments | `if (avail > ew)` guard; skip title otherwise |
+| F08b | bar safety | `drawbar()` checked `barpm`/`barxd` but not `bargc` (freed in `bar_style`) | Null-GC `XFillRectangle` is a crash/X error | Added `if (!bargc) return` |
+| F05 | ICCCM §4.1.5 | Tiled `ConfigureRequest` silently rejected client geometry with no reply | Spec requires synthetic `ConfigureNotify` with actual geometry so clients stay in sync | After stacking-only `XConfigureWindow`, query attributes and `XSendEvent(ConfigureNotify, StructureNotifyMask)` |
+| F09 | ISO C11 | `k_*(int)` unnamed params + `have_action:` label directly before a declaration | Rejected under `-std=c11 -pedantic-errors`; label-before-declaration is a constraint violation | Named all to `(int unused)` + `(void)unused;`; added `;` null-statement after `have_action:`; exposed POSIX (`getline`/`setenv`/`fork`/`popen`) via `-D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE` + `types.h` fallback |
+| F11 | sysmon | `sys_cpu()` subtracted wrapped `unsigned long long` counters with no underflow check | Counter reset / tick anomaly → bogus 0%/100% spike | Early `total<prev \|\| idle<prev` reset + `dt<di` guard, return -1 |
+| F12 | sysmon perf | `vol_try_amixer()` forked 4 processes (`amixer \| grep \| head`) every 2s tick | Wasteful; pipe breaks if tools missing | Single `popen("amixer get Master")` + in-C scan for `[NN%]` / `[on]` / `[off]` |
+
+## Verification
+
+- `make clean && make` — 0 warnings (gcc).
+- `make check` — 8/8 suites PASS (`verify`, `test-config`, `test-kill`, `test-mouse`, `test-workspaces`, `test-strut`, `test-randr`, `test-tray`), `RESULT: ALL PASS`.
+- `gcc -std=c11 -pedantic-errors` — all `src/*.c` clean.
+- `clang -Wall -Wextra -Wpedantic -Wshadow` — clean.
+- New assertions: `verify.sh` checks parked scratchpad absent from `_NET_CLIENT_LIST` and reshown present.

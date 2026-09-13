@@ -7,6 +7,7 @@ Client *first_in_ws(int n);
 int     count_tiled(void);
 void    attach(Client *c);
 void    detach(Client *c);
+void    swap_order(Client *a, Client *b); /* swap tiling positions (bspwm swap-drag) */
 void    manage(Window w);
 void    unmanage(Window w);
 void    focus(Client *c);

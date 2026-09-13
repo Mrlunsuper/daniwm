@@ -20,4 +20,6 @@ void tray_handle_resize(Window w);
 void tray_handle_selection_clear(Atom sel);
 
 int  tray_width_px(void);
+int  tray_box(int *x0, int *x1); /* v2: icon-group bounds, 0 = no icons */
+void tray_poll(void); /* v2: re-acquire ownerless selection (1s tick) */
 void tray_layout_icons(void);

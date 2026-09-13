@@ -160,7 +160,7 @@ int main(void) {
                 break; /* fall through to blocking XNextEvent */
             }
             select_errs = 0;
-            if (ret == 0) { sys_vol_update(); drawbar(); }
+            if (ret == 0) { sys_vol_update(); tray_poll(); drawbar(); }
             else break;
         }
         XEvent ev;
@@ -219,6 +219,10 @@ int main(void) {
             Client *c = find(e->window);
             if (e->message_type == A_NET_ACTIVE_WINDOW) {
                 if (c) {
+                    /* Parked scratchpad (ws == NWS sentinel) is unmapped:
+                     * focusing it would set input to an invisible window.
+                     * Ignore the request (pager should unpark first). */
+                    if (c->ws >= NWS) break;
                     if (c->ws != curws) view(c->ws);
                     focus(c);
                     arrange();
@@ -287,8 +291,29 @@ int main(void) {
                     if (e->value_mask & CWHeight) c->fh = wc.height;
                 }
                 XConfigureWindow(dpy, e->window, (unsigned int)e->value_mask, &wc);
-            } else
+            } else {
                 XConfigureWindow(dpy, e->window, (e->value_mask & (CWSibling | CWStackMode)), &wc);
+                /* ICCCM §4.1.5: tiled windows reject the client's requested
+                 * geometry, so send a synthetic ConfigureNotify with the
+                 * actual geometry to keep the client in sync. */
+                XWindowAttributes ca;
+                if (XGetWindowAttributes(dpy, e->window, &ca)) {
+                    XEvent cn;
+                    memset(&cn, 0, sizeof(cn));
+                    cn.xconfigure.type = ConfigureNotify;
+                    cn.xconfigure.display = dpy;
+                    cn.xconfigure.event = e->window;
+                    cn.xconfigure.window = e->window;
+                    cn.xconfigure.x = ca.x;
+                    cn.xconfigure.y = ca.y;
+                    cn.xconfigure.width = ca.width;
+                    cn.xconfigure.height = ca.height;
+                    cn.xconfigure.border_width = ca.border_width;
+                    cn.xconfigure.above = None;
+                    cn.xconfigure.override_redirect = False;
+                    XSendEvent(dpy, e->window, False, StructureNotifyMask, &cn);
+                }
+            }
             if (c) arrange();
             break;
         }
@@ -362,6 +387,10 @@ int main(void) {
                         k_vol_mute(0);
                         break;
                     }
+                    /* v2: tray container background is dead zone — clicks
+                     * there (not on an icon window) must never fall through
+                     * to workspace view */
+                    { int bx0, bx1; if (tray_box(&bx0, &bx1) && e->x >= bx0) break; }
                     int wsw = S(WS_W); if (wsw < 1) wsw = 1;
                     /* ws block starts at bar_pad_l: clicks left of it
                      * are padding -> no-op (note: C truncates -1/40 to

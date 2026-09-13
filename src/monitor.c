@@ -85,6 +85,12 @@ void on_monitors_changed(void) {
         if (c->floating) { /* keep floating windows on-screen */
             if (c->fx < mons[c->mon].x) c->fx = mons[c->mon].x;
             if (c->fy < mons[c->mon].y) c->fy = mons[c->mon].y;
+            if (c->fx + c->fw > mons[c->mon].x + mons[c->mon].w)
+                c->fx = mons[c->mon].x + mons[c->mon].w - c->fw;
+            if (c->fy + c->fh > mons[c->mon].y + mons[c->mon].h)
+                c->fy = mons[c->mon].y + mons[c->mon].h - c->fh;
+            if (c->fx < mons[c->mon].x) c->fx = mons[c->mon].x;
+            if (c->fy < mons[c->mon].y) c->fy = mons[c->mon].y;
         }
     }
     if (bar) XMoveResizeWindow(dpy, bar, mons[0].x, mons[0].y, (unsigned)barw, (unsigned)S(BAR_H));

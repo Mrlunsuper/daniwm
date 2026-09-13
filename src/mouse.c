@@ -24,6 +24,32 @@
  *   clean no-op: cfact is left untouched. On floating windows or in
  *   monocle mode, resizes the window geometry. */
 
+/* bspwm-style swap drag: tiled window (same ws/mon, not floating/fullscreen)
+ * whose area contains (px,py). The dragged window itself is floating by
+ * then, so it never matches its own filter — no explicit exclude needed,
+ * but `c` is still skipped for safety. First match wins: tiles don't
+ * overlap, so any hit is unambiguous. */
+static Client *tiled_at(Client *c, int px, int py) {
+    for (Client *t = clients; t; t = t->next) {
+        XWindowAttributes a;
+        if (t == c || t->ws != c->ws || t->mon != c->mon ||
+            t->floating || t->fullscreen) continue;
+        if (!XGetWindowAttributes(dpy, t->win, &a)) continue;
+        if (px >= a.x && px < a.x + a.width && py >= a.y && py < a.y + a.height)
+            return t;
+    }
+    return NULL;
+}
+/* drop-target highlight: border widens by 2px (color-agnostic, theme-safe).
+ * arrange() resets widths on the next layout, drag_end() restores live. */
+static void swap_highlight(Window w, int on) {
+    Client *c = (w == None) ? NULL : find(w);
+    int bw;
+    if (!c) return;
+    bw = S(BORDER);
+    XSetWindowBorderWidth(dpy, c->win, (unsigned)(on ? bw + 2 : bw));
+    XFlush(dpy);
+}
 /* position of c among tiled windows of its (ws, mon): index, count, nmaster */
 static int tiled_pos(Client *c, int *np, int *nmp) {
     int n = 0, idx = -1;
@@ -61,6 +87,7 @@ void drag_start(Client *c, int mode, int px, int py) {
         return;
     drag.win = c->win; drag.mode = mode;
     drag.px = px; drag.py = py;
+    drag.swap_target = None;
     drag.x = a.x; drag.y = a.y; drag.w = a.width; drag.h = a.height;
     drag.promoted = c->floating;
     drag.tiled0 = !c->floating;
@@ -116,6 +143,16 @@ void drag_motion(int px, int py) {
             if (new_mfact > 0.9f) new_mfact = 0.9f;
             MFACT = new_mfact;
         }
+        if (dy == 0) {
+            /* pure horizontal drag: restore both vertical neighbors
+             * so a prior vertical tweak does not stick asymmetrically */
+            Client *opu = (drag.nb_up == None) ? NULL : find(drag.nb_up);
+            Client *opd = (drag.nb_dn == None) ? NULL : find(drag.nb_dn);
+            if (opu && opu->ws == c->ws && opu->mon == c->mon &&
+                !opu->floating && !opu->fullscreen) opu->cfact = drag.nb_up0;
+            if (opd && opd->ws == c->ws && opd->mon == c->mon &&
+                !opd->floating && !opd->fullscreen) opd->cfact = drag.nb_dn0;
+        }
         if (dy != 0 && idx >= 0) {
             Window nbw = (dy > 0) ? drag.nb_dn : drag.nb_up;
             float nb0 = (dy > 0) ? drag.nb_dn0 : drag.nb_up0;
@@ -152,6 +189,15 @@ void drag_motion(int px, int py) {
                 if (fn > 4.0f) fn = 4.0f;
                 c->cfact = fc;
                 nb->cfact = fn;
+                /* symmetry: restore the neighbor on the idle side to its
+                 * baseline so reversing direction does not compound */
+                {
+                    Window idle_w = (dy > 0) ? drag.nb_up : drag.nb_dn;
+                    float idle0 = (dy > 0) ? drag.nb_up0 : drag.nb_dn0;
+                    Client *idle = (idle_w == None || idle_w == nbw) ? NULL : find(idle_w);
+                    if (idle && idle->ws == c->ws && idle->mon == c->mon &&
+                        !idle->floating && !idle->fullscreen) idle->cfact = idle0;
+                }
             }
         }
         arrange();
@@ -173,6 +219,17 @@ void drag_motion(int px, int py) {
     } else {
         XMoveWindow(dpy, c->win, drag.x + dx, drag.y + dy);
         XFlush(dpy);
+        /* live swap-target tracking: highlight the tile under the pointer
+         * so the drop preview reads before release (tile layout only) */
+        if (drag.tiled0 && LAYOUT == L_TILE && c->ws == curws) {
+            Client *t = tiled_at(c, px, py);
+            Window tw = t ? t->win : None;
+            if (tw != drag.swap_target) {
+                swap_highlight(drag.swap_target, 0);
+                drag.swap_target = tw;
+                swap_highlight(drag.swap_target, 1);
+            }
+        }
     }
 }
 void drag_end(int px, int py) {
@@ -181,12 +238,23 @@ void drag_end(int px, int py) {
     XUngrabPointer(dpy, CurrentTime);
     c = find(drag.win);
     int mode = drag.mode, tiled0 = drag.tiled0, mon0 = drag.mon0;
-    drag.win = None; drag.mode = 0;
+    Window swapt = drag.swap_target;
+    drag.win = None; drag.mode = 0; drag.swap_target = None;
     if (c) {
         if (mode == 1) {
             int newmon = mon_at(px, py);
+            Client *t = NULL;
+            /* bspwm swap: dropped onto another tile on the same monitor
+             * in tile layout -> exchange tiling positions, both stay tiled.
+             * Dropped elsewhere -> legacy behavior (float / cross-mon re-tile). */
+            if (tiled0 && newmon == mon0 && LAYOUT == L_TILE && c->ws == curws)
+                t = tiled_at(c, px, py);
+            if (swapt != None) swap_highlight(swapt, 0);
             c->mon = newmon;
-            if (tiled0 && newmon != mon0)
+            if (t) {
+                swap_order(c, t);
+                c->floating = 0;
+            } else if (tiled0 && newmon != mon0)
                 c->floating = 0; /* carried to another monitor: re-tile there */
         }
         if (c->floating) {

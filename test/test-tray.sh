@@ -25,7 +25,7 @@ assert_contains() {
 ICON=""; ICONOUT=""
 trap 'kill $ICON $WM $XVFB 2>/dev/null; rm -rf "$H" "$ICONOUT"; exit $fail' EXIT INT TERM
 
-gcc -O2 -o "$TDIR/tray-icon-helper" "$TDIR/tray-icon-helper.c" -lX11 || { echo "FAIL: build helper"; exit 1; }
+${CC:-gcc} ${CFLAGS:--O2} -o "$TDIR/tray-icon-helper" "$TDIR/tray-icon-helper.c" -lX11 || { echo "FAIL: build helper"; exit 1; }
 
 Xvfb $D -screen 0 1280x800x24 &
 XVFB=$!
@@ -48,7 +48,7 @@ if [ -n "$line" ]; then
     parent=$(echo "$line" | sed -n 's/.*parent=\(0x[0-9a-f]*\).*/\1/p')
     rootw=$(echo "$line" | sed -n 's/.*root=\(0x[0-9a-f]*\).*/\1/p')
     if [ "$parent" != "$rootw" ] && [ -n "$parent" ]; then echo "PASS: parent != root ($parent)"; else echo "FAIL: still child of root"; fail=1; fi
-    # 2. icon geometry: square, inside bar height (<=24)
+    # 2. icon geometry: square, inside bar height (<=32)
     win=$(echo "$line" | sed -n 's/.*win=\(0x[0-9a-f]*\).*/\1/p')
     dec=$((win))
     geom=$(xdotool getwindowgeometry --shell "$dec" 2>/dev/null || true)

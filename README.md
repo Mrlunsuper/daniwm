@@ -40,19 +40,19 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 | Super+f | fullscreen toggle (EWMH) |
 | Super+s | scratchpad toggle |
 | Super+Shift+r | reload config file |
-| Super+Left drag | move window (promotes tiled → floating on same monitor, re-tiles on cross-monitor drop) |
+| Super+Left drag | move window — tiled: drop onto another tile swaps them (bspwm-style, target highlighted with a thicker border); drop elsewhere floats, cross-monitor drop re-tiles |
 | Super+Right drag | resize window (tiling: horizontal = `mfact`, vertical = `cfact` height weight, stays tiled; floating: resizes window geometry) |
 | Super+Ctrl+h/j/k/l | move floating window 20px (repeat = smooth; promotes tiled → floating) |
 | Super+Ctrl+Shift+h/l | resize floating width -/+20px (repeat = smooth) |
 | Super+Ctrl+Shift+k/j | resize floating height -/+20px (repeat = smooth) |
 | Super+Shift+e | quit |
 
-Bar click on `1..5` switches workspace. `*` = occupied.
+Bar click on `1..5` switches workspace (active = pill + bright text, occupied = bright + dot, urgent = rose).
 Scroll on the bar = volume up/down, left-click on the volume module = mute toggle
 (middle/right-click anywhere on the bar also mutes)
 (backend auto: `amixer` → `wpctl` → `pactl`; laptop `XF86Audio*` keys work out of the box).
 Bar text is UTF-8 via Xft with per-glyph fallback (Vietnamese, symbols).
-Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL HH:MM`, `·` separators; falls back to `C/M/B/V` letters without a Nerd Font; low battery/MUTE in the urgent color; battery/volume hidden if unavailable, volume cached 2s)
+Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL DD/MM HH:MM`, custom `·` separators; falls back to `C/M/B/V` letters without a Nerd Font; low battery/MUTE/CPU≥80%/MEM≥80% in the urgent color; battery/volume hidden if unavailable, volume cached 2s; battery/volume icons change with level/charge/mute; layout shows a tile/monocle icon + window count, no brackets)
 
 ## Features
 
@@ -77,8 +77,12 @@ plus bar font `size=`; fractional ok, e.g. `scale = 1.5`; reload applies live),
 `font` (fontconfig pattern, e.g. `monospace:size=11`, `JetBrainsMono Nerd Font Mono:size=10`;
 default `monospace:size=10`, fallbacks built in: Nerd Fonts for icons, then
 `Noto Sans`/`DejaVu Sans`/`Sans`; without a Nerd Font the sysmon falls back to `C/M/B/V` letters),
-`bar_ws_style` (`underline` default | `block` = old full-height fill),
-`bar_gap` (0–8, default 2 — spaces around the `·` between right-side modules),
+`bar_ws_style` (`pill` default | `underline` | `block` = old full-height fill),
+`bar_gap` (0–8, default 3 — spaces around the separator between right-side modules),
+`bar_sep_str` (default `·` — right-module separator, empty = spaces only),
+`bar_modules` (default `cpu mem bat vol clock` — order + visibility, delete a name to hide),
+`clock_fmt` (strftime, default `%d/%m %H:%M` — e.g. `%H:%M` minimal),
+`bar_show_title` / `bar_show_layout` (1/0 — left title, layout icon + count),
 `bar_pad_l` (0–32, default 0 — left inset before the workspace block;
 workspace clicks are remapped so the padding is a no-op),
 `bar_pad_r` (0–32, default 8 — right margin after clock/tray; tray icons align to it),
@@ -86,18 +90,21 @@ workspace clicks are remapped so the padding is a no-op),
 for plain letters, empty = no icon; defaults = Nerd Font icons with automatic ASCII
 fallback — `ico_clk` falls back to nothing, preserving the old clock look),
 vertical padding: text/icons are always vertically centered, so top/bottom air is just
-`bar_h` (taller bar = more air; tray icons stay `bar_h-6`, capped at 24px),
+`bar_h` (taller bar = more air; tray icons stay `bar_h-10`, capped at 22px),
 `term/menu/scratch` (commands split with `wordexp`, quotes work).
 
 Bar colors: base `bar_bg/bar_fg/bar_acc/bar_dim` cover everything; optional
 per-component overrides fall back to those when unset:
 `bar_ws_active` (underline — or box in `block` mode — of current ws), `bar_ws_active_text` (label on it),
 `bar_ws_occ` (occupied ws label), `bar_ws_empty`, `bar_urgent` (urgent ws + low battery + MUTE),
-`bar_sep` (separators + bottom border), `bar_mode` (`[T] 3n`),
-`bar_title` (focused window title, clipped with `…`), `bar_sys` (sysmon values; icons use the accent color).
+`bar_sep` (separators + bottom border), `bar_mode` (window count),
+`bar_title` (left window title with `…` fallback when crowded, default dim so status wins), `bar_sys` (sysmon values, default bright; icons use the accent color).
 
 System tray: XEmbed (`_NET_SYSTEM_TRAY_Sn`) on the bar's right edge — `nm-applet --indicator`/
-`volumeicon`/`cbatticon` dock automatically; `tray = 0` disables (reload applies live).
+`volumeicon`/`cbatticon` dock automatically; a vertical divider separates the tray
+from the clock (same chrome as the workspace separator); clicking the tray area
+never leaks into workspace view; an ownerless selection is re-acquired automatically
+(e.g. after a standalone tray exits); `tray = 0` disables (reload applies live).
 Classic XEmbed only — StatusNotifier/AppIndicator apps need `snixembed` bridge.
 
 ```ini

@@ -21,12 +21,31 @@
 #define ICO_MEM  "\U000F035B"
 #define ICO_BAT  "\U000F0079"
 #define ICO_VOL  "\U000F057E"
+#define ICO_VOL_LOW "\U000F057F"
+#define ICO_VOL_MID "\U000F0580"
+#define ICO_VOL_HIGH ICO_VOL
 #define ICO_MUTE "\U000F0581"
+#define ICO_BAT_EMPTY "\U000F007A"
+#define ICO_BAT_LOW   "\U000F007B"
+#define ICO_BAT_MID   "\U000F007C"
+#define ICO_BAT_FULL  "\U000F0079"
+#define ICO_BAT_CHG   "\U000F0085"
+#define ICO_TILE "\U000F0640"
+#define ICO_MON  "\U000F0359"
 #define ICO_CLK  "\U0000F017"
 #define SEP_DOT  "\u00B7"
 #define ELLIPSIS "\u2026"
 
-/* ---- bar ---- */
+/* Nerd glyphs draw optically smaller than text at the same point size
+ * (lots of bearing space), so icon fallbacks open ~20% larger to sit
+ * level with the values next to them. Measurement and draw share
+ * bar_runs(), so the bigger extents stay exactly aligned. */
+#define ICON_FONT_SCALE 1
+/* v3 pill: active-ws backdrop = BAR_BG mixed 12% toward BAR_FG, so the
+ * current workspace reads as a zone instead of a lonely underline.
+ * Derived — no config needed, works on light and dark themes. */
+static unsigned long pill_pix = 0;
+static int pill_ok = 0;
 static void xft_alloc(unsigned long hex, XftColor *c) {
     XRenderColor rc = {
         (unsigned short)(((hex >> 16) & 0xff) * 257),
@@ -150,18 +169,29 @@ static void utf8_pop(char *s) {
     while (j > 0 && (s[j] & 0xC0) == 0x80) j--;
     s[j] = 0;
 }
-/* module separator: BAR_GAP spaces around U+00B7, built fresh per draw so
- * measure and draw always use the identical string (alignment stays exact).
- * BAR_GAP = 2 reproduces the old hardcoded "  ·  ". */
+/* module separator: BAR_GAP spaces around BAR_SEP_STR (default "·"),
+ * built fresh per draw so measure and draw always use the identical
+ * string (alignment stays exact). BAR_GAP = 3 reproduces airy spacing. */
 static void build_msep(char *out, size_t n) {
     int g = BAR_GAP;
+    const char *sep = (BAR_SEP_STR && *BAR_SEP_STR) ? BAR_SEP_STR : SEP_DOT;
+    size_t slen = strlen(sep);
     size_t k = 0;
     if (g < 0) g = 0;
     if (g > 8) g = 8;
     for (int i = 0; i < g && k + 1 < n; i++) out[k++] = ' ';
-    if (k + 2 < n) { memcpy(out + k, SEP_DOT, 2); k += 2; }
+    for (size_t i = 0; i < slen && k + 1 < n; i++) out[k++] = sep[i];
     for (int i = 0; i < g && k + 1 < n; i++) out[k++] = ' ';
     out[k < n ? k : n - 1] = 0;
+}
+/* bar_modules filter: "cpu mem bat vol clock" order+visibility.
+ * NULL/empty = show all. Unknown tokens ignored. */
+static int mod_wanted(const char *name) {
+    char buf[128];
+    if (!BAR_MODULES || !*BAR_MODULES) return 1;
+    snprintf(buf, sizeof(buf), "%.127s", BAR_MODULES);
+    for (char *p = buf; *p; p++) *p = (char)tolower((unsigned char)*p);
+    return strstr(buf, name) != NULL;
 }
 /* icon or ASCII fallback: first codepoint must exist in barfont/fallbacks,
  * else return ascii so machines without a Nerd Font never show tofu. */
@@ -220,15 +250,18 @@ void drawbar(void) {
             DefaultVisual(dpy, screen), DefaultColormap(dpy, screen));
         if (!barxd) return;
     }
+    if (!bargc) return;
 
-    /* component colors: explicit override, else base color */
+    /* component colors: explicit override, else base color.
+     * v4: values bright (FG) so sysmon reads at a glance;
+     * title muted (DIM) so it never fights the status modules. */
     unsigned long c_ws_act   = h_ws_act   ? C_WS_ACT   : BAR_ACC;
     unsigned long c_ws_acttx = h_ws_act_tx ? C_WS_ACT_TX : BAR_BG;
     unsigned long c_ws_occ   = h_ws_occ   ? C_WS_OCC   : BAR_FG;
     unsigned long c_ws_emp   = h_ws_emp   ? C_WS_EMP   : BAR_DIM;
     unsigned long c_mode     = h_mode     ? C_MODE     : BAR_FG;
-    unsigned long c_title    = h_title    ? C_TITLE    : BAR_FG;
-    unsigned long c_sys      = h_sys      ? C_SYS      : BAR_DIM;
+    unsigned long c_title    = h_title    ? C_TITLE    : BAR_DIM;
+    unsigned long c_sys      = h_sys      ? C_SYS      : BAR_FG;
     unsigned long c_sep      = h_sep      ? C_SEP      : BAR_DIM;
     (void)c_sys; (void)c_title; (void)c_mode;
 
@@ -250,7 +283,10 @@ void drawbar(void) {
     /* edge padding: left inset before the ws block, right margin after
      * text/tray (tray.c uses the same pad_r so icons line up with text) */
     int pad_l = S(BAR_PAD_L), pad_r = S(BAR_PAD_R);
-    /* ---- workspaces: underline (default) or block (rollback) ---- */
+    /* ---- workspaces: pill (default) | underline | block ----
+     * v4: one indicator only. pill = soft zone, no underline stacked,
+     * no fake-bold double-strike (was blurry at small sizes).
+     * occupied = bright text + tiny dot; empty = dim. */
     if (BAR_WS_STYLE == 1) {
         for (int i = 0; i < NWS; i++) {
             int x = pad_l + i * wsw;
@@ -272,10 +308,13 @@ void drawbar(void) {
                 }
             }
         }
-    } else {
+    } else if (BAR_WS_STYLE == 0) {
+        /* underline only: clean number + 2px accent line */
         int uh = S(2);
+        if (bar_h >= 36) uh = S(3) < 3 ? 3 : S(3);
         if (uh < 2) uh = 2;
         int wpad = S(6);
+        int dot = bar_h >= 36 ? 4 : 3;
         for (int i = 0; i < NWS; i++) {
             int x = pad_l + i * wsw;
             char label[16];
@@ -284,10 +323,6 @@ void drawbar(void) {
             int tx = x + (wsw - tw) / 2;
             if (tx < x) tx = x;
             if (i == curws) {
-                /* active wins over urgent: urgent is usually cleared by focus.
-                 * Underline mode draws on BAR_BG, so an un-overridden
-                 * active text (default BAR_BG, meant for block fill) would be
-                 * invisible -> fall back to the occupied (fg) color. */
                 XftColor *actx = h_ws_act_tx ? &barcol.ws_acttx : &barcol.ws_occ;
                 XSetForeground(dpy, bargc, c_ws_act);
                 bar_text(actx, tx, baseline, label);
@@ -295,37 +330,90 @@ void drawbar(void) {
                     XFillRectangle(dpy, barpm, bargc, x + wpad, bar_h - uh - 1,
                         (unsigned)(wsw - wpad * 2), (unsigned)uh);
             } else if (ws_has_urgent(i)) {
-                XSetForeground(dpy, bargc, h_urgent ? C_URGENT : 0xe64553);
+                XSetForeground(dpy, bargc, h_urgent ? C_URGENT : 0xeb6f92);
                 bar_text(&barcol.urgent, tx, baseline, label);
+            } else if (ws_occupied(i)) {
+                XSetForeground(dpy, bargc, c_ws_occ);
+                bar_text(&barcol.ws_occ, tx, baseline, label);
+                XSetForeground(dpy, bargc, c_ws_occ);
+                XFillRectangle(dpy, barpm, bargc,
+                    x + (wsw - dot) / 2, bar_h - dot - 3,
+                    (unsigned)dot, (unsigned)dot);
             } else {
-                XSetForeground(dpy, bargc, ws_occupied(i) ? c_ws_occ : c_ws_emp);
-                bar_text(ws_occupied(i) ? &barcol.ws_occ : &barcol.ws_emp, tx, baseline, label);
+                XSetForeground(dpy, bargc, c_ws_emp);
+                bar_text(&barcol.ws_emp, tx, baseline, label);
+            }
+        }
+    } else {
+        /* pill (default): soft rounded-look zone, no underline, no bold */
+        int dot = bar_h >= 36 ? 4 : 3;
+        for (int i = 0; i < NWS; i++) {
+            int x = pad_l + i * wsw;
+            char label[16];
+            snprintf(label, sizeof(label), "%d", i + 1);
+            int tw = bar_textw(label);
+            int tx = x + (wsw - tw) / 2;
+            if (tx < x) tx = x;
+            if (i == curws) {
+                XftColor *actx = h_ws_act_tx ? &barcol.ws_acttx : &barcol.ws_occ;
+                if (pill_ok && wsw > 10) {
+                    int ph = bar_h - 8;
+                    if (ph < 12) ph = 12;
+                    if (ph > bar_h - 4) ph = bar_h - 4;
+                    XSetForeground(dpy, bargc, pill_pix);
+                    XFillRectangle(dpy, barpm, bargc, x + 2, (bar_h - ph) / 2,
+                        (unsigned)(wsw - 4), (unsigned)ph);
+                }
+                XSetForeground(dpy, bargc, c_ws_act);
+                bar_text(actx, tx, baseline, label);
+            } else if (ws_has_urgent(i)) {
+                XSetForeground(dpy, bargc, h_urgent ? C_URGENT : 0xeb6f92);
+                bar_text(&barcol.urgent, tx, baseline, label);
+            } else if (ws_occupied(i)) {
+                XSetForeground(dpy, bargc, c_ws_occ);
+                bar_text(&barcol.ws_occ, tx, baseline, label);
+                XSetForeground(dpy, bargc, c_ws_occ);
+                XFillRectangle(dpy, barpm, bargc,
+                    x + (wsw - dot) / 2, bar_h - dot - 3,
+                    (unsigned)dot, (unsigned)dot);
+            } else {
+                XSetForeground(dpy, bargc, c_ws_emp);
+                bar_text(&barcol.ws_emp, tx, baseline, label);
             }
         }
     }
-    /* short vertical separator after the ws block */
+    /* v4: no vertical rule after ws — breathing space reads cleaner
+     * than chrome at 24px. Bottom border below stays as the anchor. */
+
+    /* ---- layout + counts: icon (accent) + count, no brackets ----
+     * v4: "icon 3" instead of "[M] 3n"; gaps-off appends dim " G-".
+     * bar_show_layout = 0 hides the whole block (title slides left). */
+    char modetxt[64];
+    modetxt[0] = 0;
+    const char *lay_icon = "";
+    int mode_end;
     {
-        int sx = pad_l + NWS * wsw + S(4);
-        int y1 = 6, y2 = bar_h - 7;
-        if (y2 > y1 && sx < barw) {
-            XSetForeground(dpy, bargc, c_sep);
-            XDrawLine(dpy, barpm, bargc, sx, y1, sx, y2);
+        int mx = pad_l + NWS * wsw + S(12);
+        if (BAR_SHOW_LAYOUT) {
+            snprintf(modetxt, sizeof(modetxt), "%d%s", n, gaps_on ? "" : " G-");
+            lay_icon = LAYOUT == L_TILE
+                ? pick_icon(ICO_TILE, "T")
+                : pick_icon(ICO_MON, "M");
+            XSetForeground(dpy, bargc, c_mode);
+            bar_text(&barcol.ws_act, mx, baseline, lay_icon);
+            int nx = mx + bar_textw(lay_icon) + bar_textw(" ");
+            bar_text(&barcol.mode, nx, baseline, modetxt);
+            mode_end = nx + bar_textw(modetxt);
+        } else {
+            mode_end = mx;
         }
     }
-
-    /* ---- layout + counts + gaps ---- */
-    char mode[64];
-    snprintf(mode, sizeof(mode), "[%c] %dn%s", LAYOUT == L_TILE ? 'T' : 'M', n, gaps_on ? "" : " G-");
-    int mx = pad_l + NWS * wsw + S(10);
-    XSetForeground(dpy, bargc, c_mode);
-    bar_text(&barcol.mode, mx, baseline, mode);
-    int mode_end = mx + bar_textw(mode);
 
     /* ---- right segments: measure first (for title clipping), draw later ---- */
     struct RSeg { const char *icon; char val[24]; int alert; int draw; int isvol; };
     struct RSeg segs[4];
     int nsegs = 0;
-    char clk[32] = "";
+    char clk[64] = "";
     {
         time_t now = time(NULL);
         static time_t sys_last_sec = 0;
@@ -340,27 +428,55 @@ void drawbar(void) {
             sys_last_sec = now;
         }
         const char *vol = sys_vol();
-        if (cached_cpu >= 0 && nsegs < 4) {
-            segs[nsegs].icon = pick_icon(ico_cpu ? ico_cpu : ICO_CPU, "C");
+        if (cached_cpu >= 0 && nsegs < 4 && mod_wanted("cpu")) {
+            /* custom ico_cpu (e.g. "CPU") -> honor it; default Nerd -> icon */
+            int custom = ico_cpu && strcmp(ico_cpu, ICO_CPU);
+            segs[nsegs].icon = custom ? pick_icon(ico_cpu, "C")
+                                       : pick_icon(ICO_CPU, "C");
             snprintf(segs[nsegs].val, sizeof(segs[nsegs].val), "%d%%", cached_cpu);
-            segs[nsegs].alert = 0; segs[nsegs].draw = 1; segs[nsegs].isvol = 0; nsegs++;
+            segs[nsegs].alert = cached_cpu >= 80; /* hot CPU glows urgent */
+            segs[nsegs].draw = 1; segs[nsegs].isvol = 0; nsegs++;
         }
-        if (cached_mem >= 0 && nsegs < 4) {
-            segs[nsegs].icon = pick_icon(ico_mem ? ico_mem : ICO_MEM, "M");
+        if (cached_mem >= 0 && nsegs < 4 && mod_wanted("mem")) {
+            int custom = ico_mem && strcmp(ico_mem, ICO_MEM);
+            segs[nsegs].icon = custom ? pick_icon(ico_mem, "M")
+                                       : pick_icon(ICO_MEM, "M");
             snprintf(segs[nsegs].val, sizeof(segs[nsegs].val), "%d%%", cached_mem);
-            segs[nsegs].alert = 0; segs[nsegs].draw = 1; segs[nsegs].isvol = 0; nsegs++;
+            segs[nsegs].alert = cached_mem >= 80;
+            segs[nsegs].draw = 1; segs[nsegs].isvol = 0; nsegs++;
         }
-        if (cached_bat >= 0 && nsegs < 4) {
-            int low = cached_bat < 20 && cached_bat_chg[0] != '+';
-            segs[nsegs].icon = pick_icon(ico_bat ? ico_bat : ICO_BAT, "B");
+        if (cached_bat >= 0 && nsegs < 4 && mod_wanted("bat")) {
+            int charging = cached_bat_chg[0] == '+';
+            int low = cached_bat < 20 && !charging;
+            const char *bi;
+            int custom = ico_bat && strcmp(ico_bat, ICO_BAT);
+            if (custom) bi = pick_icon(ico_bat, "B");
+            else if (charging) bi = pick_icon(ICO_BAT_CHG, "B");
+            else if (cached_bat < 10) bi = pick_icon(ICO_BAT_EMPTY, "B");
+            else if (cached_bat < 40) bi = pick_icon(ICO_BAT_LOW, "B");
+            else if (cached_bat < 80) bi = pick_icon(ICO_BAT_MID, "B");
+            else bi = pick_icon(ICO_BAT_FULL, "B");
+            segs[nsegs].icon = bi;
             snprintf(segs[nsegs].val, sizeof(segs[nsegs].val), "%d%s",
                 cached_bat, cached_bat_chg);
             segs[nsegs].alert = low; segs[nsegs].draw = 1; segs[nsegs].isvol = 0; nsegs++;
         }
-        if (vol && *vol) {
+        if (vol && *vol && mod_wanted("vol")) {
             int mute = !strcmp(vol, "MUTE");
             if (nsegs < 4) {
-                segs[nsegs].icon = mute ? pick_icon(ico_mute ? ico_mute : ICO_MUTE, "V") : pick_icon(ico_vol ? ico_vol : ICO_VOL, "V");
+                const char *vi;
+                int custom_v = ico_vol && strcmp(ico_vol, ICO_VOL);
+                int custom_m = ico_mute && strcmp(ico_mute, ICO_MUTE);
+                if (mute) vi = pick_icon(custom_m ? ico_mute : ICO_MUTE, "V");
+                else if (custom_v) vi = pick_icon(ico_vol, "V");
+                else {
+                    int pct = atoi(vol);
+                    if (pct <= 0 && vol[0] != '0') pct = 50; /* unparsable -> mid */
+                    if (pct < 30) vi = pick_icon(ICO_VOL_LOW, "V");
+                    else if (pct < 70) vi = pick_icon(ICO_VOL_MID, "V");
+                    else vi = pick_icon(ICO_VOL_HIGH, "V");
+                }
+                segs[nsegs].icon = vi;
                 snprintf(segs[nsegs].val, sizeof(segs[nsegs].val), "%.15s",
                     mute ? "MUTE" : vol);
                 segs[nsegs].alert = mute; segs[nsegs].draw = 1; segs[nsegs].isvol = 1; nsegs++;
@@ -371,8 +487,16 @@ void drawbar(void) {
         }
         {
             struct tm *tm = localtime(&now);
-            if (tm) strftime(clk, sizeof(clk), "%H:%M", tm);
-            else snprintf(clk, sizeof(clk), "--:--");
+            const char *fmt = (CLOCK_FMT && *CLOCK_FMT) ? CLOCK_FMT : "%d/%m %H:%M";
+            if (!mod_wanted("clock") && !mod_wanted("time") && !mod_wanted("date")) {
+                clk[0] = 0; /* hidden via bar_modules */
+            } else if (tm) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+                strftime(clk, sizeof(clk), fmt, tm);
+#pragma GCC diagnostic pop
+                if (!*clk) snprintf(clk, sizeof(clk), "--:--");
+            } else snprintf(clk, sizeof(clk), "--:--");
         }
     }
     int trayw = tray_width_px();
@@ -382,18 +506,19 @@ void drawbar(void) {
     int mid_w = bar_textw(msep);
     /* clock icon: default Nerd clock (verified in JetBrainsMono Nerd Font);
      * empty (no Nerd Font, or `ico_clk =`) -> no icon, exactly the old look */
-    const char *clk_icon = pick_icon(ico_clk ? ico_clk : ICO_CLK, "");
+    const char *clk_icon = (*clk && mod_wanted("clock") + mod_wanted("time") + mod_wanted("date") > 0)
+        ? pick_icon(ico_clk ? ico_clk : ICO_CLK, "") : "";
     int clk_icon_w = bar_textw(clk_icon);
     int right_w = bar_textw(clk);
+    int nright = nsegs + (*clk ? 1 : 0);
     if (clk_icon_w > 0) right_w += clk_icon_w + space_w; /* icon + gap */
     for (int i = 0; i < nsegs; i++)
         right_w += bar_textw(segs[i].icon) + space_w + bar_textw(segs[i].val);
-    if (nsegs > 0) right_w += mid_w; /* gap before clock */
-    if (nsegs > 1) right_w += (nsegs - 1) * mid_w;
+    if (nright > 1) right_w += (nright - 1) * mid_w;
     if (trayw > 0) right_w += mid_w; /* separator between clock and tray */
 
-    /* ---- focused title (UTF-8), clipped to the free space ---- */
-    if (sel) {
+    /* ---- focused title: v4 left-only, no prefix, muted so status wins ---- */
+    if (sel && BAR_SHOW_TITLE) {
         char t[128];
         if (get_title(sel->win, t, sizeof(t) - 16) > 0) {
             int tx = mode_end + S(12);
@@ -404,15 +529,17 @@ void drawbar(void) {
                     bar_text(&barcol.title, tx, baseline, t);
                 } else {
                     int ew = bar_textw(ELLIPSIS);
-                    char tmp[160];
-                    snprintf(tmp, sizeof(tmp), "%.150s", t);
-                    while (tmp[0] && bar_textw(tmp) > avail - ew) utf8_pop(tmp);
-                    size_t tn = strlen(tmp);
-                    if (tn + 3 < sizeof(tmp) - 1) {
-                        memcpy(tmp + tn, ELLIPSIS, 3);
-                        tmp[tn + 3] = 0;
+                    if (avail > ew) {
+                        char tmp[160];
+                        snprintf(tmp, sizeof(tmp), "%.150s", t);
+                        while (tmp[0] && bar_textw(tmp) > avail - ew) utf8_pop(tmp);
+                        size_t tn = strlen(tmp);
+                        if (tn + 3 < sizeof(tmp) - 1) {
+                            memcpy(tmp + tn, ELLIPSIS, 3);
+                            tmp[tn + 3] = 0;
+                        }
+                        bar_text(&barcol.title, tx, baseline, tmp);
                     }
-                    bar_text(&barcol.title, tx, baseline, tmp);
                 }
             }
         }
@@ -434,14 +561,43 @@ void drawbar(void) {
             bar_text(&barcol.sep, x, baseline, msep);
             x += mid_w;
         }
+        /* clock: split on LAST space so custom fmt like "%a %d/%m %H:%M"
+         * keeps time bright; single-token fmt draws one color. */
+        if (*clk) {
         if (clk_icon_w > 0) {
             bar_text(&barcol.ws_act, x, baseline, clk_icon);
             x += clk_icon_w + space_w;
         }
-        bar_text(&barcol.sys, x, baseline, clk);
+        {
+            char *sp = strrchr(clk, ' ');
+            if (sp) {
+                char date[16];
+                size_t dn = (size_t)(sp - clk);
+                if (dn >= sizeof(date)) dn = sizeof(date) - 1;
+                memcpy(date, clk, dn); date[dn] = 0;
+                bar_text(&barcol.sep, x, baseline, date);
+                x += bar_textw(date);
+                bar_text(&barcol.sep, x, baseline, " ");
+                x += space_w;
+                bar_text(&barcol.sys, x, baseline, sp + 1);
+                x += bar_textw(sp + 1);
+            } else {
+                bar_text(&barcol.sys, x, baseline, clk);
+                x += bar_textw(clk);
+            }
+        }
+        }
+        /* v2 tray divider: short vertical line (same chrome as the ws
+         * separator) instead of a "·" dot, so the tray reads as its
+         * own zone. Width budget (mid_w) is unchanged from measurement. */
         if (trayw > 0) {
-            x += bar_textw(clk);
-            bar_text(&barcol.sep, x, baseline, msep);
+            int xd = x + mid_w / 2;
+            int y1 = 6, y2 = bar_h - 7;
+            if (y2 > y1 && xd < barw) {
+                XSetForeground(dpy, bargc, c_sep);
+                XDrawLine(dpy, barpm, bargc, xd, y1, xd, y2);
+            }
+            x += mid_w;
         }
     }
 
@@ -519,8 +675,8 @@ void bar_style(void) {
     }
     for (int i = 0; fallbacks[i] && !barfont; i++)
         barfont = XftFontOpenName(dpy, screen, fallbacks[i]);
-    /* Eager fallback chain: Nerd Fonts only (same point size as the main
-     * font, scaled) so icons resolve on the very first draw. Text fallbacks
+    /* Eager fallback chain: Nerd Fonts only (main size x ICON_FONT_SCALE,
+     * so icons sit level with text) so icons resolve on the very first draw. Text fallbacks
      * (Noto/DejaVu/Sans for VN/symbols) open lazily via ensure_text_fbs()
      * on the first glyph miss — see bar_glyph_font(). NOTE: a custom
      * ico_* glyph living only in a text font falls back to ASCII until the
@@ -535,10 +691,9 @@ void bar_style(void) {
             }
         }
         char nerd1[96], nerd2[96];
-        snprintf(nerd1, sizeof(nerd1), "JetBrainsMono Nerd Font Mono:size=%.1f",
-            base_sz * (double)ui_scale);
-        snprintf(nerd2, sizeof(nerd2), "Symbols Nerd Font Mono:size=%.1f",
-            base_sz * (double)ui_scale);
+        double isz = base_sz * (double)ui_scale * ICON_FONT_SCALE;
+        snprintf(nerd1, sizeof(nerd1), "JetBrainsMono Nerd Font Mono:size=%.1f", isz);
+        snprintf(nerd2, sizeof(nerd2), "Symbols Nerd Font Mono:size=%.1f", isz);
         const char *fb_cands[] = { nerd1, nerd2, NULL };
         for (int i = 0; fb_cands[i] && bar_nfb < 6; i++) {
             XftFont *f = XftFontOpenName(dpy, screen, fb_cands[i]);
@@ -551,10 +706,19 @@ void bar_style(void) {
     xft_alloc(h_ws_occ ? C_WS_OCC : BAR_FG, &barcol.ws_occ);
     xft_alloc(h_ws_emp ? C_WS_EMP : BAR_DIM, &barcol.ws_emp);
     xft_alloc(h_mode ? C_MODE : BAR_FG, &barcol.mode);
-    xft_alloc(h_title ? C_TITLE : BAR_FG, &barcol.title);
-    xft_alloc(h_sys ? C_SYS : BAR_DIM, &barcol.sys);
-    xft_alloc(h_urgent ? C_URGENT : 0xe64553, &barcol.urgent);
+    xft_alloc(h_title ? C_TITLE : BAR_DIM, &barcol.title);
+    xft_alloc(h_sys ? C_SYS : BAR_FG, &barcol.sys);
+    xft_alloc(h_urgent ? C_URGENT : 0xeb6f92, &barcol.urgent);
     xft_alloc(h_sep ? C_SEP : BAR_DIM, &barcol.sep);
     barcol_ok = 1;
+    /* v3 pill pixel: free the previous cell, then mix BG 88% + FG 12% */
+    if (pill_ok) { XFreeColors(dpy, cmap, &pill_pix, 1, 0); pill_ok = 0; }
+    {
+        XColor xc;
+        xc.red   = (unsigned short)(((((BAR_BG >> 16) & 0xff) * 88 + ((BAR_FG >> 16) & 0xff) * 12) / 100) * 257);
+        xc.green = (unsigned short)(((((BAR_BG >> 8) & 0xff) * 88 + ((BAR_FG >> 8) & 0xff) * 12) / 100) * 257);
+        xc.blue  = (unsigned short)((((BAR_BG & 0xff) * 88 + (BAR_FG & 0xff) * 12) / 100) * 257);
+        if (XAllocColor(dpy, cmap, &xc)) { pill_pix = xc.pixel; pill_ok = 1; }
+    }
     drawbar();
 }

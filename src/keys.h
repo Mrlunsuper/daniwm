@@ -9,14 +9,14 @@ extern const unsigned nactions;
 extern Key *keys;
 extern unsigned nkeys;
 
-void k_vol_up(int);
-void k_vol_down(int);
-void k_vol_mute(int);
+void k_vol_up(int unused);
+void k_vol_down(int unused);
+void k_vol_mute(int unused);
 
 void grabkeys(void);
 void add_default_keys(void);
 void keys_reset(void);
 void push_key_fn(KeySym ks, unsigned int mod, void (*fn)(int), int arg);
-void k_reload(int);
+void k_reload(int unused);
 void k_exec(int idx);
 int push_exec_cmd(char **argv);

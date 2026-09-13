@@ -27,7 +27,8 @@ static Client *findscratch(void) {
     }
     return NULL;
 }
-static void k_scratch(int) {
+static void k_scratch(int unused) {
+    (void)unused;
     Client *s = findscratch();
     if (!s) { spawn(scratchcmd); return; }
     XWindowAttributes a;
@@ -35,6 +36,7 @@ static void k_scratch(int) {
     if (s->ws == curws && a.map_state == IsViewable) {
         s->ws = NWS; /* park: hidden, ignored by all ws loops */
         ewmh_set_wm_desktop(s); /* → sticky 0xFFFFFFFF */
+        ewmh_client_list(); /* drop parked window from _NET_CLIENT_LIST */
         XUnmapWindow(dpy, s->win);
         sel = NULL;
         Client *n = first_in_ws(curws);
@@ -44,6 +46,7 @@ static void k_scratch(int) {
     } else {
         s->ws = curws;
         ewmh_set_wm_desktop(s);
+        ewmh_client_list(); /* re-add unparked window to _NET_CLIENT_LIST */
         s->mon = mon_by_pointer();
         s->floating = 1;
         s->fullscreen = 0;
@@ -83,31 +86,32 @@ Key *keys = NULL;
 unsigned nkeys = 0;
 static unsigned capkeys = 0;
 
-static void k_focusnext(int) { focus_step(+1); }
-static void k_focusprev(int) { focus_step(-1); }
-static void k_kill(int)      { kill_sel(); }
-static void k_tile(int)      { ws_layout[curws] = L_TILE; arrange(); }
-static void k_monocle(int)   { ws_layout[curws] = L_MONOCLE; arrange(); }
-static void k_toggle(int)    { ws_layout[curws] = (LAYOUT == L_TILE ? L_MONOCLE : L_TILE); arrange(); }
-static void k_spawnterm(int) { spawn(termcmd); }
-static void k_spawnmenu(int) { spawn(menucmd); }
-static void k_quit(int)      { quit(); }
-static void k_float(int)     { toggle_floating_sel(); }
-static void k_mfactdec(int)  { MFACT -= 0.025f; if (MFACT < 0.1f) MFACT = 0.1f; arrange(); }
-static void k_mfactinc(int)  { MFACT += 0.025f; if (MFACT > 0.9f) MFACT = 0.9f; arrange(); }
-static void k_nmasterdec(int){ if (NMASTER > 1) NMASTER--; arrange(); }
-static void k_nmasterinc(int){ if (NMASTER < 8) NMASTER++; arrange(); } /* cap 8, like config */
-static void k_gap(int)       { gaps_on = !gaps_on; arrange(); }
-static void k_gapdec(int)    { gap_outer = gap_outer >= 2 ? gap_outer - 2 : 0; if (gap_inner > 0) gap_inner -= 1; arrange(); }
-static void k_gapinc(int)    { gap_outer += 2; gap_inner += 1; arrange(); }
-static void k_bar(int) {
+static void k_focusnext(int unused) { (void)unused; focus_step(+1); }
+static void k_focusprev(int unused) { (void)unused; focus_step(-1); }
+static void k_kill(int unused)      { (void)unused; kill_sel(); }
+static void k_tile(int unused)      { (void)unused; ws_layout[curws] = L_TILE; arrange(); }
+static void k_monocle(int unused)   { (void)unused; ws_layout[curws] = L_MONOCLE; arrange(); }
+static void k_toggle(int unused)    { (void)unused; ws_layout[curws] = (LAYOUT == L_TILE ? L_MONOCLE : L_TILE); arrange(); }
+static void k_spawnterm(int unused) { (void)unused; spawn(termcmd); }
+static void k_spawnmenu(int unused) { (void)unused; spawn(menucmd); }
+static void k_quit(int unused)      { (void)unused; quit(); }
+static void k_float(int unused)     { (void)unused; toggle_floating_sel(); }
+static void k_mfactdec(int unused)  { (void)unused; MFACT -= 0.025f; if (MFACT < 0.1f) MFACT = 0.1f; arrange(); }
+static void k_mfactinc(int unused)  { (void)unused; MFACT += 0.025f; if (MFACT > 0.9f) MFACT = 0.9f; arrange(); }
+static void k_nmasterdec(int unused){ (void)unused; if (NMASTER > 1) NMASTER--; arrange(); }
+static void k_nmasterinc(int unused){ (void)unused; if (NMASTER < 8) NMASTER++; arrange(); } /* cap 8, like config */
+static void k_gap(int unused)       { (void)unused; gaps_on = !gaps_on; arrange(); }
+static void k_gapdec(int unused)    { (void)unused; gap_outer = gap_outer >= 2 ? gap_outer - 2 : 0; if (gap_inner > 0) gap_inner -= 1; arrange(); }
+static void k_gapinc(int unused)    { (void)unused; gap_outer += 2; gap_inner += 1; arrange(); }
+static void k_bar(int unused) {
+    (void)unused;
     bar_on = !bar_on;
     if (bar_on) XMapWindow(dpy, bar);
     else XUnmapWindow(dpy, bar);
     update_struts();
     arrange();
 }
-static void k_fullscreen(int) { if (sel) setfullscreen(sel, !sel->fullscreen); }
+static void k_fullscreen(int unused) { (void)unused; if (sel) setfullscreen(sel, !sel->fullscreen); }
 /* Volume interaction: amixer, fire-and-forget. vol_ts = 0 forces the 1s tick
  * to re-sample so the bar refreshes promptly (no blocking sample here). */
 static char *vol_up_am[]   = { "amixer", "set", "Master", "5%+", NULL };
@@ -119,9 +123,9 @@ static char *vol_mute_wp[] = { "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "tog
 static char *vol_up_pa[]   = { "pactl", "set-sink-volume", "@DEFAULT_SINK@", "+5%", NULL };
 static char *vol_down_pa[] = { "pactl", "set-sink-volume", "@DEFAULT_SINK@", "-5%", NULL };
 static char *vol_mute_pa[] = { "pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle", NULL };
-void k_vol_up(int)   { spawn(vol_set_cmd(vol_up_am, vol_up_wp, vol_up_pa)); vol_ts = 0; }
-void k_vol_down(int) { spawn(vol_set_cmd(vol_down_am, vol_down_wp, vol_down_pa)); vol_ts = 0; }
-void k_vol_mute(int) { spawn(vol_set_cmd(vol_mute_am, vol_mute_wp, vol_mute_pa)); vol_ts = 0; }
+void k_vol_up(int unused)   { (void)unused; spawn(vol_set_cmd(vol_up_am, vol_up_wp, vol_up_pa)); vol_ts = 0; }
+void k_vol_down(int unused) { (void)unused; spawn(vol_set_cmd(vol_down_am, vol_down_wp, vol_down_pa)); vol_ts = 0; }
+void k_vol_mute(int unused) { (void)unused; spawn(vol_set_cmd(vol_mute_am, vol_mute_wp, vol_mute_pa)); vol_ts = 0; }
 /* Keyboard float move/resize: 20px steps, key repeat = smooth.
  * Tiled windows promote to floating first (same as mouse drag). */
 static void float_promote(void) {
@@ -152,14 +156,14 @@ static void float_rszby(int dw, int dh) {
     XResizeWindow(dpy, sel->win, (unsigned)sel->fw, (unsigned)sel->fh);
     XFlush(dpy);
 }
-static void k_move_left(int)  { float_moveby(-S(FLOAT_STEP), 0); }
-static void k_move_right(int) { float_moveby(S(FLOAT_STEP), 0); }
-static void k_move_up(int)    { float_moveby(0, -S(FLOAT_STEP)); }
-static void k_move_down(int)  { float_moveby(0, S(FLOAT_STEP)); }
-static void k_rsz_w_dec(int)  { float_rszby(-S(RSZ_STEP), 0); }
-static void k_rsz_w_inc(int)  { float_rszby(S(RSZ_STEP), 0); }
-static void k_rsz_h_dec(int)  { float_rszby(0, -S(RSZ_STEP)); }
-static void k_rsz_h_inc(int)  { float_rszby(0, S(RSZ_STEP)); }
+static void k_move_left(int unused)  { (void)unused; float_moveby(-S(FLOAT_STEP), 0); }
+static void k_move_right(int unused) { (void)unused; float_moveby(S(FLOAT_STEP), 0); }
+static void k_move_up(int unused)    { (void)unused; float_moveby(0, -S(FLOAT_STEP)); }
+static void k_move_down(int unused)  { (void)unused; float_moveby(0, S(FLOAT_STEP)); }
+static void k_rsz_w_dec(int unused)  { (void)unused; float_rszby(-S(RSZ_STEP), 0); }
+static void k_rsz_w_inc(int unused)  { (void)unused; float_rszby(S(RSZ_STEP), 0); }
+static void k_rsz_h_dec(int unused)  { (void)unused; float_rszby(0, -S(RSZ_STEP)); }
+static void k_rsz_h_inc(int unused)  { (void)unused; float_rszby(0, S(RSZ_STEP)); }
 const KeyAction actions[] = {
     { "focus_next", k_focusnext }, { "focus_prev", k_focusprev },
     { "zoom", zoom }, { "ws_toggle", ws_toggle }, { "kill", k_kill }, { "tile", k_tile }, { "monocle", k_monocle },

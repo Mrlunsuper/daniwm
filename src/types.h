@@ -1,4 +1,10 @@
 #pragma once
+/* Feature macros for strict ISO C (-std=c11 -pedantic-errors):
+ * expose POSIX.1-2008 declarations (getline, setenv, fork, popen,
+ * strcasecmp, wordexp) that strict C hides. Must precede any libc header. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <X11/Xlib.h>
 #include <X11/Xft/Xft.h>
 
@@ -32,7 +38,7 @@ struct Dock {
     Dock *next;
 };
 
-typedef struct { Window win; int mode; int px, py, x, y, w, h, promoted, tiled0, mon0; float mfact0, cfact0; Window nb_up, nb_dn; float nb_up0, nb_dn0; } Drag;
+typedef struct { Window win; int mode; int px, py, x, y, w, h, promoted, tiled0, mon0; float mfact0, cfact0; Window nb_up, nb_dn; float nb_up0, nb_dn0; Window swap_target; } Drag;
 
 typedef struct TrayIcon TrayIcon;
 struct TrayIcon {

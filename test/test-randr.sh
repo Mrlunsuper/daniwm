@@ -8,10 +8,13 @@ set -u
 TDIR=$(dirname "$0")
 . "$TDIR/find_display.sh"
 export DISPLAY=$D
+H=$(mktemp -d)
+unset XDG_CONFIG_HOME
+trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$H"; wait 2>/dev/null' EXIT INT TERM
 Xvfb $D -screen 0 1280x800x24 >/dev/null 2>&1 & XVFB=$!
 sleep 1
 export DISPLAY=$D
-./daniwm >/dev/null 2>&1 & WM=$!
+HOME=$H "${WM_BIN:-$TDIR/../daniwm}" >/dev/null 2>&1 & WM=$!
 sleep 1
 xterm & sleep 1
 pass=0; fail=0
@@ -30,5 +33,6 @@ echo "after: $AFTER"
 echo "$AFTER" | grep -q "992x544" && R=0 || R=1
 ok "client re-tiled to smaller screen (992x544)" test $R -eq 0
 kill $WM $XVFB 2>/dev/null; wait 2>/dev/null
+rm -rf "$H"
 echo "$pass PASS, $fail FAIL"
 test $fail -eq 0

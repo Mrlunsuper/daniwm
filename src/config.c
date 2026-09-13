@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L /* getline() under strict -std=c11 */
 #include "config.h"
 
 #include <X11/Xlib.h>
@@ -103,10 +104,14 @@ void config_defaults(void) {
     BAR_BG = 0x1e1e2e; BAR_FG = 0xcdd6f4; BAR_ACC = 0x7aa2f7; BAR_DIM = 0x6c7086;
     C_WS_ACT = C_WS_ACT_TX = C_WS_OCC = C_WS_EMP = C_MODE = C_TITLE = C_SYS = 0;
     h_ws_act = h_ws_act_tx = h_ws_occ = h_ws_emp = h_mode = h_title = h_sys = 0;
-    C_URGENT = 0xe64553; C_SEP = 0; h_urgent = h_sep = 0; BAR_WS_STYLE = 0;
-    BAR_H = 24; WS_W = 40; ui_scale = 1.0f;
-    BAR_GAP = 2;
-    BAR_PAD_L = 0; BAR_PAD_R = 8;
+    C_URGENT = 0xeb6f92; C_SEP = 0; h_urgent = h_sep = 0; BAR_WS_STYLE = 2;
+    BAR_H = 24; WS_W = 46; ui_scale = 1.0f;
+    BAR_GAP = 3;
+    BAR_PAD_L = 10; BAR_PAD_R = 12;
+    free(BAR_MODULES); BAR_MODULES = xstrdup("cpu mem bat vol clock");
+    free(CLOCK_FMT); CLOCK_FMT = xstrdup("%d/%m %H:%M");
+    free(BAR_SEP_STR); BAR_SEP_STR = xstrdup("\u00B7");
+    BAR_SHOW_TITLE = 1; BAR_SHOW_LAYOUT = 1;
     free(ico_cpu); ico_cpu = xstrdup("\U000F06E0");
     free(ico_mem); ico_mem = xstrdup("\U000F035B");
     free(ico_bat); ico_bat = xstrdup("\U000F0079");
@@ -115,7 +120,7 @@ void config_defaults(void) {
     free(ico_clk); ico_clk = xstrdup("\U0000F017");
     tray_on = 1;
     free(font_name);
-    font_name = xstrdup("monospace:size=10");
+    font_name = xstrdup("JetBrainsMono Nerd Font Mono:size=10");
     bar_on = 1; gaps_on = 1; gap_outer = 10; gap_inner = 8;
     def_mfact = 0.55f; def_nmaster = 1;
     set_cmd(&termcmd, "xterm");
@@ -174,7 +179,21 @@ static void parse_scalar(char *key, char *val) {
     } else if (!strcmp(key, "bar_ws_style")) {
         if (!strcasecmp(val, "underline")) BAR_WS_STYLE = 0;
         else if (!strcasecmp(val, "block")) BAR_WS_STYLE = 1;
-        else fprintf(stderr, "daniwm: bad bar_ws_style '%s' (want underline|block)\n", val);
+        else if (!strcasecmp(val, "pill")) BAR_WS_STYLE = 2;
+        else fprintf(stderr, "daniwm: bad bar_ws_style '%s' (want pill|underline|block)\n", val);
+    } else if (!strcmp(key, "bar_modules")) {
+        char *dup = xstrdup(val);
+        if (dup) { free(BAR_MODULES); BAR_MODULES = dup; }
+    } else if (!strcmp(key, "clock_fmt")) {
+        char *dup = xstrdup(val);
+        if (dup) { free(CLOCK_FMT); CLOCK_FMT = dup; }
+    } else if (!strcmp(key, "bar_sep_str")) {
+        char *dup = xstrdup(val);
+        if (dup) { free(BAR_SEP_STR); BAR_SEP_STR = dup; }
+    } else if (!strcmp(key, "bar_show_title") || !strcmp(key, "bar_title_on") || !strcmp(key, "show_title")) {
+        if (parse_bool(val, &b)) BAR_SHOW_TITLE = b;
+    } else if (!strcmp(key, "bar_show_layout") || !strcmp(key, "bar_layout_on") || !strcmp(key, "show_layout")) {
+        if (parse_bool(val, &b)) BAR_SHOW_LAYOUT = b;
     } else if (!strcmp(key, "bar_gap")) {
         v = strtol(val, NULL, 10); if (v >= 0 && v <= 8) BAR_GAP = (int)v;
         else fprintf(stderr, "daniwm: bad bar_gap '%s' (want 0..8)\n", val);
@@ -318,6 +337,7 @@ static void parse_bind(const char *val, int lineno, const char *path) {
         return;
     }
 have_action:
+    ; /* ISO C: label must precede a statement, not a declaration */
     /* combo (before last ':'): split on '+', collect tokens in one pass */
     size_t clen = (size_t)(sep - val);
     char combo[256];
@@ -451,6 +471,9 @@ void load_config(const char *path) {
             strcmp(k, "bar_ws_active_text") && strcmp(k, "bar_ws_occ") && strcmp(k, "bar_ws_empty") &&
             strcmp(k, "bar_mode") && strcmp(k, "bar_title") && strcmp(k, "bar_sys") &&
             strcmp(k, "bar_urgent") && strcmp(k, "bar_sep") && strcmp(k, "bar_ws_style") &&
+            strcmp(k, "bar_modules") && strcmp(k, "clock_fmt") && strcmp(k, "bar_sep_str") &&
+            strcmp(k, "bar_show_title") && strcmp(k, "bar_title_on") && strcmp(k, "show_title") &&
+            strcmp(k, "bar_show_layout") && strcmp(k, "bar_layout_on") && strcmp(k, "show_layout") &&
             strcmp(k, "bar_h") && strcmp(k, "bar_gap") && strcmp(k, "ico_cpu") &&
             strcmp(k, "ico_mem") && strcmp(k, "ico_bat") && strcmp(k, "ico_vol") &&
             strcmp(k, "ico_mute") && strcmp(k, "ico_clk") && strcmp(k, "bar_pad_l") &&
@@ -501,7 +524,8 @@ void finalize_nws(void) {
     update_struts();
     ewmh_desktops();
 }
-void k_reload(int) {
+void k_reload(int unused) {
+    (void)unused;
     load_config(NULL);
     for (int i = 0; i < NWS; i++) {
         if (ws_mfact[i] < 0.1f || ws_mfact[i] > 0.9f) ws_mfact[i] = def_mfact;

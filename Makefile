@@ -4,6 +4,7 @@ BINDIR  ?= $(PREFIX)/bin
 SESSIONDIR ?= $(PREFIX)/share/xsessions
 
 CFLAGS  ?= -O2
+CFLAGS  += -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 CFLAGS  += -Wall -Wextra -Wpedantic -Wshadow -D_FORTIFY_SOURCE=2
 CFLAGS  += -fstack-protector-strong -fPIE
 CFLAGS  += -Wformat=2 -Wformat-security
