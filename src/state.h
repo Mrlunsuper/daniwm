@@ -93,6 +93,8 @@ extern float def_mfact;
 extern int def_nmaster;
 extern int NWS;
 
+extern char progpath[1024]; /* argv[0] saved at startup for restart-in-place exec */
+
 /* ---- EWMH atoms ---- */
 extern Atom A_TRAY_SEL, A_TRAY_OPCODE, A_XEMBED, A_XEMBED_INFO,
     A_TRAY_ORIENT, A_MANAGER;

@@ -36,6 +36,7 @@ int gap_inner = 8;
 float def_mfact = 0.55f;
 int def_nmaster = 1;
 int NWS = 5;
+char progpath[1024] = "";
 
 Display *dpy;
 Window root, bar, checkwin;

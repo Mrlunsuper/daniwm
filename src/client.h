@@ -23,3 +23,4 @@ void    zoom(int n);
 void    ws_toggle(int n);
 void    keep_docks_on_top(void);
 void    quit(void);
+void    restart(void); /* exec fresh binary, clients survive (restart-in-place) */

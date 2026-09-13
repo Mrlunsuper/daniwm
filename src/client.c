@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -319,6 +320,27 @@ void quit(void) {
     tray_enable(0); /* un-embed tray icons back to root before disconnect */
     XCloseDisplay(dpy);
     exit(0);
+}
+
+/* restart-in-place: replace this process with a fresh daniwm binary without
+ * killing clients. Windows stay mapped (reparented to root on disconnect);
+ * the new instance re-manages them, restoring workspace via _NET_WM_DESKTOP,
+ * fullscreen via _NET_WM_STATE, curws via _NET_CURRENT_DESKTOP, focus via
+ * _NET_ACTIVE_WINDOW, and the parked scratchpad via its sticky hint.
+ * Floating state and per-workspace layout/mfact reset to defaults. */
+void restart(void) {
+    tray_enable(0); /* un-embed tray icons back to root before disconnect */
+    XSync(dpy, False);
+    if (dpy) XCloseDisplay(dpy);
+    /* /proc/self/exe always points at the running file, so a freshly `make`d
+     * binary is picked up even when we were started via a relative path. */
+    char exe[1024] = "";
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) { exe[n] = '\0'; execl(exe, exe, (char *)NULL); }
+    if (progpath[0]) execl(progpath, progpath, (char *)NULL);
+    execlp("daniwm", "daniwm", (char *)NULL);
+    fprintf(stderr, "daniwm: restart exec failed: %s\n", strerror(errno));
+    _exit(1);
 }
 
 /* ---- rules + scratchpad ---- */

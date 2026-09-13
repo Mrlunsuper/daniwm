@@ -13,6 +13,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <sys/select.h>
+#include <sys/time.h>
 
 #include "types.h"
 #include "state.h"
@@ -34,6 +35,21 @@ static int xerror_other_wm(Display *d, XErrorEvent *e) {
     return -1;
 }
 static int xerror_ignore(Display *d, XErrorEvent *e) { (void)d; (void)e; return 0; }
+
+/* true when the window carries the sticky (0xFFFFFFFF) desktop hint —
+ * i.e. a parked scratchpad left behind by a pre-restart instance. */
+static int is_sticky(Window w) {
+    Atom rt; int rf; unsigned long n, extra;
+    unsigned char *data = NULL;
+    int sticky = 0;
+    if (A_NET_WM_DESKTOP == None) return 0;
+    if (XGetWindowProperty(dpy, w, A_NET_WM_DESKTOP, 0, 1, False, XA_CARDINAL,
+        &rt, &rf, &n, &extra, &data) == Success && data) {
+        if (rf == 32 && n == 1 && *(unsigned long *)data == 0xFFFFFFFFUL) sticky = 1;
+        XFree(data);
+    }
+    return sticky;
+}
 
 /* systemd/D-Bus env propagation (fix portal + notifications).
  * WM custom mà quên bước này thì systemd user services không thấy DISPLAY,
@@ -61,7 +77,9 @@ static void session_init(void) {
     }
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc > 0 && argv && argv[0] && *argv[0])
+        snprintf(progpath, sizeof(progpath), "%s", argv[0]);
     session_init();
     signal(SIGCHLD, SIG_IGN); /* auto-reap spawn()ed children, no zombies */
     dpy = XOpenDisplay(NULL);
@@ -79,6 +97,19 @@ int main(void) {
     XSync(dpy, False);
     XSetErrorHandler(xerror_ignore);
     ewmh_init();
+    /* restart beacon: re-exec keeps the PID and the X server may recycle the
+     * supporting-window ID, so external watchers (and test-restart.sh) use
+     * this ever-changing stamp to detect a fresh instance. */
+    {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        Atom beat = XInternAtom(dpy, "_DANIWM_HEARTBEAT", False);
+        if (beat != None) {
+            unsigned long v[2] = { (unsigned long)tv.tv_sec, (unsigned long)tv.tv_usec };
+            XChangeProperty(dpy, root, beat, XA_CARDINAL, 32,
+                PropModeReplace, (unsigned char *)v, 2);
+        }
+    }
 
     /* RandR hotplug: re-tile on output connect/disconnect, no restart.
      * Xinerama emulation sits on top of RandR, so re-querying it
@@ -109,15 +140,59 @@ int main(void) {
     grabkeys();
 
     Window r, p, *kids = NULL; unsigned int nk = 0;
+    /* restart-in-place: the previous instance published its workspace on
+     * root before exec; pick it up so we land on the same desktop. */
+    {
+        Atom rt; int rf; unsigned long n, extra;
+        unsigned char *data = NULL;
+        if (XGetWindowProperty(dpy, root, A_NET_CURRENT_DESKTOP, 0, 1, False, XA_CARDINAL,
+            &rt, &rf, &n, &extra, &data) == Success && data) {
+            if (rf == 32 && n == 1) {
+                long d = *(long *)data;
+                if (d >= 0 && d < NWS) { curws = (int)d; prevws = (int)d; }
+            }
+            XFree(data);
+        }
+    }
     if (XQueryTree(dpy, root, &r, &p, &kids, &nk))
         for (unsigned i = 0; i < nk; i++) {
             XWindowAttributes a;
             if (kids[i] == bar || kids[i] == traywin) continue;
-            if (XGetWindowAttributes(dpy, kids[i], &a) && !a.override_redirect && a.map_state == IsViewable)
-                manage(kids[i]);
+            if (!XGetWindowAttributes(dpy, kids[i], &a) || a.override_redirect) continue;
+            if (a.map_state == IsViewable) { manage(kids[i]); continue; }
+            /* Hidden window carrying our desktop hint was managed before the
+             * restart (lives on another workspace): adopt it back. Windows
+             * without the hint are foreign/withdrawn helpers — leave them. */
+            if (ewmh_read_desktop(kids[i]) < 0 && !is_sticky(kids[i])) continue;
+            manage(kids[i]);
+            /* hidden window with the sticky (0xFFFFFFFF) desktop hint is the
+             * parked scratchpad from a pre-restart life: park it again
+             * instead of mapping it onto this workspace. */
+            if (is_sticky(kids[i])) {
+                Client *c = find(kids[i]);
+                if (c) {
+                    c->ws = NWS;
+                    XUnmapWindow(dpy, c->win);
+                    ewmh_set_wm_desktop(c); /* back to sticky */
+                    ewmh_client_list();
+                }
+            }
         }
     if (kids) XFree(kids);
     arrange();
+    /* restart-in-place: restore the pre-restart focus. */
+    {
+        Atom rt; int rf; unsigned long n, extra;
+        unsigned char *data = NULL;
+        if (XGetWindowProperty(dpy, root, A_NET_ACTIVE_WINDOW, 0, 1, False, XA_WINDOW,
+            &rt, &rf, &n, &extra, &data) == Success && data) {
+            if (rf == 32 && n == 1) {
+                Client *c = find(*(Window *)data);
+                if (c && c->ws == curws) focus(c);
+            }
+            XFree(data);
+        }
+    }
     /* autostart (non-blocking) */
     {
         const char *xdg = getenv("XDG_CONFIG_HOME");

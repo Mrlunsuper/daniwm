@@ -95,6 +95,7 @@ static void k_toggle(int unused)    { (void)unused; ws_layout[curws] = (LAYOUT =
 static void k_spawnterm(int unused) { (void)unused; spawn(termcmd); }
 static void k_spawnmenu(int unused) { (void)unused; spawn(menucmd); }
 static void k_quit(int unused)      { (void)unused; quit(); }
+static void k_restart(int unused)   { (void)unused; restart(); }
 static void k_float(int unused)     { (void)unused; toggle_floating_sel(); }
 static void k_mfactdec(int unused)  { (void)unused; MFACT -= 0.025f; if (MFACT < 0.1f) MFACT = 0.1f; arrange(); }
 static void k_mfactinc(int unused)  { (void)unused; MFACT += 0.025f; if (MFACT > 0.9f) MFACT = 0.9f; arrange(); }
@@ -179,7 +180,7 @@ const KeyAction actions[] = {
     { "bar", k_bar },
     { "fullscreen", k_fullscreen }, { "scratch", k_scratch },
     { "vol_up", k_vol_up }, { "vol_down", k_vol_down }, { "vol_mute", k_vol_mute },
-    { "reload_config", k_reload },
+    { "reload_config", k_reload }, { "restart", k_restart },
 };
 const unsigned nactions = sizeof(actions) / sizeof(actions[0]);
 
@@ -233,6 +234,7 @@ void add_default_keys(void) {
     push_key_fn(XK_space, M | ShiftMask, k_float, 0);
     push_key_fn(XK_e, M | ShiftMask, k_quit, 0);
     push_key_fn(XK_r, M | ShiftMask, k_reload, 0);
+    push_key_fn(XK_r, M | ControlMask, k_restart, 0);
     push_key_fn(XK_f, M, k_fullscreen, 0);
     push_key_fn(XK_s, M, k_scratch, 0);
 }
