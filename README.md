@@ -56,6 +56,8 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 | Super+Shift+e | quit |
 
 Bar click on `1..N` switches workspace (active = pill + bright text, occupied = bright + dot, urgent = rose).
+Task buttons (one per window on this workspace, Awesome-style): left-click focuses,
+middle-click closes. Urgent windows glow in the urgent color.
 Scroll on the bar = volume up/down, left-click on the volume module = mute toggle
 (middle/right-click anywhere on the bar also mutes)
 (backend auto: `amixer` → `wpctl` → `pactl`; laptop `XF86Audio*` keys work out of the box).
@@ -98,6 +100,8 @@ default `monospace:size=10`, fallbacks built in: Nerd Fonts for icons, then
 `bar_modules` (default `cpu mem bat vol clock` — order + visibility, delete a name to hide),
 `clock_fmt` (strftime, default `%d/%m %H:%M` — e.g. `%H:%M` minimal),
 `bar_show_title` / `bar_show_layout` (1/0 — left title, layout icon + count),
+`bar_show_tasks` (1/0, default 1 — Awesome-style clickable task buttons;
+replaces the lone title when on; overflow collapses into a `+N` chip),
 `bar_pad_l` (0–32, default 0 — left inset before the workspace block;
 workspace clicks are remapped so the padding is a no-op),
 `bar_pad_r` (0–32, default 8 — right margin after clock/tray; tray icons align to it),

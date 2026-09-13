@@ -36,6 +36,24 @@ static int xerror_other_wm(Display *d, XErrorEvent *e) {
 }
 static int xerror_ignore(Display *d, XErrorEvent *e) { (void)d; (void)e; return 0; }
 
+/* tasklist click: Button1 focuses, Button2 closes (browser-tab style).
+ * Returns 1 when the click landed on a task button: the caller must not
+ * fall through to workspace view or tray checks. */
+static int bar_task_click(int x, unsigned button) {
+    if (button != Button1 && button != Button2) return 0;
+    for (int i = 0; i < task_nhit; i++) {
+        if (x >= task_hit_x0[i] && x <= task_hit_x1[i]) {
+            Client *c = find(task_hit_win[i]);
+            if (c && c->ws == curws) {
+                if (button == Button1) focus(c);
+                else kill_client(c);
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* true when the window carries the sticky (0xFFFFFFFF) desktop hint —
  * i.e. a parked scratchpad left behind by a pre-restart instance. */
 static int is_sticky(Window w) {
@@ -454,6 +472,7 @@ int main(int argc, char **argv) {
                 else if (e->button == Button5) { k_vol_down(0); } /* scroll down: quieter */
                 else if (e->button == Button2 || e->button == Button3) {
                     if (on_vol) k_vol_mute(0); /* mid/right: mute */
+                    else bar_task_click(e->x, e->button); /* mid: close task */
                 }
                 else {
                     /* left-click on the volume segment mutes; anywhere
@@ -462,6 +481,8 @@ int main(int argc, char **argv) {
                         k_vol_mute(0);
                         break;
                     }
+                    /* tasklist: a matched click never falls through. */
+                    if (bar_task_click(e->x, e->button)) break;
                     /* v2: tray container background is dead zone — clicks
                      * there (not on an icon window) must never fall through
                      * to workspace view */

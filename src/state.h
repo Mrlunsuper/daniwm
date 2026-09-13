@@ -4,6 +4,7 @@
 
 #define MAXWS 10
 #define MAXMONS 16
+#define MAXTASKHIT 32 /* tasklist click targets per draw */
 #define FLOAT_STEP 20
 #define RSZ_STEP 20
 
@@ -75,6 +76,12 @@ extern char *CLOCK_FMT;    /* strftime fmt, default "%d/%m %H:%M" */
 extern char *BAR_SEP_STR;  /* separator between right modules, default "·" */
 extern int BAR_SHOW_TITLE; /* 1/0 */
 extern int BAR_SHOW_LAYOUT;/* 1/0 */
+extern int BAR_SHOW_TASKS; /* 1/0: Awesome-style clickable task buttons */
+/* tasklist hitboxes (bar-relative x), refreshed every drawbar() */
+extern int task_nhit;
+extern int task_hit_x0[MAXTASKHIT];
+extern int task_hit_x1[MAXTASKHIT];
+extern Window task_hit_win[MAXTASKHIT];
 /* vol segment hitbox (bar-relative x), refreshed every drawbar();
  * -1 when volume is unavailable so clicks fall through to ws view */
 extern int vol_hit_x0, vol_hit_x1;

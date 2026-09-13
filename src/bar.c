@@ -517,8 +517,90 @@ void drawbar(void) {
     if (nright > 1) right_w += (nright - 1) * mid_w;
     if (trayw > 0) right_w += mid_w; /* separator between clock and tray */
 
-    /* ---- focused title: v4 left-only, no prefix, muted so status wins ---- */
-    if (sel && BAR_SHOW_TITLE) {
+    /* task hitboxes live for one frame: drop them first (same as vol) so a
+     * closed window can't leave a stale clickable zone behind */
+    task_nhit = 0;
+
+    /* ---- tasklist (Awesome-style): one button per window on this ws ----
+     * Equal-share buttons between mode_end and the right modules; focused =
+     * pill zone like the active ws, urgent = urgent text. Left-click focuses,
+     * middle-click closes (see ButtonPress). Overflow past S(48)/button
+     * collapses into a "+N" chip so we never paint over sysmon. */
+    if (BAR_SHOW_TASKS) {
+        Client *tasks[MAXTASKHIT];
+        int nt = 0, ntotal = 0;
+        for (Client *c = clients; c; c = c->next) {
+            if (c->ws != curws) continue;
+            ntotal++;
+            if (nt < MAXTASKHIT) tasks[nt++] = c;
+        }
+        int tx0 = mode_end + S(12);
+        int avail = (barw - right_w - trayw - pad_r) - tx0 - S(8);
+        if (nt > 0 && avail > S(48)) {
+            int minw = S(48);
+            int slots = nt, overflow = 0;
+            if (nt * minw > avail) {
+                slots = avail / minw;
+                if (slots < 1) slots = 1;
+                if (slots > nt) slots = nt;
+                overflow = ntotal - slots + 1; /* last slot becomes "+N" */
+            }
+            int bw = avail / slots;
+            int tpad = S(6);
+            for (int i = 0; i < slots; i++) {
+                int bx = tx0 + i * bw;
+                int last = (i == slots - 1);
+                if (overflow && last) {
+                    char chip[16];
+                    snprintf(chip, sizeof(chip), "+%d", overflow);
+                    int cw = bar_textw(chip);
+                    XSetForeground(dpy, bargc, c_ws_emp);
+                    bar_text(&barcol.ws_emp, bx + (bw - cw) / 2, baseline, chip);
+                    continue; /* chip is display-only: no hitbox */
+                }
+                Client *c = tasks[i];
+                int is_sel = (c == sel);
+                if (is_sel && pill_ok && bw > 10) {
+                    int ph = bar_h - 8;
+                    if (ph < 12) ph = 12;
+                    if (ph > bar_h - 4) ph = bar_h - 4;
+                    XSetForeground(dpy, bargc, pill_pix);
+                    XFillRectangle(dpy, barpm, bargc, bx + 1, (bar_h - ph) / 2,
+                        (unsigned)(bw - 2), (unsigned)ph);
+                }
+                char t[128];
+                if (get_title(c->win, t, sizeof(t) - 16) > 0) {
+                    int maxw = bw - tpad * 2;
+                    XftColor *tc = is_sel ? (h_ws_act_tx ? &barcol.ws_acttx : &barcol.ws_occ)
+                                 : c->urgent ? &barcol.urgent : &barcol.title;
+                    XSetForeground(dpy, bargc, is_sel ? c_ws_act
+                                 : c->urgent ? (h_urgent ? C_URGENT : 0xeb6f92) : c_title);
+                    if (bar_textw(t) <= maxw) {
+                        bar_text(tc, bx + tpad, baseline, t);
+                    } else {
+                        int ew = bar_textw(ELLIPSIS);
+                        if (maxw > ew) {
+                            char tmp[160];
+                            snprintf(tmp, sizeof(tmp), "%.150s", t);
+                            while (tmp[0] && bar_textw(tmp) > maxw - ew) utf8_pop(tmp);
+                            size_t tn = strlen(tmp);
+                            if (tn + 3 < sizeof(tmp) - 1) {
+                                memcpy(tmp + tn, ELLIPSIS, 3);
+                                tmp[tn + 3] = 0;
+                            }
+                            bar_text(tc, bx + tpad, baseline, tmp);
+                        }
+                    }
+                }
+                if (task_nhit < MAXTASKHIT) {
+                    task_hit_x0[task_nhit] = bx;
+                    task_hit_x1[task_nhit] = bx + bw - 1;
+                    task_hit_win[task_nhit] = c->win;
+                    task_nhit++;
+                }
+            }
+        }
+    } else if (sel && BAR_SHOW_TITLE) {
         char t[128];
         if (get_title(sel->win, t, sizeof(t) - 16) > 0) {
             int tx = mode_end + S(12);

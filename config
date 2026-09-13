@@ -44,6 +44,7 @@ bar_sep_str        = -        # separator phải (vd: · | / • : — để tr�
 bar_modules        = cpu mem vol clock  # thứ tự + ẩn/hiện (xóa tên là ẩn, default đủ: "cpu mem bat vol clock"; máy bàn không pin thì `bat` tự ẩn)
 clock_fmt          = %d/%m - %H:%M  # strftime (vd: "%H:%M" gọn, "%a %d/%m %H:%M" đầy đủ)
 bar_show_title     = 1        # tiêu đề cửa sổ trái (1/0)
+bar_show_tasks     = 1        # nút task Awesome: click-trái focus, click-giữa đóng (1/0)
 bar_show_layout    = 0        # icon tile/monocle + số cửa sổ (1/0)
 # icon cụm phải: mặc định là icon Nerd Font (đẹp nhất với font Nerd bên dưới),
 # tự rớt về C/M/B/V nếu máy thiếu font. Muốn chữ thường thì mở 3 dòng này:
