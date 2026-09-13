@@ -2,6 +2,7 @@ CC      ?= gcc
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 SESSIONDIR ?= $(PREFIX)/share/xsessions
+EXAMPLEDIR ?= $(PREFIX)/share/daniwm
 
 CFLAGS  ?= -O2
 CFLAGS  += -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
@@ -37,15 +38,39 @@ test/tray-icon-helper: test/tray-icon-helper.c
 check: daniwm test/dock-helper test/tray-icon-helper
 	./test/run-all.sh
 
-install: daniwm
+install: daniwm install-examples
 	install -Dm755 daniwm $(DESTDIR)$(BINDIR)/daniwm
 	sed -e 's|^Exec=.*|Exec=$(BINDIR)/daniwm|' -e 's|^TryExec=.*|TryExec=$(BINDIR)/daniwm|' \
 		daniwm.desktop | install -Dm644 /dev/stdin $(DESTDIR)$(SESSIONDIR)/daniwm.desktop
+	@if [ -z "$(DESTDIR)" ]; then $(MAKE) install-user; \
+	else echo "skip install-user (DESTDIR set; run 'make install-user' as user)"; fi
+
+# System-wide examples (packaging-safe, never touches $$HOME).
+install-examples:
+	install -Dm644 config $(DESTDIR)$(EXAMPLEDIR)/config.example
+	install -Dm755 autostart.sh $(DESTDIR)$(EXAMPLEDIR)/autostart.sh.example
+
+# User config: copies repo config + autostart.sh into
+# $${XDG_CONFIG_HOME:-$$HOME/.config}/daniwm/ (honours SUDO_USER under sudo).
+# Never overwrites existing files. Run without sudo:
+#   make install-user
+install-user:
+	@confdir="$${XDG_CONFIG_HOME:-$$HOME/.config}/daniwm"; \
+	if [ -n "$(SUDO_USER)" ] && [ "$(SUDO_USER)" != "root" ]; then \
+	  userhome=$$(getent passwd "$(SUDO_USER)" | cut -d: -f6); \
+	  [ -n "$$userhome" ] && confdir="$$userhome/.config/daniwm"; \
+	fi; \
+	mkdir -p "$$confdir"; \
+	if [ ! -e "$$confdir/config" ]; then install -m644 config "$$confdir/config"; echo "installed $$confdir/config"; \
+	else echo "keep existing $$confdir/config"; fi; \
+	if [ ! -e "$$confdir/autostart.sh" ]; then install -m755 autostart.sh "$$confdir/autostart.sh"; echo "installed $$confdir/autostart.sh"; \
+	else echo "keep existing $$confdir/autostart.sh"; fi
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/daniwm $(DESTDIR)$(SESSIONDIR)/daniwm.desktop
+	rm -f $(DESTDIR)$(EXAMPLEDIR)/config.example $(DESTDIR)$(EXAMPLEDIR)/autostart.sh.example
 
 clean:
 	rm -f daniwm test/dock-helper test/tray-icon-helper src/*.o src/*.d
 
-.PHONY: all clean check install uninstall
+.PHONY: all clean check install install-examples install-user uninstall

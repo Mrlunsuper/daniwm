@@ -1,14 +1,21 @@
 # daniwm — minimal X11 tiling WM
 
-Tiling + monocle, bar with sysmon, 5 workspaces, gaps, EWMH, multi-monitor (Xinerama), rules, scratchpad, autostart. Single file `daniwm.c`.
+Tiling + monocle, bar with sysmon, 5 workspaces by default (1–10 configurable), gaps, EWMH, multi-monitor (Xinerama), rules, scratchpad, autostart, system tray. Sources in `src/` (12 modules).
 
 ## Build
 
 ```sh
 make            # build ./daniwm (strict warnings, fortified)
 make check      # build + run all headless suites (needs Xvfb, xterm, xdotool)
-sudo make install   # -> /usr/local/bin + xsessions entry (PREFIX/DESTDIR supported)
+sudo make install   # -> /usr/local/bin + xsessions entry + share/daniwm/*.example
+                    #    + user config into ~/.config/daniwm/ (never overwrites)
+make install-user   # only copy config + autostart.sh to ~/.config/daniwm/ (no overwrite)
 ```
+
+`make install` never overwrites `~/.config/daniwm/config` / `autostart.sh` —
+existing files are kept. With `DESTDIR` set (packaging) the user-config step is
+skipped; examples land in `$(PREFIX)/share/daniwm/config.example` +
+`autostart.sh.example` for manual copy.
 
 Requires X11 + Xinerama + Xrandr + Xft headers (`libX11-devel libXinerama-devel libXrandr-devel libXft-devel` on Fedora).
 
@@ -40,6 +47,7 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 | Super+f | fullscreen toggle (EWMH) |
 | Super+s | scratchpad toggle |
 | Super+Shift+r | reload config file |
+| Super+Ctrl+r | restart WM in place (clients kept, see below) |
 | Super+Left drag | move window — tiled: drop onto another tile swaps them (bspwm-style, target highlighted with a thicker border); drop elsewhere floats, cross-monitor drop re-tiles |
 | Super+Right drag | resize window (tiling: horizontal = `mfact`, vertical = `cfact` height weight, stays tiled; floating: resizes window geometry) |
 | Super+Ctrl+h/j/k/l | move floating window 20px (repeat = smooth; promotes tiled → floating) |
@@ -47,7 +55,7 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 | Super+Ctrl+Shift+k/j | resize floating height -/+20px (repeat = smooth) |
 | Super+Shift+e | quit |
 
-Bar click on `1..5` switches workspace (active = pill + bright text, occupied = bright + dot, urgent = rose).
+Bar click on `1..N` switches workspace (active = pill + bright text, occupied = bright + dot, urgent = rose).
 Scroll on the bar = volume up/down, left-click on the volume module = mute toggle
 (middle/right-click anywhere on the bar also mutes)
 (backend auto: `amixer` → `wpctl` → `pactl`; laptop `XF86Audio*` keys work out of the box).
@@ -61,6 +69,12 @@ Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL DD/MM HH:MM`, custom 
 - **Rules**: config `rule` lines match class/title substring → float / send to ws (default: scratchpad, Gimp, mpv float).
 - **Scratchpad**: `Super+s` toggles `xterm -name scratchpad` (2/3 centered float; first press spawns it). A custom `scratch =` command must produce a window with `scratchpad` in its class/name (e.g. `xterm -name scratchpad`, `alacritty --class scratchpad`); otherwise toggle keeps spawning instead of toggling.
 - **Autostart**: runs `~/.config/daniwm/autostart.sh` if executable.
+- **Restart**: `Super+Ctrl+r` (action `restart`) execs a fresh binary over the
+  running process — all clients survive, keeping workspace (`_NET_WM_DESKTOP`),
+  fullscreen, current desktop, focus, and the parked scratchpad. Floating state
+  and per-workspace layout/`mfact`/`nmaster` reset to defaults.
+  External watchers can detect a re-exec via the `_DANIWM_HEARTBEAT` root stamp
+  (PID is kept across exec, and the X server may recycle window IDs).
 
 ## Config
 `~/.config/daniwm/config` (`$XDG_CONFIG_HOME/daniwm/config` if set), `key = value`, `#` comment.
@@ -120,7 +134,7 @@ actions: `focus_next/prev`, `zoom`, `ws_toggle`, `kill`, `tile/monocle/toggle`, 
 `move_left/right/up/down` (float 20px), `resize_w_dec/inc`, `resize_h_dec/inc`,
 `vol_up/vol_down/vol_mute` (`amixer set Master 5%+/5%-/toggle`),
 `wsN` (view), `mvN` (move + follow), `float`, `fullscreen`, `scratch`,
-`reload_config`, `quit`).
+`reload_config`, `restart`, `quit`).
 First `rule`/`bind` line replaces the built-in defaults (default binds are
 generated for the configured `workspaces`: `1..9,0`).
 Reload keeps live per-workspace `mfact`/`nmaster` (config values are startup
@@ -132,7 +146,7 @@ Needs `xorg-x11-server-Xvfb` (or unpack its rpm userspace-side if no sudo).
 
 ```sh
 ./test/verify.sh     # one suite
-./test/run-all.sh    # all suites: verify config kill mouse workspaces strut randr
+./test/run-all.sh    # all 9 suites: verify config kill mouse workspaces strut randr tray restart
 ```
 
 Dựng Xvfb 1280x800, spawn 3 xterm qua `Super+Return`, assert geometry bằng
