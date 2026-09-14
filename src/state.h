@@ -39,6 +39,7 @@ extern TrayIcon *trayicons;
 extern Window traywin;
 extern int tray_on;
 extern int tray_active;
+extern int TRAY_GAP; /* px between tray icons (0..32, default 6) */
 extern int barw;
 extern Pixmap barpm;
 extern GC bargc;

@@ -35,6 +35,7 @@ gap_outer = 4
 gap_inner = 8
 bar_on = 1
 tray = 1                          # system tray XEmbed ở mép phải bar (1/0)
+tray_gap = 8                     # khoảng cách giữa các icon tray (px, 0..32)
 bar_h = 48
 bar_ws_pad = 12                   # padding chữ 2 bên trong ô workspace có tên (px, 0..32)
 ws_w = 36

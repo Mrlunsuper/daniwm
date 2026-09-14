@@ -30,8 +30,8 @@ int tray_icon_size(void) {
 }
 
 static int tray_gap(void) {
-    int g = S(4);
-    if (g < 2) g = 2;
+    int g = S(TRAY_GAP);
+    if (g < 0) g = 0;
     return g;
 }
 

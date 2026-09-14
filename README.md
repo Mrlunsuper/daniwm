@@ -139,7 +139,8 @@ System tray: XEmbed (`_NET_SYSTEM_TRAY_Sn`) on the bar's right edge — `nm-appl
 `volumeicon`/`cbatticon` dock automatically; a vertical divider separates the tray
 from the clock (same chrome as the workspace separator); clicking the tray area
 never leaks into workspace view; an ownerless selection is re-acquired automatically
-(e.g. after a standalone tray exits); `tray = 0` disables (reload applies live).
+(e.g. after a standalone tray exits); `tray = 0` disables (reload applies live);
+`tray_gap` (0–32, default 6 — khoảng cách giữa các icon tray, reload applies live).
 Classic XEmbed only — StatusNotifier/AppIndicator apps need `snixembed` bridge.
 
 ```ini

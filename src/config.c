@@ -233,6 +233,7 @@ void config_defaults(void) {
     free(ico_mute); ico_mute = xstrdup("\U000F0581");
     free(ico_clk); ico_clk = xstrdup("\U0000F017");
     tray_on = 1;
+    TRAY_GAP = 6;
     free(font_name);
     font_name = xstrdup("JetBrainsMono Nerd Font Mono:size=10");
     bar_on = 1; gaps_on = 1; gap_outer = 10; gap_inner = 8;
@@ -375,6 +376,11 @@ static void parse_scalar(char *key, char *val) {
         else fprintf(stderr, "daniwm: bad bar_ws_pad '%s' (want 0..32)\n", val);
     } else if (!strcmp(key, "tray")) {
         if (parse_bool(val, &b)) tray_on = b;
+    } else if (!strcmp(key, "tray_gap") || !strcmp(key, "tray_pad") ||
+               !strcmp(key, "tray_spacing") || !strcmp(key, "tray_icons_gap")) {
+        v = strtol(val, NULL, 10);
+        if (v >= 0 && v <= 32) TRAY_GAP = (int)v;
+        else fprintf(stderr, "daniwm: bad tray_gap '%s' (want 0..32)\n", val);
     } else if (!strcmp(key, "bar_on")) {
         if (parse_bool(val, &b)) bar_on = b;
     } else if (!strcmp(key, "gaps_on")) {
@@ -659,7 +665,8 @@ void load_config(const char *path) {
             strcmp(k, "bar_h") && strcmp(k, "bar_gap") && strcmp(k, "ico_cpu") &&
             strcmp(k, "ico_mem") && strcmp(k, "ico_bat") && strcmp(k, "ico_vol") &&
             strcmp(k, "ico_mute") && strcmp(k, "ico_clk") && strcmp(k, "bar_pad_l") &&
-            strcmp(k, "bar_pad_r") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "bar_ws_pad") && strcmp(k, "ws_pad") && strcmp(k, "tray") && strcmp(k, "bar_on") && strcmp(k, "gaps_on") &&
+            strcmp(k, "bar_pad_r") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "bar_ws_pad") && strcmp(k, "ws_pad") && strcmp(k, "tray") && strcmp(k, "tray_gap") && strcmp(k, "tray_pad") &&
+            strcmp(k, "tray_spacing") && strcmp(k, "tray_icons_gap") && strcmp(k, "bar_on") && strcmp(k, "gaps_on") &&
             strcmp(k, "gap_outer") && strcmp(k, "gap_inner") && strcmp(k, "mfact") &&
             strcmp(k, "nmaster") && strcmp(k, "workspaces") && strcmp(k, "rename_cmd") &&
             strcmp(k, "rename") && strcmp(k, "ws_names") &&
