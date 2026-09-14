@@ -6,23 +6,38 @@
 # Đổi terminal: sửa 1 dòng term = ghostty | kitty | foot | xterm
 term = alacritty
 menu = rofi -show drun                     # hoặc: rofi -show drun
+rename_cmd = rofi -dmenu -i -p rename  # prompt của ws_rename (stdout = tên mới;
+                                     # $DANIWM_WS_CUR/_NUM dùng được trong cmd;
+                                     # Esc = giữ tên cũ, Enter trống = về số)
 scratch = alacritty --class scratchpad   # giữ chữ "scratchpad" để toggle tìm được
 
 # ---------- general ----------
 mod = super                          # super | alt | ctrl
 workspaces = 7                       # 1..10 — đồng bộ với bspwm (I-VII)
+# tên workspace (hiện trên bar + _NET_DESKTOP_NAMES cho pager).
+# Dạng khác: "My Web" (giữ space) | 1:Web 2:Code (theo index) | ws_name_1 = Web.
+# Thiếu tên = hiện số. Reload nóng Super+Shift+r.
+ws_names = chat dev web term media mics wtf # tên ws1..6, ws7 hiện số
+ws_icon_1 =   # icon từng ws (Nerd Font, hiện trước tên trên bar)
+ws_icon_2 = 
+ws_icon_3 = 
+ws_icon_4 = 
+ws_icon_5 = 
+ws_icon_6 = 
+ws_icon_7 = 
 mfact = 0.55                         # master chiếm 0.1..0.9 chiều ngang
 nmaster = 1                          # số cửa sổ master
 border = 2
 border_focus = c4a7e7                # Rosé Pine iris (focused)
 border_normal = 26233a               # Rosé Pine surface (unfocused)
 gaps_on = 1
-gap_outer = 10
+gap_outer = 4
 gap_inner = 8
 bar_on = 1
 tray = 1                          # system tray XEmbed ở mép phải bar (1/0)
-bar_h = 36
-ws_w = 46
+bar_h = 48
+bar_ws_pad = 12                   # padding chữ 2 bên trong ô workspace có tên (px, 0..32)
+ws_w = 36
 bar_pad_l = 12
 bar_pad_r = 16
 # màu bar: hex 6 số, có thể có #. Áp ngay khi reload.
@@ -32,20 +47,26 @@ bar_fg = e0def4
 bar_acc = c4a7e7
 bar_dim = 6e6a86
 # style active ws: pill (default, gọn) | underline | block (khối fill kiểu cũ)
-bar_ws_style       = underline
+bar_ws_style       = pill
 bar_ws_active      = c4a7e7   # pill / underline / block của ws đang xem (iris)
 bar_ws_active_text = e0def4   # chữ ws đang xem
 bar_ws_occ         = e0def4   # chữ workspace có cửa sổ
 bar_ws_empty       = 6e6a86   # chữ workspace trống (muted)
 bar_urgent         = eb6f92   # ws urgent + pin yếu + MUTE (rose)
 bar_sep            = 6e6a86   # separator + bottom border (default = bar_dim)
-bar_gap            = 3        # spaces quanh separator giữa các module phải (0..8)
-bar_sep_str        = -        # separator phải (vd: · | / • : — để trống = chỉ cách spaces)
+bar_gap            = 1        # spaces quanh separator giữa các module phải (0..8)
+bar_sep_str        = |       # separator phải (vd: · | / • : — để trống = chỉ cách spaces)
 bar_modules        = cpu mem vol clock  # thứ tự + ẩn/hiện (xóa tên là ẩn, default đủ: "cpu mem bat vol clock"; máy bàn không pin thì `bat` tự ẩn)
-clock_fmt          = %d/%m - %H:%M  # strftime (vd: "%H:%M" gọn, "%a %d/%m %H:%M" đầy đủ)
+clock_fmt          = %d/%m | %H:%M  # strftime (vd: "%H:%M" gọn, "%a %d/%m %H:%M" đầy đủ)
 bar_show_title     = 1        # tiêu đề cửa sổ trái (1/0)
 bar_show_tasks     = 1        # nút task Awesome: click-trái focus, click-giữa đóng (1/0)
-bar_task_w         = 0        # rộng mỗi nút task (px, 0 = auto chia đều; vd 160)
+bar_task_w         = 480      # rộng mỗi nút task (px, 0 = auto chia đều; vd 160)
+bar_task_pad       = 12        # padding chữ trong nút task (px, 0..32)
+# style task list: đồng bộ với ws (pill + iris) | đổi pill->underline/block/none nếu thích
+bar_task_style        = pill
+bar_task_active       = c4a7e7   # nền task đang focus (= bar_ws_active iris)
+bar_task_active_text  = e0def4   # chữ task đang focus (= bar_ws_active_text)
+bar_task_text         = e0def4   # chữ task thường (= bar_ws_occ; urgent vẫn dùng bar_urgent)
 bar_show_layout    = 0        # icon tile/monocle + số cửa sổ (1/0)
 # icon cụm phải: mặc định là icon Nerd Font (đẹp nhất với font Nerd bên dưới),
 # tự rớt về C/M/B/V nếu máy thiếu font. Muốn chữ thường thì mở 3 dòng này:
@@ -85,6 +106,7 @@ bind = mod+m:monocle
 bind = mod+Return:spawn_term
 bind = mod+d:spawn_menu
 bind = mod+s:scratch                  # hiện/ẩn scratchpad
+bind = mod+Shift+n:ws_rename          # đổi tên workspace đang xem (rofi/dmenu)
 bind = mod+Print:exec flameshot gui
 bind = mod+e:exec thunar
 
@@ -120,3 +142,4 @@ bind = mod+ctrl+r:restart               # thay binary tại chỗ, giữ nguyên
 bind = mod+Shift+e:quit               # thoát WM (kết thúc session X)
 rule = flameshot:*:float:*
 rule = telegram:*:float:*
+rule = local:*:float:*

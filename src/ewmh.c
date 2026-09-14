@@ -21,12 +21,20 @@ void ewmh_init(void) {
     A_NET_WM_STATE_FS = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
     A_NET_WM_STATE_HIDDEN = XInternAtom(dpy, "_NET_WM_STATE_HIDDEN", False);
     A_NET_WM_STATE_DA = XInternAtom(dpy, "_NET_WM_STATE_DEMANDS_ATTENTION", False);
+    A_NET_WM_STATE_MODAL = XInternAtom(dpy, "_NET_WM_STATE_MODAL", False);
     A_NET_WM_WINDOW_TYPE = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
     A_NET_WM_WINDOW_TYPE_DIALOG = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
     A_NET_WM_WINDOW_TYPE_DOCK = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
     A_NET_WM_WINDOW_TYPE_TOOLBAR = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_TOOLBAR", False);
     A_NET_WM_WINDOW_TYPE_SPLASH = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_SPLASH", False);
     A_NET_WM_WINDOW_TYPE_UTILITY = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_UTILITY", False);
+    A_NET_WM_WINDOW_TYPE_MENU = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_MENU", False);
+    A_NET_WM_WINDOW_TYPE_DROPDOWN = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU", False);
+    A_NET_WM_WINDOW_TYPE_POPUP = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_POPUP_MENU", False);
+    A_NET_WM_WINDOW_TYPE_TOOLTIP = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_TOOLTIP", False);
+    A_NET_WM_WINDOW_TYPE_NOTIF = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_NOTIFICATION", False);
+    A_NET_WM_WINDOW_TYPE_COMBO = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_COMBO", False);
+    A_NET_WM_WINDOW_TYPE_DND = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DND", False);
     A_NET_CLOSE_WINDOW = XInternAtom(dpy, "_NET_CLOSE_WINDOW", False);
     A_NET_SUPPORTING_WM_CHECK = XInternAtom(dpy, "_NET_SUPPORTING_WM_CHECK", False);
     A_NET_WM_NAME = XInternAtom(dpy, "_NET_WM_NAME", False);
@@ -56,7 +64,7 @@ void ewmh_init(void) {
 
     Atom sup[] = { A_NET_SUPPORTED, A_NET_CLIENT_LIST, A_NET_ACTIVE_WINDOW,
         A_NET_WM_STATE, A_NET_WM_STATE_FS, A_NET_WM_STATE_HIDDEN,
-        A_NET_WM_STATE_DA, A_NET_WM_WINDOW_TYPE, A_NET_CLOSE_WINDOW,
+        A_NET_WM_STATE_DA, A_NET_WM_STATE_MODAL, A_NET_WM_WINDOW_TYPE, A_NET_CLOSE_WINDOW,
         A_NET_SUPPORTING_WM_CHECK, A_NET_WM_NAME, A_NET_WM_PID,
         A_NET_WM_STRUT, A_NET_WM_STRUT_PARTIAL, A_NET_WORKAREA,
         A_NET_NUMBER_OF_DESKTOPS, A_NET_CURRENT_DESKTOP,
@@ -109,9 +117,15 @@ int ewmh_isfloating_type(Window w) {
         &rt, &rf, &n, &extra, (unsigned char **)&p) == Success && p) {
         for (unsigned long i = 0; i < n; i++)
             if (p[i] == A_NET_WM_WINDOW_TYPE_DIALOG || p[i] == A_NET_WM_WINDOW_TYPE_UTILITY ||
-                p[i] == A_NET_WM_WINDOW_TYPE_TOOLBAR || p[i] == A_NET_WM_WINDOW_TYPE_SPLASH) f = 1;
+                p[i] == A_NET_WM_WINDOW_TYPE_TOOLBAR || p[i] == A_NET_WM_WINDOW_TYPE_SPLASH ||
+                p[i] == A_NET_WM_WINDOW_TYPE_MENU || p[i] == A_NET_WM_WINDOW_TYPE_DROPDOWN ||
+                p[i] == A_NET_WM_WINDOW_TYPE_POPUP || p[i] == A_NET_WM_WINDOW_TYPE_TOOLTIP ||
+                p[i] == A_NET_WM_WINDOW_TYPE_NOTIF || p[i] == A_NET_WM_WINDOW_TYPE_COMBO ||
+                p[i] == A_NET_WM_WINDOW_TYPE_DND) f = 1;
         XFree(p);
     }
+    /* Modal dialogs (e.g. app update popups flagged NORMAL + MODAL) float too. */
+    if (!f && A_NET_WM_STATE_MODAL != None && ewmh_hasstate(w, A_NET_WM_STATE_MODAL)) f = 1;
     return f;
 }
 void ewmh_client_list(void) {
@@ -145,7 +159,7 @@ void ewmh_set_wm_desktop(Client *c) {
 }
 void ewmh_desktops(void) {
     unsigned long n, cur;
-    char names[MAXWS * 4];
+    char names[MAXWS * 68];
     int off = 0;
     Atom utf8;
     if (!dpy || A_NET_NUMBER_OF_DESKTOPS == None) return;
@@ -155,8 +169,16 @@ void ewmh_desktops(void) {
         PropModeReplace, (unsigned char *)&n, 1);
     XChangeProperty(dpy, root, A_NET_CURRENT_DESKTOP, XA_CARDINAL, 32,
         PropModeReplace, (unsigned char *)&cur, 1);
-    for (int i = 0; i < NWS && off + 4 < (int)sizeof(names); i++)
-        off += snprintf(names + off, sizeof(names) - (size_t)off, "%d", i + 1) + 1;
+    /* custom ws names (config `ws_names`) or "1".."10" fallback */
+    for (int i = 0; i < NWS && off + 2 < (int)sizeof(names); i++) {
+        const char *nm = (i >= 0 && i < MAXWS && ws_names[i] && *ws_names[i])
+            ? ws_names[i] : NULL;
+        int w;
+        if (nm) w = snprintf(names + off, sizeof(names) - (size_t)off, "%s", nm);
+        else w = snprintf(names + off, sizeof(names) - (size_t)off, "%d", i + 1);
+        if (w < 0) break;
+        off += w + 1; /* keep NUL separator even on truncation */
+    }
     utf8 = XInternAtom(dpy, "UTF8_STRING", False);
     if (utf8 != None && off > 0)
         XChangeProperty(dpy, root, A_NET_DESKTOP_NAMES, utf8, 8,

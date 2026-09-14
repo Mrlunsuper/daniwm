@@ -58,7 +58,7 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 Bar click on `1..N` switches workspace (active = pill + bright text, occupied = bright + dot, urgent = rose).
 Task buttons (one per window on this workspace, Awesome-style): left-click focuses,
 middle-click closes. Urgent windows glow in the urgent color.
-Scroll on the bar = volume up/down, left-click on the volume module = mute toggle
+Scroll over workspaces = prev/next ws (wraps), scroll elsewhere = volume up/down, left-click on the volume module = mute toggle
 (middle/right-click anywhere on the bar also mutes)
 (backend auto: `amixer` → `wpctl` → `pactl`; laptop `XF86Audio*` keys work out of the box).
 Bar text is UTF-8 via Xft with per-glyph fallback (Vietnamese, symbols).
@@ -67,7 +67,7 @@ Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL DD/MM HH:MM`, custom 
 ## Features
 
 - **EWMH**: `_NET_SUPPORTED/CLIENT_LIST/ACTIVE_WINDOW`, `_NET_WM_PID` (WM PID on the
-  supporting window, also advertised in `_NET_SUPPORTED`), fullscreen (`_NET_WM_STATE`), window-type float (dialog/utility/splash), dock handling (`_NET_WM_WINDOW_TYPE_DOCK`), EWMH struts (`_NET_WM_STRUT` / `_NET_WM_STRUT_PARTIAL` / `_NET_WORKAREA`) for external bars/docks (Polybar, Tint2, Lemonbar, etc.), `_NET_ACTIVE/CLOSE_WINDOW` requests, workspaces (`_NET_NUMBER_OF_DESKTOPS` / `_NET_CURRENT_DESKTOP` / `_NET_WM_DESKTOP` / `_NET_DESKTOP_NAMES`, incl. pager `view` + `move_to` requests).
+  supporting window, also advertised in `_NET_SUPPORTED`), fullscreen (`_NET_WM_STATE`), window-type float (dialog/utility/toolbar/splash/menu/dropdown/popup/tooltip/notification/combo/dnd + modal), dock handling (`_NET_WM_WINDOW_TYPE_DOCK`), EWMH struts (`_NET_WM_STRUT` / `_NET_WM_STRUT_PARTIAL` / `_NET_WORKAREA`) for external bars/docks (Polybar, Tint2, Lemonbar, etc.), `_NET_ACTIVE/CLOSE_WINDOW` requests, workspaces (`_NET_NUMBER_OF_DESKTOPS` / `_NET_CURRENT_DESKTOP` / `_NET_WM_DESKTOP` / `_NET_DESKTOP_NAMES`, incl. pager `view` + `move_to` requests).
 - **Monitors**: per-monitor tiling via Xinerama (fallback: whole screen); new windows go to the pointer monitor; bar lives on monitor 0; workspaces are global; per-monitor strut margins computed automatically. RandR hotplug: replug/reconfigure outputs re-tiles live, no restart.
 - **Rules**: config `rule` lines match class/title substring → float / send to ws (default: scratchpad, Gimp, mpv float).
 - **Scratchpad**: `Super+s` toggles `xterm -name scratchpad` (2/3 centered float; first press spawns it). A custom `scratch =` command must produce a window with `scratchpad` in its class/name (e.g. `xterm -name scratchpad`, `alacritty --class scratchpad`); otherwise toggle keeps spawning instead of toggling.
@@ -88,9 +88,16 @@ Scalars: `mod` (super|alt|ctrl), `border`, `border_focus/border_normal`,
 `scale` (0.5–3.0, default 1.0 — HiDPI multiplier for WM chrome only:
 `bar_h`/`ws_w`/`border`/`gap_outer`/`gap_inner`/float-step/drag-deadzone
 plus bar font `size=`; fractional ok, e.g. `scale = 1.5`; reload applies live),
-`bar_on/gaps_on` (1/true/yes/on), `tray` (system tray on/off, default on),
+`bar_on/gaps_on` (1/true/yes/on), `focus` (`hover`| `click`|`both`, default `hover` — hover-to-focus vs click-to-focus), `tray` (system tray on/off, default on),
 `gap_outer/gap_inner`, `mfact` (0.1–0.9),
 `nmaster`, `workspaces` (1–10, default 5),
+`ws_names` (positional `Web Code Chat`, indexed `1:Web 2:Code`, quotes keep
+spaces: `"My Web"`; per-ws override `ws_name_N = Foo`, N = 1–10; empty =
+number fallback; bar cells auto-grow, reload applies live, published via
+`_NET_DESKTOP_NAMES`),
+`bar_ws_pad` (0–32, default 12 — text inset each side inside a named ws cell),
+`ws_icon_N` (N = 1–10 — Nerd Font glyph shown before the ws name/number on the
+bar; hidden if the font lacks it; EWMH names stay plain for pagers),
 `font` (fontconfig pattern, e.g. `monospace:size=11`, `JetBrainsMono Nerd Font Mono:size=10`;
 default `monospace:size=10`, fallbacks built in: Nerd Fonts for icons, then
 `Noto Sans`/`DejaVu Sans`/`Sans`; without a Nerd Font the sysmon falls back to `C/M/B/V` letters),
@@ -104,6 +111,10 @@ default `monospace:size=10`, fallbacks built in: Nerd Fonts for icons, then
 replaces the lone title when on; overflow collapses into a `+N` chip),
 `bar_task_w` (0–512, default 0 = auto equal-share; e.g. `160` = fixed 160px
 buttons, left-aligned, clicks past them are no-ops),
+`bar_task_pad` (0–32, default 6 — text inset inside each task button),
+`bar_task_style` (`follow` default = theo `bar_ws_style` | `pill` | `underline` | `block` | `none` = chỉ màu chữ),
+`bar_task_active` (nền task đang focus — pill/block/underline; bỏ trống = theo ws active / pill mờ),
+`bar_task_active_text` (chữ task đang focus), `bar_task_text` (alias `bar_task_normal` — chữ task thường; urgent vẫn dùng `bar_urgent`),
 `bar_pad_l` (0–32, default 0 — left inset before the workspace block;
 workspace clicks are remapped so the padding is a no-op),
 `bar_pad_r` (0–32, default 8 — right margin after clock/tray; tray icons align to it),
@@ -112,7 +123,10 @@ for plain letters, empty = no icon; defaults = Nerd Font icons with automatic AS
 fallback — `ico_clk` falls back to nothing, preserving the old clock look),
 vertical padding: text/icons are always vertically centered, so top/bottom air is just
 `bar_h` (taller bar = more air; tray icons stay `bar_h-10`, capped at 22px),
-`term/menu/scratch` (commands split with `wordexp`, quotes work).
+`term/menu/scratch` (commands split with `wordexp`, quotes work),
+`rename_cmd` (shell cmd for `ws_rename`, default `rofi -dmenu -i -p rename`;
+current name on stdin, stdout = new name; env `$DANIWM_WS_CUR`/`$DANIWM_WS_NUM`
+available, e.g. `rename_cmd = rofi -dmenu -p "rename ws$DANIWM_WS_NUM"`).
 
 Bar colors: base `bar_bg/bar_fg/bar_acc/bar_dim` cover everything; optional
 per-component overrides fall back to those when unset:
@@ -141,9 +155,14 @@ actions: `focus_next/prev`, `zoom`, `ws_toggle`, `kill`, `tile/monocle/toggle`, 
 `move_left/right/up/down` (float 20px), `resize_w_dec/inc`, `resize_h_dec/inc`,
 `vol_up/vol_down/vol_mute` (`amixer set Master 5%+/5%-/toggle`),
 `wsN` (view), `mvN` (move + follow), `float`, `fullscreen`, `scratch`,
+`ws_rename` (prompt đổi tên ws đang xem qua `rename_cmd`; Esc giữ tên cũ,
+Enter trống xóa về số; WM không freeze lúc gõ),
 `reload_config`, `restart`, `quit`).
 First `rule`/`bind` line replaces the built-in defaults (default binds are
 generated for the configured `workspaces`: `1..9,0`).
+Missing `wsN`/`mvN` binds are auto-filled with the same convention
+(so raising `workspaces` never leaves a ws unreachable), unless their
+combo is already taken by one of your binds.
 Reload keeps live per-workspace `mfact`/`nmaster` (config values are startup
 defaults); shrinking `workspaces` folds extra workspaces into the last one.
 

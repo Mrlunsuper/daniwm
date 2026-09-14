@@ -16,7 +16,7 @@ LDFLAGS += $(shell pkg-config --libs xft 2>/dev/null)
 LDFLAGS += -pie -Wl,-z,relro,-z,now
 
 SRCS = src/state.c src/monitor.c src/sysmon.c src/bar.c src/ewmh.c \
-       src/layout.c src/client.c src/mouse.c src/keys.c src/config.c src/tray.c src/main.c
+       src/layout.c src/client.c src/mouse.c src/keys.c src/config.c src/tray.c src/rename.c src/main.c
 OBJS = $(SRCS:.c=.o)
 
 all: daniwm

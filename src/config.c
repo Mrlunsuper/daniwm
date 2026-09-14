@@ -2,6 +2,7 @@
 #include "config.h"
 
 #include <X11/Xlib.h>
+#include <X11/keysym.h>
 
 #include <ctype.h>
 #include <stdio.h>
@@ -95,23 +96,136 @@ static int mod_from_name(const char *s, unsigned int *out) {
     if (!strcasecmp(s, "ctrl") || !strcasecmp(s, "control")) { *out = ControlMask; return 1; }
     return 0;
 }
+void ws_set_name(int idx, const char *val) {
+    if (idx < 0 || idx >= MAXWS) return;
+    free(ws_names[idx]);
+    ws_names[idx] = NULL;
+    if (!val) return;
+    while (*val && isspace((unsigned char)*val)) val++;
+    const char *e = val + strlen(val);
+    while (e > val && isspace((unsigned char)e[-1])) e--;
+    if (e <= val) return; /* empty = back to number */
+    size_t n = (size_t)(e - val);
+    if (n > 63) n = 63;
+    char tmp[64];
+    memcpy(tmp, val, n);
+    tmp[n] = 0;
+    /* never split a UTF-8 char at the cap: back off to a boundary */
+    size_t m = n;
+    while (m > 0 && (tmp[m - 1] & 0xC0) == 0x80) m--;
+    if (m > 0 && (tmp[m - 1] & 0x80)) {
+        unsigned char lead = (unsigned char)tmp[m - 1];
+        size_t want = (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : 4;
+        if (n - (m - 1) < want) m--;
+    }
+    tmp[m] = 0;
+    if (!tmp[0]) return;
+    ws_names[idx] = xstrdup(tmp);
+}
+/* `ws_names = ...`: wordexp split (quotes keep spaces: "my web").
+ * Each token is either positional (fills next slot) or indexed `N:name`
+ * (N = 1..10). Indexed + positional can mix. */
+static void parse_ws_names(const char *val) {
+    wordexp_t w;
+    if (wordexp(val, &w, WRDE_NOCMD) != 0) return;
+    int pos = 0;
+    for (size_t i = 0; i < w.we_wordc; i++) {
+        const char *tok = w.we_wordv[i];
+        if (!tok || !*tok) continue;
+        const char *colon = strchr(tok, ':');
+        if (colon && colon != tok) {
+            char num[8];
+            size_t dl = (size_t)(colon - tok);
+            if (dl < sizeof(num)) {
+                memcpy(num, tok, dl);
+                num[dl] = 0;
+                char *ep = NULL;
+                long n = strtol(num, &ep, 10);
+                if (ep && !*ep && n >= 1 && n <= MAXWS) {
+                    ws_set_name((int)n - 1, colon + 1);
+                    continue;
+                }
+            }
+        }
+        while (pos < MAXWS && ws_names[pos]) pos++;
+        if (pos < MAXWS) ws_set_name(pos++, tok);
+    }
+    wordfree(&w);
+}
+/* `ws_name_N = Foo` (N = 1..10). Accepts ws_name_1 / wsname1 / ws_1_name. */
+static int parse_ws_name_key(const char *key, const char *val) {
+    if (strncmp(key, "ws", 2) != 0 || !strstr(key, "name")) return 0;
+    if (!strcmp(key, "ws_names") || !strcmp(key, "wsnames")) return 0;
+    const char *p = key + 2;
+    int idx = -1;
+    while (*p) {
+        if (isdigit((unsigned char)*p)) {
+            char *ep = NULL;
+            long n = strtol(p, &ep, 10);
+            if (n >= 1 && n <= MAXWS) idx = (int)n - 1;
+            break;
+        }
+        p++;
+    }
+    if (idx < 0) return 0;
+    ws_set_name(idx, val);
+    return 1;
+}
+/* `ws_icon_N = <glyph>` (N = 1..10). Accepts ws_icon_1 / wsicon1 / ws_1_icon.
+ * Empty clears. Glyph cap ~15 bytes (a few codepoints max). */
+static int parse_ws_icon_key(const char *key, const char *val) {
+    if (strncmp(key, "ws", 2) != 0 || !strstr(key, "icon")) return 0;
+    const char *p = key + 2;
+    int idx = -1;
+    while (*p) {
+        if (isdigit((unsigned char)*p)) {
+            char *ep = NULL;
+            long n = strtol(p, &ep, 10);
+            if (n >= 1 && n <= MAXWS) idx = (int)n - 1;
+            break;
+        }
+        p++;
+    }
+    if (idx < 0) return 0;
+    free(ws_icons[idx]);
+    ws_icons[idx] = NULL;
+    if (!val) return 1;
+    while (*val && isspace((unsigned char)*val)) val++;
+    const char *e = val + strlen(val);
+    while (e > val && isspace((unsigned char)e[-1])) e--;
+    if (e <= val) return 1; /* empty = no icon */
+    size_t n = (size_t)(e - val);
+    if (n > 15) n = 15;
+    char tmp[16];
+    memcpy(tmp, val, n);
+    tmp[n] = 0;
+    ws_icons[idx] = xstrdup(tmp);
+    return 1;
+}
 void config_defaults(void) {
     for (unsigned i = 0; i < nrules; i++) { free(rules[i].cls); free(rules[i].title); }
     nrules = 0;
     keys_reset();
+    for (int i = 0; i < MAXWS; i++) { free(ws_names[i]); ws_names[i] = NULL; }
+    for (int i = 0; i < MAXWS; i++) { free(ws_icons[i]); ws_icons[i] = NULL; }
+    free(RENAME_CMD); RENAME_CMD = xstrdup("rofi -dmenu -i -p rename");
     MOD = Mod4Mask; BORDER = 2; NWS = 5;
     BORDER_FOCUS = 0x7aa2f7; BORDER_NORMAL = 0x333333;
     BAR_BG = 0x1e1e2e; BAR_FG = 0xcdd6f4; BAR_ACC = 0x7aa2f7; BAR_DIM = 0x6c7086;
     C_WS_ACT = C_WS_ACT_TX = C_WS_OCC = C_WS_EMP = C_MODE = C_TITLE = C_SYS = 0;
     h_ws_act = h_ws_act_tx = h_ws_occ = h_ws_emp = h_mode = h_title = h_sys = 0;
+    C_TASK_ACT = C_TASK_ACT_TX = C_TASK_TEXT = 0;
+    h_task_act = h_task_act_tx = h_task_text = 0;
     C_URGENT = 0xeb6f92; C_SEP = 0; h_urgent = h_sep = 0; BAR_WS_STYLE = 2;
-    BAR_H = 24; WS_W = 46; ui_scale = 1.0f;
+    BAR_TASK_STYLE = -1;
+    BAR_H = 24; WS_W = 46; BAR_WS_PAD = 12; ui_scale = 1.0f;
     BAR_GAP = 3;
     BAR_PAD_L = 10; BAR_PAD_R = 12;
     free(BAR_MODULES); BAR_MODULES = xstrdup("cpu mem bat vol clock");
     free(CLOCK_FMT); CLOCK_FMT = xstrdup("%d/%m %H:%M");
     free(BAR_SEP_STR); BAR_SEP_STR = xstrdup("\u00B7");
     BAR_SHOW_TITLE = 1; BAR_SHOW_LAYOUT = 1; BAR_SHOW_TASKS = 1; BAR_TASK_W = 0;
+    BAR_TASK_PAD = 6;
     free(ico_cpu); ico_cpu = xstrdup("\U000F06E0");
     free(ico_mem); ico_mem = xstrdup("\U000F035B");
     free(ico_bat); ico_bat = xstrdup("\U000F0079");
@@ -181,6 +295,20 @@ static void parse_scalar(char *key, char *val) {
         else if (!strcasecmp(val, "block")) BAR_WS_STYLE = 1;
         else if (!strcasecmp(val, "pill")) BAR_WS_STYLE = 2;
         else fprintf(stderr, "daniwm: bad bar_ws_style '%s' (want pill|underline|block)\n", val);
+    } else if (!strcmp(key, "bar_task_style") || !strcmp(key, "task_style")) {
+        if (!strcasecmp(val, "underline")) BAR_TASK_STYLE = 0;
+        else if (!strcasecmp(val, "block")) BAR_TASK_STYLE = 1;
+        else if (!strcasecmp(val, "pill")) BAR_TASK_STYLE = 2;
+        else if (!strcasecmp(val, "none")) BAR_TASK_STYLE = 3;
+        else if (!strcasecmp(val, "follow")) BAR_TASK_STYLE = -1;
+        else fprintf(stderr, "daniwm: bad bar_task_style '%s' (want follow|pill|underline|block|none)\n", val);
+    } else if (!strcmp(key, "bar_task_active") || !strcmp(key, "task_active")) {
+        if (parse_hex(val, &h)) { C_TASK_ACT = h; h_task_act = 1; }
+    } else if (!strcmp(key, "bar_task_active_text") || !strcmp(key, "task_active_text")) {
+        if (parse_hex(val, &h)) { C_TASK_ACT_TX = h; h_task_act_tx = 1; }
+    } else if (!strcmp(key, "bar_task_text") || !strcmp(key, "bar_task_normal") ||
+               !strcmp(key, "task_text") || !strcmp(key, "task_normal")) {
+        if (parse_hex(val, &h)) { C_TASK_TEXT = h; h_task_text = 1; }
     } else if (!strcmp(key, "bar_modules")) {
         char *dup = xstrdup(val);
         if (dup) { free(BAR_MODULES); BAR_MODULES = dup; }
@@ -200,6 +328,10 @@ static void parse_scalar(char *key, char *val) {
         v = strtol(val, NULL, 10);
         if (v >= 0 && v <= 512) BAR_TASK_W = (int)v;
         else fprintf(stderr, "daniwm: bad bar_task_w '%s' (want 0..512, 0=auto)\n", val);
+    } else if (!strcmp(key, "bar_task_pad") || !strcmp(key, "task_pad")) {
+        v = strtol(val, NULL, 10);
+        if (v >= 0 && v <= 32) BAR_TASK_PAD = (int)v;
+        else fprintf(stderr, "daniwm: bad bar_task_pad '%s' (want 0..32)\n", val);
     } else if (!strcmp(key, "bar_gap")) {
         v = strtol(val, NULL, 10); if (v >= 0 && v <= 8) BAR_GAP = (int)v;
         else fprintf(stderr, "daniwm: bad bar_gap '%s' (want 0..8)\n", val);
@@ -237,12 +369,17 @@ static void parse_scalar(char *key, char *val) {
         if (dup) { free(font_name); font_name = dup; }
     } else if (!strcmp(key, "ws_w")) {
         v = strtol(val, NULL, 10); if (v >= 16 && v <= 128) WS_W = (int)v;
+    } else if (!strcmp(key, "bar_ws_pad") || !strcmp(key, "ws_pad")) {
+        v = strtol(val, NULL, 10);
+        if (v >= 0 && v <= 32) BAR_WS_PAD = (int)v;
+        else fprintf(stderr, "daniwm: bad bar_ws_pad '%s' (want 0..32)\n", val);
     } else if (!strcmp(key, "tray")) {
         if (parse_bool(val, &b)) tray_on = b;
     } else if (!strcmp(key, "bar_on")) {
         if (parse_bool(val, &b)) bar_on = b;
     } else if (!strcmp(key, "gaps_on")) {
         if (parse_bool(val, &b)) gaps_on = b;
+
     } else if (!strcmp(key, "gap_outer")) {
         v = strtol(val, NULL, 10); if (v >= 0 && v <= 64) gap_outer = (int)v;
     } else if (!strcmp(key, "gap_inner")) {
@@ -253,6 +390,15 @@ static void parse_scalar(char *key, char *val) {
         v = strtol(val, NULL, 10); if (v >= 1 && v <= 8) def_nmaster = (int)v;
     } else if (!strcmp(key, "workspaces")) {
         v = strtol(val, NULL, 10); if (v >= 1 && v <= MAXWS) NWS = (int)v;
+    } else if (!strcmp(key, "ws_names") || !strcmp(key, "wsnames") || !strcmp(key, "workspace_names")) {
+        parse_ws_names(val);
+    } else if (parse_ws_name_key(key, val)) {
+        ; /* ws_name_N handled above */
+    } else if (parse_ws_icon_key(key, val)) {
+        ; /* ws_icon_N handled above */
+    } else if (!strcmp(key, "rename_cmd") || !strcmp(key, "rename")) {
+        char *dup = xstrdup(val);
+        if (dup) { free(RENAME_CMD); RENAME_CMD = dup; }
     } else if (!strcmp(key, "term")) {
         set_cmd(&termcmd, val);
     } else if (!strcmp(key, "menu")) {
@@ -394,6 +540,28 @@ have_action:
     }
     push_key_fn(ks, mod, fn, arg);
 }
+static int has_ws_action(void (*fn)(int), int arg) {
+    for (unsigned i = 0; i < nkeys; i++)
+        if (keys[i].fn == fn && keys[i].arg == arg) return 1;
+    return 0;
+}
+static int combo_taken(KeySym ks, unsigned int mod) {
+    for (unsigned i = 0; i < nkeys; i++)
+        if (keys[i].keysym == ks && keys[i].mod == mod) return 1;
+    return 0;
+}
+/* Auto-fill view/move binds for workspaces the user didn't bind explicitly
+ * (e.g. `workspaces` raised 7 -> 9 with binds only up to 7). Uses the same
+ * 1..9,0 convention as the defaults; never steals an occupied combo. */
+static void fill_ws_binds(void) {
+    for (int i = 0; i < NWS; i++) {
+        KeySym ks = (i < 9) ? (KeySym)(XK_1 + i) : XK_0;
+        if (!has_ws_action(view, i) && !combo_taken(ks, MOD))
+            push_key_fn(ks, MOD, view, i);
+        if (!has_ws_action(send_to, i) && !combo_taken(ks, MOD | ShiftMask))
+            push_key_fn(ks, MOD | ShiftMask, send_to, i);
+    }
+}
 void load_config(const char *path) {
     char buf[1024];
     char fallback[1024];
@@ -477,22 +645,34 @@ void load_config(const char *path) {
             strcmp(k, "bar_ws_active_text") && strcmp(k, "bar_ws_occ") && strcmp(k, "bar_ws_empty") &&
             strcmp(k, "bar_mode") && strcmp(k, "bar_title") && strcmp(k, "bar_sys") &&
             strcmp(k, "bar_urgent") && strcmp(k, "bar_sep") && strcmp(k, "bar_ws_style") &&
+            strcmp(k, "bar_task_style") && strcmp(k, "task_style") &&
+            strcmp(k, "bar_task_active") && strcmp(k, "task_active") &&
+            strcmp(k, "bar_task_active_text") && strcmp(k, "task_active_text") &&
+            strcmp(k, "bar_task_text") && strcmp(k, "bar_task_normal") &&
+            strcmp(k, "task_text") && strcmp(k, "task_normal") &&
             strcmp(k, "bar_modules") && strcmp(k, "clock_fmt") && strcmp(k, "bar_sep_str") &&
             strcmp(k, "bar_show_title") && strcmp(k, "bar_title_on") && strcmp(k, "show_title") &&
             strcmp(k, "bar_show_layout") && strcmp(k, "bar_layout_on") && strcmp(k, "show_layout") &&
             strcmp(k, "bar_show_tasks") && strcmp(k, "show_tasks") &&
             strcmp(k, "bar_task_w") && strcmp(k, "task_w") &&
+            strcmp(k, "bar_task_pad") && strcmp(k, "task_pad") &&
             strcmp(k, "bar_h") && strcmp(k, "bar_gap") && strcmp(k, "ico_cpu") &&
             strcmp(k, "ico_mem") && strcmp(k, "ico_bat") && strcmp(k, "ico_vol") &&
             strcmp(k, "ico_mute") && strcmp(k, "ico_clk") && strcmp(k, "bar_pad_l") &&
-            strcmp(k, "bar_pad_r") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "tray") && strcmp(k, "bar_on") && strcmp(k, "gaps_on") &&
+            strcmp(k, "bar_pad_r") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "bar_ws_pad") && strcmp(k, "ws_pad") && strcmp(k, "tray") && strcmp(k, "bar_on") && strcmp(k, "gaps_on") &&
             strcmp(k, "gap_outer") && strcmp(k, "gap_inner") && strcmp(k, "mfact") &&
-            strcmp(k, "nmaster") && strcmp(k, "workspaces") && strcmp(k, "term") &&
+            strcmp(k, "nmaster") && strcmp(k, "workspaces") && strcmp(k, "rename_cmd") &&
+            strcmp(k, "rename") && strcmp(k, "ws_names") &&
+            strcmp(k, "wsnames") && strcmp(k, "workspace_names") &&
+            strncmp(k, "ws_name", 7) && strncmp(k, "wsname", 6) &&
+            strncmp(k, "ws_icon", 7) && strncmp(k, "wsicon", 6) &&
+            strcmp(k, "term") &&
             strcmp(k, "menu") && strcmp(k, "scratch")) {
             fprintf(stderr, "daniwm: %s:%u: unknown key '%s'\n", path, i + 1, k);
         }
     }
     if (!saw_bind) { keys_reset(); add_default_keys(); } /* rebuild with final MOD+NWS */
+    fill_ws_binds(); /* mod+8/9/0 etc. for ws beyond the user's explicit binds */
     finalize_nws();
     for (unsigned i = 0; i < nlines; i++) free(lines[i]);
     free(lines);
@@ -550,6 +730,7 @@ void k_reload(int unused) {
     if (!bar_on && bar) XUnmapWindow(dpy, bar);
     if (bar_on && bar) XMapWindow(dpy, bar);
     tray_enable(tray_on);
+    ewmh_desktops(); /* names may have changed with same NWS (no finalize) */
     bar_style();
     grabkeys();
     for (Client *c = clients; c; c = c->next) grabbuttons(c);

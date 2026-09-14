@@ -24,6 +24,7 @@
 #include "layout.h"
 #include "config.h"
 #include "keys.h"
+#include "rename.h"
 #include "mouse.h"
 #include "sysmon.h"
 #include "tray.h"
@@ -235,14 +236,18 @@ int main(int argc, char **argv) {
         }
     }
 
+    rename_init(); /* self-pipe for async ws_rename results */
     int xfd = ConnectionNumber(dpy);
+    int rfd = rename_fd();
     int select_errs = 0;
     for (;;) {
         while (!XPending(dpy)) {
             /* 1s tick for clock */
             fd_set rfds; FD_ZERO(&rfds); FD_SET(xfd, &rfds);
+            int nfds = xfd + 1;
+            if (rfd >= 0) { FD_SET(rfd, &rfds); if (rfd + 1 > nfds) nfds = rfd + 1; }
             struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-            int ret = select(xfd + 1, &rfds, NULL, NULL, &tv);
+            int ret = select(nfds, &rfds, NULL, NULL, &tv);
             if (ret < 0) {
                 if (errno == EINTR) continue;
                 fprintf(stderr, "daniwm: select: %s\n", strerror(errno));
@@ -254,7 +259,11 @@ int main(int argc, char **argv) {
             }
             select_errs = 0;
             if (ret == 0) { sys_vol_update(); tray_poll(); drawbar(); }
-            else break;
+            else {
+                if (rfd >= 0 && FD_ISSET(rfd, &rfds)) rename_poll();
+                if (!XPending(dpy)) continue; /* rename-only wakeup, no X events */
+                break;
+            }
         }
         XEvent ev;
         XNextEvent(dpy, &ev);
@@ -468,8 +477,15 @@ int main(int argc, char **argv) {
                 /* mute (trái/giữa/phải) chỉ khi bấm trúng cụm volume,
                  * bấm trượt chỗ khác = no-op (trước đây phải/trái bấm đâu cũng mute) */
                 int on_vol = (vol_hit_x0 >= 0 && e->x >= vol_hit_x0 && e->x <= vol_hit_x1);
-                if (e->button == Button4) { k_vol_up(0); }        /* scroll up: louder */
-                else if (e->button == Button5) { k_vol_down(0); } /* scroll down: quieter */
+                /* scroll over ws cells cycles workspaces (wraps);
+                 * scroll anywhere else = volume (old behavior) */
+                if (e->button == Button4) {
+                    if (ws_hit((int)e->x) >= 0) view((curws - 1 + NWS) % NWS);
+                    else k_vol_up(0);
+                } else if (e->button == Button5) {
+                    if (ws_hit((int)e->x) >= 0) view((curws + 1) % NWS);
+                    else k_vol_down(0);
+                }
                 else if (e->button == Button2 || e->button == Button3) {
                     if (on_vol) k_vol_mute(0); /* mid/right: mute */
                     else bar_task_click(e->x, e->button); /* mid: close task */
@@ -487,13 +503,9 @@ int main(int argc, char **argv) {
                      * there (not on an icon window) must never fall through
                      * to workspace view */
                     { int bx0, bx1; if (tray_box(&bx0, &bx1) && e->x >= bx0) break; }
-                    int wsw = S(WS_W); if (wsw < 1) wsw = 1;
-                    /* ws block starts at bar_pad_l: clicks left of it
-                     * are padding -> no-op (note: C truncates -1/40 to
-                     * 0, so an explicit bound check is required) */
-                    int pad = S(BAR_PAD_L);
-                    if (e->x < pad) break;
-                    int n = (e->x - pad) / wsw;
+                    /* variable-width ws cells (named ws grow): hit-test
+                     * shares ws_hit() with drawbar so click == pixels */
+                    int n = ws_hit((int)e->x);
                     if (n >= 0 && n < NWS) view(n);
                 }
             } else if (find_dock(e->window) || find_dock(e->subwindow)) {

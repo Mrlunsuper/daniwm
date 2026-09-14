@@ -12,6 +12,7 @@
 #include "ewmh.h"
 #include "layout.h"
 #include "monitor.h"
+#include "rename.h"
 #include "sysmon.h"
 
 /* ---- rules + scratchpad ---- */
@@ -181,6 +182,7 @@ const KeyAction actions[] = {
     { "fullscreen", k_fullscreen }, { "scratch", k_scratch },
     { "vol_up", k_vol_up }, { "vol_down", k_vol_down }, { "vol_mute", k_vol_mute },
     { "reload_config", k_reload }, { "restart", k_restart },
+    { "ws_rename", k_wsrename },
 };
 const unsigned nactions = sizeof(actions) / sizeof(actions[0]);
 
@@ -237,6 +239,7 @@ void add_default_keys(void) {
     push_key_fn(XK_r, M | ControlMask, k_restart, 0);
     push_key_fn(XK_f, M, k_fullscreen, 0);
     push_key_fn(XK_s, M, k_scratch, 0);
+    push_key_fn(XK_n, M | ShiftMask, k_wsrename, 0);
 }
 void keys_reset(void) {
     nkeys = 0;
