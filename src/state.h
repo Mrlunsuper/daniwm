@@ -112,6 +112,12 @@ extern char *ws_icons[MAXWS]; /* per-ws bar icon glyph, NULL = none */
 
 extern char progpath[1024]; /* argv[0] saved at startup for restart-in-place exec */
 
+/* ---- dani-comp (compositor đơn giản của nhà trồng) ---- */
+extern int COMP_ON;     /* compositor = 1: daniwm tự spawn dani-comp lúc khởi động */
+extern int COMP_SHADOW; /* shadow = 1/0: bóng đổ */
+extern int COMP_FADE;   /* fade = 1/0: fade-in khi map */
+extern float COMP_DIM;  /* inactive_dim 0.5..1.0: độ sáng cửa sổ nền (1 = tắt) */
+
 /* ---- EWMH atoms ---- */
 extern Atom A_TRAY_SEL, A_TRAY_OPCODE, A_XEMBED, A_XEMBED_INFO,
     A_TRAY_ORIENT, A_MANAGER;

@@ -4,8 +4,10 @@
 #include <X11/XF86keysym.h>
 #include <X11/keysym.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "bar.h"
 #include "client.h"
@@ -114,6 +116,38 @@ static void k_bar(int unused) {
     arrange();
 }
 static void k_fullscreen(int unused) { (void)unused; if (sel) setfullscreen(sel, !sel->fullscreen); }
+/* compositor toggle: đang chạy dani-comp thì pkill, chưa thì spawn.
+ * Check qua _NET_WM_CM_Sn để restart-in-place không spawn trùng. */
+static void k_compositor(int unused) {
+    (void)unused;
+    char cm[32];
+    snprintf(cm, sizeof(cm), "_NET_WM_CM_S%d", screen);
+    Atom a = XInternAtom(dpy, cm, False);
+    int running = (a != None && XGetSelectionOwner(dpy, a) != None);
+    pid_t pid = fork();
+    if (pid == -1) return;
+    if (pid == 0) {
+        if (dpy) close(ConnectionNumber(dpy));
+        setsid();
+        if (running) { execlp("pkill", "pkill", "-x", "dani-comp", NULL); _exit(1); }
+        /* spawn cùng dir với daniwm binary nếu có, fallback PATH */
+        char self[1152];
+        snprintf(self, sizeof(self), "%s", progpath[0] ? progpath : "dani-comp");
+        /* progpath trỏ tới daniwm -> thay basename thành dani-comp */
+        char *slash = strrchr(self, '/');
+        char sibling[1152];
+        if (slash) { size_t dl = (size_t)(slash - self) + 1; memcpy(sibling, self, dl); snprintf(sibling + dl, sizeof(sibling) - dl, "dani-comp"); }
+        else snprintf(sibling, sizeof(sibling), "dani-comp");
+        char dim[16];
+        snprintf(dim, sizeof(dim), "%.2f", COMP_DIM);
+        const char *shadow = COMP_SHADOW ? "--shadow" : "--no-shadow";
+        const char *fade = COMP_FADE ? "--fade" : "--no-fade";
+        execl(sibling, "dani-comp", shadow, fade, "--dim", dim, NULL);
+        execlp("dani-comp", "dani-comp", shadow, fade, "--dim", dim, NULL);
+        _exit(1);
+    }
+    COMP_ON = !running;
+}
 /* Volume interaction: amixer, fire-and-forget. vol_ts = 0 forces the 1s tick
  * to re-sample so the bar refreshes promptly (no blocking sample here). */
 static char *vol_up_am[]   = { "amixer", "set", "Master", "5%+", NULL };
@@ -158,10 +192,60 @@ static void float_rszby(int dw, int dh) {
     XResizeWindow(dpy, sel->win, (unsigned)sel->fw, (unsigned)sel->fh);
     XFlush(dpy);
 }
-static void k_move_left(int unused)  { (void)unused; float_moveby(-S(FLOAT_STEP), 0); }
-static void k_move_right(int unused) { (void)unused; float_moveby(S(FLOAT_STEP), 0); }
-static void k_move_up(int unused)    { (void)unused; float_moveby(0, -S(FLOAT_STEP)); }
-static void k_move_down(int unused)  { (void)unused; float_moveby(0, S(FLOAT_STEP)); }
+/* Directional move for tiled windows (master-stack aware):
+ *   up/down  reorder inside the current column (swap with the neighbour)
+ *   left     stack -> master (swap with the first master)
+ *   right    master -> top of the stack
+ * Index of the wanted tiling position, or NULL when the move is a no-op
+ * (edge of the column, stack with no stack column, etc.). */
+static Client *tiled_at_index(Client *c, int want) {
+    int n = 0;
+    for (Client *t = clients; t; t = t->next)
+        if (t->ws == c->ws && t->mon == c->mon && !t->floating && !t->fullscreen) {
+            if (n == want) return t;
+            n++;
+        }
+    return NULL;
+}
+static Client *tiled_neighbor(Client *c, int dir) {
+    int n = 0, idx = -1;
+    for (Client *t = clients; t; t = t->next)
+        if (t->ws == c->ws && t->mon == c->mon && !t->floating && !t->fullscreen) {
+            if (t == c) idx = n;
+            n++;
+        }
+    if (idx < 0 || n < 2) return NULL;
+    int nm = NMASTER < n ? NMASTER : n;
+    int col0 = (idx < nm) ? 0 : nm;   /* first index of c's column */
+    int col1 = (idx < nm) ? nm : n;   /* one past c's column */
+    int want = -1;
+    switch (dir) {
+    case 0: if (idx > col0) want = idx - 1; break;          /* up   */
+    case 1: if (idx < col1 - 1) want = idx + 1; break;      /* down */
+    case 2: if (idx >= nm) want = 0; break;                 /* left */
+    case 3: if (idx < nm && n > nm) want = nm; break;       /* right */
+    }
+    return (want < 0) ? NULL : tiled_at_index(c, want);
+}
+/* dir: 0 up, 1 down, 2 left, 3 right. Floating keeps the 20px move;
+ * tiled swaps tiling position instead (no promote). */
+static void move_dir(int dir) {
+    if (!sel || sel->fullscreen) return;
+    if (sel->floating) {
+        float_moveby(dir == 2 ? -S(FLOAT_STEP) : dir == 3 ? S(FLOAT_STEP) : 0,
+                     dir == 0 ? -S(FLOAT_STEP) : dir == 1 ? S(FLOAT_STEP) : 0);
+        return;
+    }
+    Client *t = tiled_neighbor(sel, dir);
+    if (!t) return;
+    swap_order(sel, t);
+    arrange();
+    XFlush(dpy);
+}
+static void k_move_left(int unused)  { (void)unused; move_dir(2); }
+static void k_move_right(int unused) { (void)unused; move_dir(3); }
+static void k_move_up(int unused)    { (void)unused; move_dir(0); }
+static void k_move_down(int unused)  { (void)unused; move_dir(1); }
 static void k_rsz_w_dec(int unused)  { (void)unused; float_rszby(-S(RSZ_STEP), 0); }
 static void k_rsz_w_inc(int unused)  { (void)unused; float_rszby(S(RSZ_STEP), 0); }
 static void k_rsz_h_dec(int unused)  { (void)unused; float_rszby(0, -S(RSZ_STEP)); }
@@ -182,6 +266,7 @@ const KeyAction actions[] = {
     { "fullscreen", k_fullscreen }, { "scratch", k_scratch },
     { "vol_up", k_vol_up }, { "vol_down", k_vol_down }, { "vol_mute", k_vol_mute },
     { "reload_config", k_reload }, { "restart", k_restart },
+    { "compositor", k_compositor },
     { "ws_rename", k_wsrename },
 };
 const unsigned nactions = sizeof(actions) / sizeof(actions[0]);
@@ -215,7 +300,7 @@ void add_default_keys(void) {
     push_key_fn(XK_minus, M, k_gapdec, 0);
     push_key_fn(XK_equal, M, k_gapinc, 0);
     push_key_fn(XK_b, M, k_bar, 0);
-    /* floating move (vim keys) + resize (with shift); repeat = smooth */
+    /* directional move (vim keys): tiled = swap, floating = 20px; repeat = smooth */
     push_key_fn(XK_h, M | ControlMask, k_move_left, 0);
     push_key_fn(XK_j, M | ControlMask, k_move_down, 0);
     push_key_fn(XK_k, M | ControlMask, k_move_up, 0);

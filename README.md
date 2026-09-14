@@ -18,6 +18,7 @@ skipped; examples land in `$(PREFIX)/share/daniwm/config.example` +
 `autostart.sh.example` for manual copy.
 
 Requires X11 + Xinerama + Xrandr + Xft headers (`libX11-devel libXinerama-devel libXrandr-devel libXft-devel` on Fedora).
+`dani-comp` additionally needs Composite/Damage/Render/Fixes (`libXcomposite-devel libXdamage-devel libXrender-devel libXfixes-devel` — usually preinstalled with libX11-devel).
 
 ## Run
 
@@ -50,7 +51,7 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 | Super+Ctrl+r | restart WM in place (clients kept, see below) |
 | Super+Left drag | move window — tiled: drop onto another tile swaps them (bspwm-style, target highlighted with a thicker border); drop elsewhere floats, cross-monitor drop re-tiles |
 | Super+Right drag | resize window (tiling: horizontal = `mfact`, vertical = `cfact` height weight, stays tiled; floating: resizes window geometry) |
-| Super+Ctrl+h/j/k/l | move floating window 20px (repeat = smooth; promotes tiled → floating) |
+| Super+Ctrl+h/j/k/l | move window — tiled: swap with the neighbour (h/l = stack↔master, j/k = up/down in column); floating: 20px (repeat = smooth) |
 | Super+Ctrl+Shift+h/l | resize floating width -/+20px (repeat = smooth) |
 | Super+Ctrl+Shift+k/j | resize floating height -/+20px (repeat = smooth) |
 | Super+Shift+e | quit |
@@ -72,6 +73,14 @@ Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL DD/MM HH:MM`, custom 
 - **Rules**: config `rule` lines match class/title substring → float / send to ws (default: scratchpad, Gimp, mpv float).
 - **Scratchpad**: `Super+s` toggles `xterm -name scratchpad` (2/3 centered float; first press spawns it). A custom `scratch =` command must produce a window with `scratchpad` in its class/name (e.g. `xterm -name scratchpad`, `alacritty --class scratchpad`); otherwise toggle keeps spawning instead of toggling.
 - **Autostart**: runs `~/.config/daniwm/autostart.sh` if executable.
+- **Compositor** (`dani-comp`, thay picom nếu thích): bóng đổ 3 lớp, fade-in
+  160ms, dim cửa sổ inactive (`inactive_dim`, default 0.92), tôn trọng
+  `_NET_WM_WINDOW_OPACITY` (`transset` dùng được), công bố `_NET_WM_CM_Sn`
+  (nhường nếu đã có picom). Chạy tay `dani-comp [--no-shadow] [--no-fade]
+  [--dim 0.5..1]` hoặc `compositor = 1` trong config để daniwm tự spawn;
+  action `compositor` (vd `bind = mod+c:compositor`) toggle nóng.
+  Test: `./test/test-comp.sh`. Giới hạn: vẽ lên root (có thể nháy nhẹ khi
+  resize liên tục), không xử lý shaped window, không vsync thật.
 - **Restart**: `Super+Ctrl+r` (action `restart`) execs a fresh binary over the
   running process — all clients survive, keeping workspace (`_NET_WM_DESKTOP`),
   fullscreen, current desktop, focus, and the parked scratchpad. Floating state
@@ -88,7 +97,9 @@ Scalars: `mod` (super|alt|ctrl), `border`, `border_focus/border_normal`,
 `scale` (0.5–3.0, default 1.0 — HiDPI multiplier for WM chrome only:
 `bar_h`/`ws_w`/`border`/`gap_outer`/`gap_inner`/float-step/drag-deadzone
 plus bar font `size=`; fractional ok, e.g. `scale = 1.5`; reload applies live),
-`bar_on/gaps_on` (1/true/yes/on), `focus` (`hover`| `click`|`both`, default `hover` — hover-to-focus vs click-to-focus), `tray` (system tray on/off, default on),
+`bar_on/gaps_on` (1/true/yes/on), `compositor` (0 default — tự spawn dani-comp),
+`shadow`/`fade` (1 default), `inactive_dim` (0.5–1.0, default 0.92),
+`focus` (`hover`| `click`|`both`, default `hover` — hover-to-focus vs click-to-focus), `tray` (system tray on/off, default on),
 `gap_outer/gap_inner`, `mfact` (0.1–0.9),
 `nmaster`, `workspaces` (1–10, default 5),
 `ws_names` (positional `Web Code Chat`, indexed `1:Web 2:Code`, quotes keep
@@ -153,12 +164,13 @@ bind = mod+3:ws3
 `bind = mod+key:action` (modifiers `mod/super/alt/ctrl/shift` + X keysym;
 actions: `focus_next/prev`, `zoom`, `ws_toggle`, `kill`, `tile/monocle/toggle`, `spawn_term/menu`,
 `mfact_dec/inc` (0.025 steps), `nmaster_dec/inc`, `gap/gap_dec/gap_inc`, `bar`,
-`move_left/right/up/down` (float 20px), `resize_w_dec/inc`, `resize_h_dec/inc`,
+`move_left/right/up/down` (tiled: swap position in the layout; floating: move 20px),
+`resize_w_dec/inc`, `resize_h_dec/inc`,
 `vol_up/vol_down/vol_mute` (`amixer set Master 5%+/5%-/toggle`),
 `wsN` (view), `mvN` (move + follow), `float`, `fullscreen`, `scratch`,
 `ws_rename` (prompt đổi tên ws đang xem qua `rename_cmd`; Esc giữ tên cũ,
 Enter trống xóa về số; WM không freeze lúc gõ),
-`reload_config`, `restart`, `quit`).
+`reload_config`, `restart`, `compositor` (toggle dani-comp), `quit`).
 First `rule`/`bind` line replaces the built-in defaults (default binds are
 generated for the configured `workspaces`: `1..9,0`).
 Missing `wsN`/`mvN` binds are auto-filled with the same convention

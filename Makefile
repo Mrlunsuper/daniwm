@@ -14,15 +14,19 @@ CFLAGS  += -MMD -MP
 LDFLAGS ?= -lX11 -lXinerama -lXrandr
 LDFLAGS += $(shell pkg-config --libs xft 2>/dev/null)
 LDFLAGS += -pie -Wl,-z,relro,-z,now
+COMP_LDFLAGS = -lX11 -lXcomposite -lXdamage -lXfixes -lXrender -lXext -pie -Wl,-z,relro,-z,now
 
 SRCS = src/state.c src/monitor.c src/sysmon.c src/bar.c src/ewmh.c \
        src/layout.c src/client.c src/mouse.c src/keys.c src/config.c src/tray.c src/rename.c src/main.c
 OBJS = $(SRCS:.c=.o)
 
-all: daniwm
+all: daniwm dani-comp
 
 daniwm: $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+dani-comp: src/comp.o
+	$(CC) $(CFLAGS) -o $@ $^ $(COMP_LDFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -35,11 +39,12 @@ test/dock-helper: test/dock-helper.c
 test/tray-icon-helper: test/tray-icon-helper.c
 	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11
 
-check: daniwm test/dock-helper test/tray-icon-helper
+check: daniwm dani-comp test/dock-helper test/tray-icon-helper
 	./test/run-all.sh
 
-install: daniwm install-examples
+install: daniwm dani-comp install-examples
 	install -Dm755 daniwm $(DESTDIR)$(BINDIR)/daniwm
+	install -Dm755 dani-comp $(DESTDIR)$(BINDIR)/dani-comp
 	sed -e 's|^Exec=.*|Exec=$(BINDIR)/daniwm|' -e 's|^TryExec=.*|TryExec=$(BINDIR)/daniwm|' \
 		daniwm.desktop | install -Dm644 /dev/stdin $(DESTDIR)$(SESSIONDIR)/daniwm.desktop
 	@if [ -z "$(DESTDIR)" ]; then $(MAKE) install-user; \
@@ -67,10 +72,10 @@ install-user:
 	else echo "keep existing $$confdir/autostart.sh"; fi
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/daniwm $(DESTDIR)$(SESSIONDIR)/daniwm.desktop
+	rm -f $(DESTDIR)$(BINDIR)/daniwm $(DESTDIR)$(BINDIR)/dani-comp $(DESTDIR)$(SESSIONDIR)/daniwm.desktop
 	rm -f $(DESTDIR)$(EXAMPLEDIR)/config.example $(DESTDIR)$(EXAMPLEDIR)/autostart.sh.example
 
 clean:
-	rm -f daniwm test/dock-helper test/tray-icon-helper src/*.o src/*.d
+	rm -f daniwm dani-comp test/dock-helper test/tray-icon-helper src/*.o src/*.d
 
 .PHONY: all clean check install install-examples install-user uninstall

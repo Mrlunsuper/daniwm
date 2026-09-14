@@ -52,6 +52,11 @@ char *RENAME_CMD = NULL;
 char *ws_icons[MAXWS] = { 0 };
 char progpath[1024] = "";
 
+int COMP_ON = 0;
+int COMP_SHADOW = 1;
+int COMP_FADE = 1;
+float COMP_DIM = 0.92f;
+
 Display *dpy;
 Window root, bar, checkwin;
 Pixmap barpm = None;

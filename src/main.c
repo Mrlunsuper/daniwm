@@ -236,6 +236,36 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* dani-comp: compositor của nhà trồng. Chỉ spawn khi config bật và
+     * chưa có compositor nào giữ _NET_WM_CM_Sn (tránh trùng sau restart). */
+    if (COMP_ON) {
+        char cm[32];
+        snprintf(cm, sizeof(cm), "_NET_WM_CM_S%d", screen);
+        Atom cmatom = XInternAtom(dpy, cm, False);
+        if (cmatom == None || XGetSelectionOwner(dpy, cmatom) == None) {
+            pid_t pid = fork();
+            if (pid == -1) {
+                perror("daniwm: fork dani-comp");
+            } else if (pid == 0) {
+                if (dpy) close(ConnectionNumber(dpy));
+                setsid();
+                signal(SIGCHLD, SIG_DFL);
+                char sibling[1152];
+                snprintf(sibling, sizeof(sibling), "%s", progpath[0] ? progpath : "dani-comp");
+                char *slash = strrchr(sibling, '/');
+                if (slash) snprintf(slash + 1, sizeof(sibling) - (size_t)(slash + 1 - sibling), "dani-comp");
+                else snprintf(sibling, sizeof(sibling), "dani-comp");
+                char dim[16];
+                snprintf(dim, sizeof(dim), "%.2f", COMP_DIM);
+                const char *shadow = COMP_SHADOW ? "--shadow" : "--no-shadow";
+                const char *fade = COMP_FADE ? "--fade" : "--no-fade";
+                execl(sibling, "dani-comp", shadow, fade, "--dim", dim, NULL);
+                execlp("dani-comp", "dani-comp", shadow, fade, "--dim", dim, NULL);
+                _exit(1);
+            }
+        }
+    }
+
     rename_init(); /* self-pipe for async ws_rename results */
     int xfd = ConnectionNumber(dpy);
     int rfd = rename_fd();

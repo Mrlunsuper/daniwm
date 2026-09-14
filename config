@@ -33,6 +33,15 @@ border_normal = 26233a               # Rosé Pine surface (unfocused)
 gaps_on = 1
 gap_outer = 4
 gap_inner = 8
+# ---------- dani-comp (compositor của nhà trồng, thay picom) ----------
+# compositor = 1: daniwm tự spawn ./dani-comp lúc khởi động (nhường nếu đã
+# có picom/compositor khác giữ _NET_WM_CM_Sn). Mặc định 0 để không đè picom
+# trong autostart.sh của bạn.
+compositor = 0
+shadow = 1         # bóng đổ 3 lớp (1/0)
+fade = 1             # fade-in khi map (1/0)
+inactive_dim = 0.92  # độ sáng cửa sổ nền 0.5..1.0 (1 = tắt dim)
+# toggle nóng: bind = mod+c:compositor  (chưa có mặc định, tự thêm nếu thích)
 bar_on = 1
 tray = 1                          # system tray XEmbed ở mép phải bar (1/0)
 tray_gap = 8                     # khoảng cách giữa các icon tray (px, 0..32)
@@ -94,6 +103,10 @@ rule = zoom:*:float:*
 # focus & cửa sổ
 bind = mod+j:focus_next
 bind = mod+k:focus_prev
+bind = mod+ctrl+h:move_left
+bind = mod+ctrl+j:move_down
+bind = mod+ctrl+k:move_up
+bind = mod+ctrl+l:move_right
 bind = mod+z:zoom
 bind = mod+Tab:ws_toggle
 bind = mod+shift+q:kill
