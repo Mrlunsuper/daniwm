@@ -87,7 +87,15 @@ void keep_docks_on_top(void) {
     for (Client *c = clients; c; c = c->next)
         if (c->ws == curws && c->fullscreen) XRaiseWindow(dpy, c->win);
 }
-void focus(Client *c) {
+/* focus_ex: raise=1 restacks floating/fullscreen on top (explicit actions:
+ * Mod+click/drag, keys, manage, pager requests). raise=0 is the
+ * hover/sloppy path: auto-raise on Enter would trap a small floating
+ * window nested inside a bigger one — crossing the big window raises it
+ * over the small one, so the pointer can never reach the small window.
+ * Hover therefore never restacks; raise with Mod+click or the keyboard.
+ * (Plain clicks go straight to the app: observing them would starve the
+ * app of button events, so the WM deliberately stays blind to them.) */
+static void focus_ex(Client *c, int raise) {
     if (!c) return;
     sel = c;
     ws_sel[curws] = c;
@@ -99,12 +107,18 @@ void focus(Client *c) {
                 XSetWindowBorder(dpy, t->win, (t == sel) ? BORDER_FOCUS : BORDER_NORMAL);
         drawbar();
     }
-    if (c->floating || c->fullscreen) {
+    if (raise && (c->floating || c->fullscreen)) {
         XRaiseWindow(dpy, c->win);
         keep_docks_on_top();
     }
     XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
     ewmh_active();
+}
+void focus(Client *c) {
+    focus_ex(c, 1);
+}
+void focus_noraise(Client *c) {
+    focus_ex(c, 0);
 }
 
 void focus_step(int dir) {

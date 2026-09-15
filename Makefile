@@ -36,10 +36,13 @@ dani-comp: src/comp.o
 test/dock-helper: test/dock-helper.c
 	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11
 
+test/click-helper: test/click-helper.c
+	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11
+
 test/tray-icon-helper: test/tray-icon-helper.c
 	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11
 
-check: daniwm dani-comp test/dock-helper test/tray-icon-helper
+check: daniwm dani-comp test/dock-helper test/tray-icon-helper test/click-helper
 	./test/run-all.sh
 
 install: daniwm dani-comp install-examples
@@ -76,6 +79,6 @@ uninstall:
 	rm -f $(DESTDIR)$(EXAMPLEDIR)/config.example $(DESTDIR)$(EXAMPLEDIR)/autostart.sh.example
 
 clean:
-	rm -f daniwm dani-comp test/dock-helper test/tray-icon-helper src/*.o src/*.d
+	rm -f daniwm dani-comp test/dock-helper test/tray-icon-helper test/click-helper src/*.o src/*.d
 
 .PHONY: all clean check install install-examples install-user uninstall

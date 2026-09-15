@@ -453,7 +453,11 @@ int main(int argc, char **argv) {
             XCrossingEvent *e = &ev.xcrossing;
             if (e->window == bar || drag.win != None || find_dock(e->window)) break;
             Client *c = find(e->window);
-            if (c && c != sel && c->ws == curws && e->mode != NotifyGrab) focus(c);
+            /* hover/sloppy focus must not restack: auto-raise here would
+             * lift a big floating window over a nested small one as the
+             * pointer crosses it, making the small one unreachable.
+             * Mod+click/drag and the keyboard still raise explicitly. */
+            if (c && c != sel && c->ws == curws && e->mode != NotifyGrab) focus_noraise(c);
             break;
         }
         case PropertyNotify: {

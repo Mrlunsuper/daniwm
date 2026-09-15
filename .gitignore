@@ -4,3 +4,4 @@ test/tray-icon-helper
 test/shots/
 src/*.o
 src/*.d
+test/click-helper

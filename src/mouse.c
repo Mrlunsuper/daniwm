@@ -87,6 +87,10 @@ void drag_start(Client *c, int mode, int px, int py) {
         return;
     drag.win = c->win; drag.mode = mode;
     drag.px = px; drag.py = py;
+    /* Drop motion events queued before the press: they carry positions
+     * older than the press and would teleport the window on the first
+     * drag_motion (synthetic warps especially can lag behind). */
+    { XEvent ne; while (XCheckMaskEvent(dpy, PointerMotionMask, &ne)); }
     drag.swap_target = None;
     drag.x = a.x; drag.y = a.y; drag.w = a.width; drag.h = a.height;
     drag.promoted = c->floating;

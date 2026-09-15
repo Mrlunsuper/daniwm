@@ -1,9 +1,36 @@
 #include "layout.h"
 
 #include "bar.h"
+#include "client.h"
 #include "ewmh.h"
 #include "monitor.h"
 #include "state.h"
+
+/* Raise floating/fullscreen clients above tiled ones while preserving
+ * their current relative stacking (XQueryTree returns bottom->top).
+ * Raising in client-list order would freeze list order as stacking order
+ * and instantly undo an explicit click-raise (or windowraise request) on
+ * a small floating window nested inside a bigger one. */
+static void raise_floats(int mon) { /* mon < 0: all monitors */
+    Window r, p, *kids = NULL;
+    unsigned nk = 0;
+    if (XQueryTree(dpy, root, &r, &p, &kids, &nk) && kids) {
+        for (unsigned i = 0; i < nk; i++) {
+            Client *c = find(kids[i]);
+            if (!c || c->ws != curws) continue;
+            if (mon >= 0 && c->mon != mon) continue;
+            if (!c->floating && !c->fullscreen) continue;
+            XMapRaised(dpy, c->win);
+        }
+        XFree(kids);
+        return;
+    }
+    /* XQueryTree failed: fall back to list order (better than nothing) */
+    for (Client *c = clients; c; c = c->next)
+        if (c->ws == curws && (mon < 0 || c->mon == mon) &&
+            (c->floating || c->fullscreen))
+            XMapRaised(dpy, c->win);
+}
 
 /* ---- layouts (per monitor) ---- */
 void tile_mon(int m) {
@@ -104,7 +131,8 @@ void monocle_mon(int m) {
         }
     }
     for (Client *c = clients; c; c = c->next)
-        if (c->ws == curws && c->mon == m && c->floating) XMapRaised(dpy, c->win);
+        if (c->ws == curws && c->mon == m && c->floating) XMapWindow(dpy, c->win);
+    raise_floats(m);
 }
 void monocle(void) {
     for (int m = 0; m < nmons; m++) monocle_mon(m);
@@ -125,12 +153,13 @@ void arrange(void) {
                 continue;
             }
             if (c->floating) {
-                XMapRaised(dpy, c->win);
+                XMapWindow(dpy, c->win);
             }
             XSetWindowBorderWidth(dpy, c->win, (unsigned)S(BORDER));
             XSetWindowBorder(dpy, c->win, (c == sel) ? BORDER_FOCUS : BORDER_NORMAL);
         }
     }
+    raise_floats(-1); /* floats above tiled, keeping their stacking */
     for (Dock *d = docks; d; d = d->next)
         XRaiseWindow(dpy, d->win);
     for (Client *c = clients; c; c = c->next) {

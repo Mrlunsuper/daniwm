@@ -11,6 +11,7 @@ void    swap_order(Client *a, Client *b); /* swap tiling positions (bspwm swap-d
 void    manage(Window w);
 void    unmanage(Window w);
 void    focus(Client *c);
+void    focus_noraise(Client *c); /* hover/sloppy path: focus without restack */
 void    focus_step(int dir);
 void    view(int n);
 void    send_to(int n);

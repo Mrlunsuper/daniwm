@@ -48,7 +48,7 @@ tray_gap = 8                     # khoảng cách giữa các icon tray (px, 0..
 bar_h = 48
 bar_ws_pad = 12                   # padding chữ 2 bên trong ô workspace có tên (px, 0..32)
 ws_w = 36
-bar_pad_l = 12
+bar_pad_l = 8
 bar_pad_r = 16
 # màu bar: hex 6 số, có thể có #. Áp ngay khi reload.
 # 4 màu nền tảng Rosé Pine Main (đồng bộ bspwm/polybar):
@@ -68,7 +68,7 @@ bar_gap            = 1        # spaces quanh separator giữa các module phải
 bar_sep_str        = |       # separator phải (vd: · | / • : — để trống = chỉ cách spaces)
 bar_modules        = cpu mem vol clock  # thứ tự + ẩn/hiện (xóa tên là ẩn, default đủ: "cpu mem bat vol clock"; máy bàn không pin thì `bat` tự ẩn)
 clock_fmt          = %d/%m | %H:%M  # strftime (vd: "%H:%M" gọn, "%a %d/%m %H:%M" đầy đủ)
-bar_show_title     = 1        # tiêu đề cửa sổ trái (1/0)
+bar_show_title     = 0       # tiêu đề cửa sổ trái (1/0)
 bar_show_tasks     = 1        # nút task Awesome: click-trái focus, click-giữa đóng (1/0)
 bar_task_w         = 480      # rộng mỗi nút task (px, 0 = auto chia đều; vd 160)
 bar_task_pad       = 12        # padding chữ trong nút task (px, 0..32)
@@ -88,7 +88,7 @@ bar_mode           = e0def4   # số cửa sổ (icon tile/monocle dùng bar_acc
 bar_title          = 6e6a86   # tiêu đề cửa sổ trái, chìm để nhường sysmon (cũ: e0def4)
 bar_sys            = e0def4   # giá trị sysmon sáng dễ đọc (icon dùng bar_acc)
 # font bar: fontconfig pattern. bar_h=36 hợp với size=11.
-font = SpaceMono Nerd Font:size=11
+font = SpaceMono Nerd Font:size=9
 # Không có Nerd Font vẫn đẹp (tự rớt về chữ C/M/B/V).
 
 # ---------- rules ----------
@@ -96,8 +96,10 @@ font = SpaceMono Nerd Font:size=11
 rule = scratchpad:*:float:*
 rule = Gimp:*:float:*
 rule = mpv:*:float:*
-rule = org.mozilla.firefox:*:tile:2               # tự mở vào ws2 (bỏ nếu không dùng)
-rule = zoom:*:float:*
+rule = org.mozilla.firefox:*:tile:2
+rule = slack:*:tile:1               # tự mở vào ws2 (bỏ nếu không dùng)
+rule = brave-browser:*:tile:3
+rule = thunar:*:float:*
 
 # ---------- bảng phím ----------
 # focus & cửa sổ
@@ -156,4 +158,4 @@ bind = mod+ctrl+r:restart               # thay binary tại chỗ, giữ nguyên
 bind = mod+Shift+e:quit               # thoát WM (kết thúc session X)
 rule = flameshot:*:float:*
 rule = telegram:*:float:*
-rule = local:*:float:*
+rule = local:*:float:7
