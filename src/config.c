@@ -630,11 +630,16 @@ void load_config(const char *path) {
         char *k = trim(s), *v = trim(eq + 1);
         for (char *p = k; *p; p++) *p = (char)tolower((unsigned char)*p);
         strip_comment(v);
-        if (strcmp(k, "bind") && strcmp(k, "rule")) parse_scalar(k, v);
+        if (strcmp(k, "bind") && strcmp(k, "bind+") && strcmp(k, "rule")) parse_scalar(k, v);
         free(dup);
     }
-    /* pass 2: rules/binds; first occurrence replaces defaults */
+    /* pass 2: rules/binds; first occurrence replaces defaults.
+     * `bind+` appends to defaults (deferred past the rebuild below so a
+     * changed `mod` applies to defaults first, then extras). */
     int saw_rule = 0, saw_bind = 0;
+    char **plusbinds = NULL;
+    int *pluslines = NULL;
+    unsigned nplus = 0, capplus = 0;
     for (unsigned i = 0; i < nlines; i++) {
         char *s = trim(lines[i]);
         if (!*s || *s == '#' || *s == ';') continue;
@@ -656,6 +661,18 @@ void load_config(const char *path) {
         } else if (!strcmp(k, "bind")) {
             if (!saw_bind) { keys_reset(); saw_bind = 1; }
             parse_bind(v, (int)(i + 1), path);
+        } else if (!strcmp(k, "bind+")) {
+            if (nplus == capplus) {
+                unsigned nc = capplus ? capplus * 2 : 8;
+                char **nb = realloc(plusbinds, nc * sizeof(*nb));
+                int *nl = realloc(pluslines, nc * sizeof(*nl));
+                if (!nb || !nl) { free(nb); free(nl); continue; }
+                plusbinds = nb; pluslines = nl; capplus = nc;
+            }
+            plusbinds[nplus] = xstrdup(v);
+            if (!plusbinds[nplus]) continue;
+            pluslines[nplus] = (int)(i + 1);
+            nplus++;
         } else if (strcmp(k, "mod") && strcmp(k, "border") && strcmp(k, "border_focus") &&
             strcmp(k, "border_normal") && strcmp(k, "bar_bg") && strcmp(k, "bar_fg") &&
             strcmp(k, "bar_acc") && strcmp(k, "bar_dim") && strcmp(k, "bar_ws_active") &&
@@ -691,6 +708,11 @@ void load_config(const char *path) {
         }
     }
     if (!saw_bind) { keys_reset(); add_default_keys(); } /* rebuild with final MOD+NWS */
+    for (unsigned i = 0; i < nplus; i++) {
+        parse_bind(plusbinds[i], pluslines[i], path);
+        free(plusbinds[i]);
+    }
+    free(plusbinds); free(pluslines);
     fill_ws_binds(); /* mod+8/9/0 etc. for ws beyond the user's explicit binds */
     finalize_nws();
     for (unsigned i = 0; i < nlines; i++) free(lines[i]);

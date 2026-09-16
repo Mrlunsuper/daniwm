@@ -325,6 +325,23 @@ void add_default_keys(void) {
     push_key_fn(XK_f, M, k_fullscreen, 0);
     push_key_fn(XK_s, M, k_scratch, 0);
     push_key_fn(XK_n, M | ShiftMask, k_wsrename, 0);
+    /* power menu (dani-run --power). argv heap-alloc vi keys_reset() free
+     * tung string + array khi reload (khong dung static/literal). */
+    {
+        char **av = malloc(3 * sizeof(*av));
+        if (av) {
+            av[0] = strdup("dani-run");
+            av[1] = strdup("--power");
+            av[2] = NULL;
+            if (!av[0] || !av[1]) {
+                free(av[0]); free(av[1]); free(av);
+            } else {
+                int idx = push_exec_cmd(av);
+                if (idx < 0) { free(av[0]); free(av[1]); free(av); }
+                else push_key_fn(XK_p, M | ShiftMask, k_exec, idx);
+            }
+        }
+    }
 }
 void keys_reset(void) {
     nkeys = 0;

@@ -570,6 +570,16 @@ int main(int argc, char **argv) {
             if (drag.win != None) drag_end(e->x_root, e->y_root);
             break;
         }
+        case MappingNotify: {
+            /* doi keymap (setxkbmap, doi layout, autostart race luc khoi dong):
+             * keycode cua phim co the doi -> grab lai toan bo, khong thi
+             * vai bind am tham mat grab (thay ro tren Xvfb: thieu p/q). */
+            XMappingEvent *e = &ev.xmapping;
+            XRefreshKeyboardMapping(e);
+            if (e->request == MappingKeyboard || e->request == MappingModifier)
+                grabkeys();
+            break;
+        }
         default: break;
         }
     }

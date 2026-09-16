@@ -5,11 +5,17 @@
 # ---------- terminal & menu ----------
 # Đổi terminal: sửa 1 dòng term = ghostty | kitty | foot | xterm
 term = alacritty
-menu = rofi -show drun                     # hoặc: rofi -show drun
+menu = dani-run                          # launcher cua nha (drun/fav/power); cu: rofi -show drun
 rename_cmd = rofi -dmenu -i -p rename  # prompt của ws_rename (stdout = tên mới;
                                      # $DANIWM_WS_CUR/_NUM dùng được trong cmd;
                                      # Esc = giữ tên cũ, Enter trống = về số)
 scratch = alacritty --class scratchpad   # giữ chữ "scratchpad" để toggle tìm được
+
+# ---------- extra binds (giữ nguyên list `bind =` bên dưới) ----------
+# `bind =` thay TOÀN BỘ phím mặc định; `bind+` = thêm vào, giữ nguyên.
+bind+ = mod+a:exec dani-run --fav
+bind+ = mod+Shift+p:exec dani-run --power
+# mod+d (menu) đã có ở list bên dưới, không cần thêm.
 
 # ---------- general ----------
 mod = super                          # super | alt | ctrl
@@ -100,7 +106,7 @@ rule = org.mozilla.firefox:*:tile:2
 rule = slack:*:tile:1               # tự mở vào ws2 (bỏ nếu không dùng)
 rule = brave-browser:*:tile:3
 rule = thunar:*:float:*
-
+bind+ = mod+c:exec dani-run --calc
 # ---------- bảng phím ----------
 # focus & cửa sổ
 bind = mod+j:focus_next

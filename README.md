@@ -9,13 +9,13 @@ make            # build ./daniwm (strict warnings, fortified)
 make check      # build + run all headless suites (needs Xvfb, xterm, xdotool)
 sudo make install   # -> /usr/local/bin + xsessions entry + share/daniwm/*.example
                     #    + user config into ~/.config/daniwm/ (never overwrites)
-make install-user   # only copy config + autostart.sh to ~/.config/daniwm/ (no overwrite)
+make install-user   # only copy config + autostart.sh + run.config to ~/.config/daniwm/ (no overwrite)
 ```
 
-`make install` never overwrites `~/.config/daniwm/config` / `autostart.sh` —
+`make install` never overwrites `~/.config/daniwm/config` / `autostart.sh` / `run.config` —
 existing files are kept. With `DESTDIR` set (packaging) the user-config step is
 skipped; examples land in `$(PREFIX)/share/daniwm/config.example` +
-`autostart.sh.example` for manual copy.
+`run.config.example` + `autostart.sh.example` for manual copy.
 
 Requires X11 + Xinerama + Xrandr + Xft headers (`libX11-devel libXinerama-devel libXrandr-devel libXft-devel` on Fedora).
 `dani-comp` additionally needs Composite/Damage/Render/Fixes (`libXcomposite-devel libXdamage-devel libXrender-devel libXfixes-devel` — usually preinstalled with libX11-devel).
@@ -36,7 +36,7 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 | Super+Tab | toggle previous workspace |
 | Super+t / m | tiling / monocle |
 | Super+Space | toggle tile/monocle |
-| Super+Enter / p | xterm / dmenu_run |
+| Super+Enter / p | terminal / dani-run (drun) |
 | Super+q | kill window |
 | Super+h / l | master size -/+ |
 | Super+u / i | nmaster -/+ |
@@ -54,6 +54,7 @@ Xephyr :1 & DISPLAY=:1 ./daniwm
 | Super+Ctrl+h/j/k/l | move window — tiled: swap with the neighbour (h/l = stack↔master, j/k = up/down in column); floating: 20px (repeat = smooth) |
 | Super+Ctrl+Shift+h/l | resize floating width -/+20px (repeat = smooth) |
 | Super+Ctrl+Shift+k/j | resize floating height -/+20px (repeat = smooth) |
+| Super+Shift+p | power menu (dani-run --power) |
 | Super+Shift+e | quit |
 
 Bar click on `1..N` switches workspace (active = pill + bright text, occupied = bright + dot, urgent = rose).
@@ -73,14 +74,28 @@ Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL DD/MM HH:MM`, custom 
 - **Rules**: config `rule` lines match class/title substring → float / send to ws (default: scratchpad, Gimp, mpv float).
 - **Scratchpad**: `Super+s` toggles `xterm -name scratchpad` (2/3 centered float; first press spawns it). A custom `scratch =` command must produce a window with `scratchpad` in its class/name (e.g. `xterm -name scratchpad`, `alacritty --class scratchpad`); otherwise toggle keeps spawning instead of toggling.
 - **Autostart**: runs `~/.config/daniwm/autostart.sh` if executable.
-- **Compositor** (`dani-comp`, thay picom nếu thích): bóng đổ 3 lớp, fade-in
-  160ms, dim cửa sổ inactive (`inactive_dim`, default 0.92), tôn trọng
-  `_NET_WM_WINDOW_OPACITY` (`transset` dùng được), công bố `_NET_WM_CM_Sn`
-  (nhường nếu đã có picom). Chạy tay `dani-comp [--no-shadow] [--no-fade]
-  [--dim 0.5..1]` hoặc `compositor = 1` trong config để daniwm tự spawn;
-  action `compositor` (vd `bind = mod+c:compositor`) toggle nóng.
-  Test: `./test/test-comp.sh`. Giới hạn: vẽ lên root (có thể nháy nhẹ khi
-  resize liên tục), không xử lý shaped window, không vsync thật.
+- **Compositor** (`dani-comp`, a picom alternative if you like): 3-layer drop shadows, 160ms fade-in,
+  inactive window dim (`inactive_dim`, default 0.92), honors
+  `_NET_WM_WINDOW_OPACITY` (works with `transset`), advertises `_NET_WM_CM_Sn`
+  (yields if picom is already running). Run `dani-comp [--no-shadow] [--no-fade]
+  [--dim 0.5..1]` manually or set `compositor = 1` in config so daniwm spawns it;
+  the `compositor` action (e.g. `bind = mod+c:compositor`) toggles it live.
+  Test: `./test/test-comp.sh`. Limits: paints on root (may flicker slightly on
+  continuous resize), no shaped-window handling, no real vsync.
+- **Launcher** (`dani-run`, a rofi replacement): `dani-run` = vertical fuzzy drun list
+  (scans `/usr/share/applications` + `~/.local/share/applications`, wraps `Terminal=true`
+  in `${TERMINAL:-alacritty} -e`, fuzzy sort + history at `~/.cache/dani-run/history`);
+  `dani-run --fav` = favorite-app icon grid (filterable); `dani-run --power` =
+  power-menu grid (reuses the fav UI); `dani-run --calc` = calculator
+  (`+ - * / % ^`, parens, `sqrt/sin/cos/tan/exp/abs/ln/log`, `pi`/`e`;
+  `Enter` copies the result to clipboard + prints to stdout). Config at `~/.config/daniwm/run.config`
+  (symlinked to the repo, `app = icon;name;cmd`, `power = ...`, empty icon → first
+  letter; `cols`/`lines`/`font`; the first `app`/`power` line clears defaults). Keys:
+  `↑↓←→`/`Ctrl+hjkl` (+ bare `hjkl` when input is empty) to move, `Enter` to run
+  (unmatched drun input runs as a command), `Esc` to quit, mouse scroll = prev/next.
+  Note this repo's own config uses a full `bind =` list (e.g. `mod+d` = menu,
+  `mod+Shift+q` = kill) + `bind+` to add (`mod+a` = fav,
+  `mod+Shift+p` = power) without losing existing keys.
 - **Restart**: `Super+Ctrl+r` (action `restart`) execs a fresh binary over the
   running process — all clients survive, keeping workspace (`_NET_WM_DESKTOP`),
   fullscreen, current desktop, focus, and the parked scratchpad. Floating state
