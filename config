@@ -76,7 +76,7 @@ bar_modules        = cpu mem vol clock  # thứ tự + ẩn/hiện (xóa tên l�
 clock_fmt          = %d/%m | %H:%M  # strftime (vd: "%H:%M" gọn, "%a %d/%m %H:%M" đầy đủ)
 bar_show_title     = 0       # tiêu đề cửa sổ trái (1/0)
 bar_show_tasks     = 1        # nút task Awesome: click-trái focus, click-giữa đóng (1/0)
-bar_task_w         = 480      # rộng mỗi nút task (px, 0 = auto chia đều; vd 160)
+bar_task_w         = 360     # rộng mỗi nút task (px, 0 = auto chia đều; vd 160)
 bar_task_pad       = 12        # padding chữ trong nút task (px, 0..32)
 # style task list: đồng bộ với ws (pill + iris) | đổi pill->underline/block/none nếu thích
 bar_task_style        = pill
@@ -102,7 +102,7 @@ font = SpaceMono Nerd Font:size=9
 rule = scratchpad:*:float:*
 rule = Gimp:*:float:*
 rule = mpv:*:float:*
-rule = org.mozilla.firefox:*:tile:2
+rule = org.mozilla.firefox:*:tile:3
 rule = slack:*:tile:1               # tự mở vào ws2 (bỏ nếu không dùng)
 rule = brave-browser:*:tile:3
 rule = thunar:*:float:*
@@ -161,7 +161,7 @@ bind = mod+Shift+7:mv7
 # hệ thống
 bind = mod+Shift+r:reload_config
 bind = mod+ctrl+r:restart               # thay binary tại chỗ, giữ nguyên cửa sổ
-bind = mod+Shift+e:quit               # thoát WM (kết thúc session X)
+bind = mod+ctrl+e:quit               # thoát WM (kết thúc session X)
 rule = flameshot:*:float:*
 rule = telegram:*:float:*
 rule = local:*:float:7

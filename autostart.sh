@@ -26,10 +26,10 @@ run_once nm-applet nm-applet
 run_once xfce4-power-manager xfce4-power-manager
 run_once blueman-applet blueman-applet
 run_once clipit clipit
-run_once eww "$HOME/.local/bin/eww" daemon
+#run_once eww "$HOME/.local/bin/eww" daemon
 
 # Picom — chỉ start 1 instance duy nhất
-run_once picom picom --config "$HOME/.config/picom/picom.conf" -b
+#run_once picom picom --config "$HOME/.config/picom/picom.conf" -b
 
 run_once dunst dunst
 
