@@ -3,6 +3,7 @@
 set -u
 TDIR=$(dirname "$0")
 . "$TDIR/find_display.sh"
+. "$TDIR/toolchain.sh"
 export DISPLAY=$D
 H=$(mktemp -d)
 mkdir -p "$H/.config/daniwm"

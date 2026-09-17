@@ -15,6 +15,24 @@ LDFLAGS ?= -lX11 -lXinerama -lXrandr
 LDFLAGS += $(shell pkg-config --libs xft 2>/dev/null)
 LDFLAGS += -pie -Wl,-z,relro,-z,now
 COMP_LDFLAGS = -lX11 -lXcomposite -lXdamage -lXfixes -lXrender -lXext -pie -Wl,-z,relro,-z,now
+# gcc nix không thấy header/lib hệ thống và linker nix bỏ qua RUNPATH +
+# cache hệ thống -> binary link xong vẫn "cannot open shared object" lúc
+# chạy. Vá ở đây cho build chính (với gcc hệ thống thì vô hiệu).
+# Test script tự build helper thì dùng test/toolchain.sh (cùng logic).
+SYS_CFLAGS =
+SYS_LDFLAGS =
+ifneq ($(wildcard /usr/include/X11/Xlib.h),)
+SYS_CFLAGS = -isystem /usr/include
+endif
+ifneq ($(wildcard /usr/lib64/libX11.so),)
+SYS_LDFLAGS = -L/usr/lib64
+endif
+ifneq ($(findstring /nix,$(shell readlink -f $(shell command -v $(firstword $(CC)) 2>/dev/null) 2>/dev/null)),)
+SYS_LDFLAGS += -Wl,-dynamic-linker,/lib64/ld-linux-x86-64.so.2
+endif
+CFLAGS += $(SYS_CFLAGS)
+LDFLAGS += $(SYS_LDFLAGS)
+COMP_LDFLAGS += $(SYS_LDFLAGS)
 
 SRCS = src/state.c src/monitor.c src/sysmon.c src/bar.c src/ewmh.c \
        src/layout.c src/client.c src/mouse.c src/keys.c src/config.c src/tray.c src/rename.c src/main.c
@@ -37,13 +55,13 @@ dani-comp: src/comp.o
 -include $(OBJS:.o=.d)
 
 test/dock-helper: test/dock-helper.c
-	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11
+	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11 $(SYS_LDFLAGS)
 
 test/click-helper: test/click-helper.c
-	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11
+	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11 $(SYS_LDFLAGS)
 
 test/tray-icon-helper: test/tray-icon-helper.c
-	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11
+	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11 $(SYS_LDFLAGS)
 
 check: daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper
 	./test/run-all.sh

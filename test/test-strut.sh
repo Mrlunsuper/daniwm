@@ -3,6 +3,7 @@
 set -u
 TDIR=$(dirname "$0")
 . "$TDIR/find_display.sh"
+. "$TDIR/toolchain.sh"
 export DISPLAY=$D
 H=$(mktemp -d)
 mkdir -p "$H/.config/daniwm"
@@ -48,7 +49,7 @@ echo "workarea initial: $wa"
 assert_contains "initial workarea has y=0" "$wa" "0,0,1280,800"
 
 # 2. Start a top dock (height=40)
-[ -x "$TDIR/dock-helper" ] || gcc -O2 -o "$TDIR/dock-helper" "$TDIR/dock-helper.c" -lX11
+[ -x "$TDIR/dock-helper" ] || ${CC} ${CFLAGS} -o "$TDIR/dock-helper" "$TDIR/dock-helper.c" -lX11
 "$TDIR/dock-helper" 40 0 0 0 1280 40 &
 DOCK=$!
 sleep 1

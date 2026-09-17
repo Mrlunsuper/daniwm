@@ -7,6 +7,7 @@
 set -u
 TDIR=$(dirname "$0")
 . "$TDIR/find_display.sh"
+. "$TDIR/toolchain.sh"
 export DISPLAY=$D
 H=$(mktemp -d)
 
@@ -45,7 +46,7 @@ int main(void) {
     return 0;
 }
 EOF
-cc -O2 -o "$HELPER" "$H/stackorder.c" -lX11 || { echo "FAIL: cannot build helper"; exit 1; }
+${CC} ${CFLAGS} -o "$HELPER" "$H/stackorder.c" -lX11 || { echo "FAIL: cannot build helper"; exit 1; }
 topmost() { "$HELPER" 2>/dev/null | tail -n1; }
 # ground truth window under the pointer (XQueryPointer, not geometry math)
 ptrwin() { xdotool getmouselocation 2>/dev/null | sed -n 's/.*window:\([0-9]*\).*/\1/p'; }
