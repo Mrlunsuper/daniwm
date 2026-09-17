@@ -63,7 +63,14 @@ test/click-helper: test/click-helper.c
 test/tray-icon-helper: test/tray-icon-helper.c
 	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11 $(SYS_LDFLAGS)
 
-check: daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper
+test/menu-helper: test/menu-helper.c
+	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11 $(SYS_LDFLAGS)
+
+test/dialog-helper: test/dialog-helper.c
+	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11 $(SYS_LDFLAGS)
+
+check: daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper \
+       test/menu-helper test/dialog-helper
 	./test/run-all.sh
 
 install: daniwm dani-comp dani-run install-examples
@@ -104,6 +111,6 @@ uninstall:
 	rm -f $(DESTDIR)$(EXAMPLEDIR)/config.example $(DESTDIR)$(EXAMPLEDIR)/run.config.example $(DESTDIR)$(EXAMPLEDIR)/autostart.sh.example
 
 clean:
-	rm -f daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper src/*.o src/*.d
+	rm -f daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper test/menu-helper test/dialog-helper src/*.o src/*.d
 
 .PHONY: all clean check install install-examples install-user uninstall

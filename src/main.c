@@ -88,6 +88,30 @@ static int fight_check(Client *c) {
     return 0;
 }
 
+/* ---- hover focus lock ----
+ * Đóng menu chuột phải hay unmap cửa sổ dưới con trỏ đều làm X gửi
+ * EnterNotify thật (mode Normal), dù chuột đứng yên. Nhận nó thì hộp thoại
+ * vừa mở bị cướp focus ngay (Save as của trình duyệt bị như vậy).
+ * Cửa sổ mới map xong giữ focus tới khi chuột DI THẬT. */
+static int hover_lock_on = 0;
+static int hover_lock_x = 0, hover_lock_y = 0;
+static void hover_lock_arm(void) {
+    Window r, ch; int rx, ry, wx, wy; unsigned m;
+    if (!XQueryPointer(dpy, root, &r, &ch, &rx, &ry, &wx, &wy, &m)) return;
+    hover_lock_on = 1;
+    hover_lock_x = rx; hover_lock_y = ry;
+}
+/* 1 = bỏ qua crossing này. Chuột rời chỗ cũ thì mở khoá luôn, nên hover
+ * hoạt động lại ngay từ cú di chuột đầu tiên. */
+static int hover_locked(const XCrossingEvent *e) {
+    if (!hover_lock_on) return 0;
+    if (e->x_root != hover_lock_x || e->y_root != hover_lock_y) {
+        hover_lock_on = 0;
+        return 0;
+    }
+    return 1;
+}
+
 static int xerror_other_wm(Display *d, XErrorEvent *e) {
     (void)d; (void)e;
     fprintf(stderr, "daniwm: another WM is already running\n");
@@ -376,6 +400,7 @@ int main(int argc, char **argv) {
                 if (c->ws == curws && LAYOUT == L_TILE) XMapWindow(dpy, e->window);
                 if (c->ws == curws) { focus(c); arrange(); }
             } else manage(e->window);
+            hover_lock_arm();
             break;
         }
         case MapNotify:
@@ -519,11 +544,19 @@ int main(int argc, char **argv) {
             XCrossingEvent *e = &ev.xcrossing;
             if (e->window == bar || drag.win != None || find_dock(e->window)) break;
             Client *c = find(e->window);
+            /* Chỉ theo con trỏ khi người dùng thật sự di chuột. Mở/đóng
+             * grab (menu chuột phải) hay map/unmap cửa sổ dưới con trỏ đều
+             * sinh EnterNotify giả. Nhận nó thì menu đóng lại sẽ cướp focus
+             * của hộp thoại vừa mở (Save as bị dim vì lý do này).
+             * NotifyInferior = con trỏ từ cửa sổ con ra cha, không phải đổi
+             * cửa sổ. */
+            if (e->mode != NotifyNormal || e->detail == NotifyInferior) break;
+            if (hover_locked(e)) break;
             /* hover/sloppy focus must not restack: auto-raise here would
              * lift a big floating window over a nested small one as the
              * pointer crosses it, making the small one unreachable.
              * Mod+click/drag and the keyboard still raise explicitly. */
-            if (c && c != sel && c->ws == curws && e->mode != NotifyGrab) focus_noraise(c);
+            if (c && c != sel && c->ws == curws) focus_noraise(c);
             break;
         }
         case PropertyNotify: {

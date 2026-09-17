@@ -7,3 +7,5 @@ test/shots/
 src/*.o
 src/*.d
 test/click-helper
+test/menu-helper
+test/dialog-helper
