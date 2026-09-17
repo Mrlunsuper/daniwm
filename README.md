@@ -80,8 +80,9 @@ Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL DD/MM HH:MM`, custom 
   (yields if picom is already running). Run `dani-comp [--no-shadow] [--no-fade]
   [--dim 0.5..1]` manually or set `compositor = 1` in config so daniwm spawns it;
   the `compositor` action (e.g. `bind = mod+c:compositor`) toggles it live.
-  Test: `./test/test-comp.sh`. Limits: paints on root (may flicker slightly on
-  continuous resize), no shaped-window handling, no real vsync.
+  Test: `./test/test-comp.sh`. Limits: double-buffered (no flicker), bg snapshot
+  from `_XROOTPMAP_ID` (a solid-color root falls back to 1 clear on bg change
+  only), shaped windows clipped on the back buffer, no real vsync.
 - **Launcher** (`dani-run`, a rofi replacement): `dani-run` = vertical fuzzy drun list
   (scans `/usr/share/applications` + `~/.local/share/applications`, wraps `Terminal=true`
   in `${TERMINAL:-alacritty} -e`, fuzzy sort + history at `~/.cache/dani-run/history`);
