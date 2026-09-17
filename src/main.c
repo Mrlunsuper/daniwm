@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <signal.h>
 #include <errno.h>
@@ -28,6 +29,64 @@
 #include "mouse.h"
 #include "sysmon.h"
 #include "tray.h"
+
+/* ---- _NET_ACTIVE_WINDOW focus-fight guard ----
+ * Spammy pages (window.focus() on blur, competing across two browsers)
+ * used to bounce sel A,B,A,B at hundreds of Hz; each flip re-tiles
+ * monocle (unmap/map) -> visible flicker + windows never paint.
+ * Detect rapid alternation between 2 windows: freeze focus on the
+ * current window and mark demanders urgent instead (bar shows it).
+ * Freeze extends while the fight persists, expires 2s after the last
+ * demand. Keys/buttons bypass it (they call focus() directly). */
+#define FIGHT_N 6          /* alternating demands to trigger */
+#define FIGHT_MS 1500      /* ... within this window */
+#define FIGHT_FREEZE_MS 2000
+static Window ff_seq[FIGHT_N];
+static long long ff_at[FIGHT_N];
+static int ff_n = 0;
+static long long ff_freeze_until = 0;
+static long long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
+/* 1 = last FIGHT_N demands strictly alternate between 2 windows, fast */
+static int is_fight(void) {
+    Window x = None, y = None;
+    if (ff_n < FIGHT_N) return 0;
+    if (ff_at[FIGHT_N - 1] - ff_at[0] >= FIGHT_MS) return 0;
+    for (int i = 0; i < FIGHT_N; i++) {
+        if (ff_seq[i] != x && ff_seq[i] != y) {
+            if (x == None) x = ff_seq[i];
+            else if (y == None) y = ff_seq[i];
+            else return 0; /* 3rd window: not a duel */
+        }
+        if (i > 0 && ff_seq[i] == ff_seq[i - 1]) return 0;
+    }
+    return x != None && y != None;
+}
+/* 1 = swallow this demand (urgent already marked) */
+static int fight_check(Client *c) {
+    long long now = now_ms();
+    if (c == sel) return 0;
+    if (ff_n < FIGHT_N) { ff_seq[ff_n] = c->win; ff_at[ff_n] = now; ff_n++; }
+    else {
+        memmove(ff_seq, ff_seq + 1, (FIGHT_N - 1) * sizeof(Window));
+        memmove(ff_at, ff_at + 1, (FIGHT_N - 1) * sizeof(long long));
+        ff_seq[FIGHT_N - 1] = c->win; ff_at[FIGHT_N - 1] = now;
+    }
+    if (now < ff_freeze_until) {
+        set_urgent(c, 1);
+        if (is_fight()) ff_freeze_until = now + FIGHT_FREEZE_MS;
+        return 1;
+    }
+    if (is_fight()) {
+        ff_freeze_until = now + FIGHT_FREEZE_MS;
+        set_urgent(c, 1);
+        return 1;
+    }
+    return 0;
+}
 
 static int xerror_other_wm(Display *d, XErrorEvent *e) {
     (void)d; (void)e;
@@ -355,6 +414,13 @@ int main(int argc, char **argv) {
                      * focusing it would set input to an invisible window.
                      * Ignore the request (pager should unpark first). */
                     if (c->ws >= NWS) break;
+                    if (fight_check(c)) break; /* focus duel: urgent only */
+                    if (c == sel) {
+                        /* already focused: re-assert input, skip the
+                         * expensive path (arrange/bar/ewmh spew). */
+                        XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+                        break;
+                    }
                     if (c->ws != curws) view(c->ws);
                     focus(c);
                     arrange();
