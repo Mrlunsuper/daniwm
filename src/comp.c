@@ -392,12 +392,19 @@ static double win_alpha(Win *w, long long now) {
             fading = 1;
         }
     }
-    if (opt_dim < 1.0 && !w->override && !w->fullscreen && !w->dock) {
-        if (w->id != active_win) a *= opt_dim;
-    }
     if (a < 0.0) a = 0.0;
     if (a > 1.0) a = 1.0;
     return a;
+}
+
+/* Hệ số dim của cửa sổ nền. 1.0 = không dim. Dim KHÔNG làm bằng alpha:
+ * giảm alpha thì cửa sổ dưới hiện xuyên qua (hộp thoại Save as nhìn thấy
+ * trang web phía sau). Vẽ cửa sổ đủ đục rồi phủ đen mới đúng. */
+static double win_dim(const Win *w) {
+    if (opt_dim >= 1.0) return 1.0;
+    if (w->override || w->fullscreen || w->dock) return 1.0;
+    if (w->id == active_win) return 1.0;
+    return opt_dim;
 }
 
 static int should_shadow(const Win *w) {
@@ -421,9 +428,6 @@ static int win_is_opaque(const Win *w, long long now) {
     if (w->shaped) return 0;
     if (opt_fade && !w->override && w->born > 0 && now - w->born < opt_fade_ms)
         return 0; /* đang fade-in */
-    if (opt_dim < 1.0 && !w->override && !w->fullscreen && !w->dock &&
-        w->id != active_win)
-        return 0; /* bị dim */
     return 1;
 }
 
@@ -827,6 +831,16 @@ static void repaint(void) {
                 XRenderComposite(dpy, PictOpOver, w->pict, mask, back_pict,
                     0, 0, 0, 0, dx, dy, (unsigned)fw, (unsigned)fh);
             }
+        }
+        /* dim cửa sổ nền: phủ đen alpha (1-dim) LÊN TRÊN, mask bằng chính
+         * pixmap cửa sổ. Chỉ tối phần cửa sổ thật sự vẽ, và không cho cửa
+         * sổ dưới hiện xuyên qua. */
+        double dimf = win_dim(w);
+        if (dimf < 1.0) {
+            Picture blk = alpha_mask((1.0 - dimf) * a);
+            if (blk)
+                XRenderComposite(dpy, PictOpOver, blk, w->pict, back_pict,
+                    0, 0, 0, 0, dx, dy, (unsigned)fw, (unsigned)fh);
         }
         if (had_clip)
             back_clip_reset(); /* trả clip về hộp damage (hoặc None) */
