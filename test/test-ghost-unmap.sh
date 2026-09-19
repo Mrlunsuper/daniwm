@@ -1,17 +1,10 @@
 #!/bin/bash
-# test-ghost-unmap.sh - T-H1-REP failing repro for plain UnmapNotify ghost.
+# test-ghost-unmap.sh - T-H1A lock: plain client UnmapNotify unmanages.
 #
-# Problem (H1, audit:65): a managed window that calls plain XUnmapWindow
-# stays in `clients` and `_NET_CLIENT_LIST` (list stays 1). Only the
-# synthetic-withdraw path (send_event=True, main.c:417-419) unmanages.
+# Fixed behavior (was T-H1-REP XFAIL): a managed window that calls plain
+# XUnmapWindow leaves `clients` and `_NET_CLIENT_LIST` empty (list 0).
+# WM-initiated hides (monocle-hidden, ws switch) stay managed by design.
 #
-# XFAIL STATUS: this suite currently asserts the BUGGY result
-# (EXPECTED_FINAL=1, ghost present) so `make check` stays green while the
-# bug is open. T-H1A flips ONLY the EXPECTED_FINAL line below to 0 --
-# no other edit -- and the suite then locks the fixed behavior:
-# plain unmap leaves no ghost, WM-hidden windows stay managed.
-#
-# Scope: test only. No WM code changes. Synthetic-withdraw path untouched.
 # Stays on one workspace in tile layout (fresh HOME, no ws keys, no
 # monocle toggle) so WM-initiated hides cannot pollute the result.
 set -u
@@ -20,8 +13,8 @@ TDIR=$(dirname "$0")
 export DISPLAY=$D
 H=$(mktemp -d)
 
-# T-H1A: flip to 0 (fixed behavior: plain unmap unmanages, list ends 0).
-EXPECTED_FINAL=1
+# Fixed behavior: plain unmap unmanages, list ends 0.
+EXPECTED_FINAL=0
 
 fail=0
 assert() { local desc=$1; shift; if [ "$@" ]; then echo "PASS: $desc"; else echo "FAIL: $desc"; fail=1; fi; }
@@ -46,15 +39,21 @@ RC=$?
 echo "$OUT"
 MANAGED=$(echo "$OUT" | sed -n 's/^MANAGED=//p' | tail -n1)
 FINAL=$(echo "$OUT" | sed -n 's/^FINAL=//p' | tail -n1)
+STORM=$(echo "$OUT" | sed -n 's/^STORM_FINAL=//p' | tail -n1)
+SYN=$(echo "$OUT" | sed -n 's/^SYN_FINAL=//p' | tail -n1)
+REMAP=$(echo "$OUT" | sed -n 's/^REMAP=//p' | tail -n1)
 [ "$RC" -eq 0 ] || { echo "FAIL: helper setup failed (rc=$RC)"; cat "$H/stderr.log"; exit 1; }
 [ -n "${MANAGED:-}" ] || { echo "FAIL: no MANAGED count from helper"; exit 1; }
 [ -n "${FINAL:-}" ] || { echo "FAIL: no FINAL count from helper"; exit 1; }
+[ -n "${STORM:-}" ] || { echo "FAIL: no STORM_FINAL count from helper"; exit 1; }
+[ -n "${SYN:-}" ] || { echo "FAIL: no SYN_FINAL count from helper"; exit 1; }
+[ -n "${REMAP:-}" ] || { echo "FAIL: no REMAP count from helper"; exit 1; }
 
 assert "wm manages mapped window (list 1)" "$MANAGED" -eq 1
-if [ "$EXPECTED_FINAL" -eq 1 ]; then
-    echo "XFAIL(T-H1-REP): plain client unmap leaves ghost (list stays 1); T-H1A flips EXPECTED_FINAL to 0"
-fi
 assert "plain unmap leaves _NET_CLIENT_LIST=$EXPECTED_FINAL" "$FINAL" -eq "$EXPECTED_FINAL"
+assert "20x map/plain-unmap storm ends 0" "$STORM" -eq 0
+assert "synthetic withdraw still unmanages (list 0)" "$SYN" -eq 0
+assert "remap after withdraw re-manages (list 1)" "$REMAP" -eq 1
 
 # Manual verification hints (audit H1):
 #   DISPLAY=$D xprop -root _NET_CLIENT_LIST

@@ -415,7 +415,18 @@ int main(int argc, char **argv) {
                 break;
             }
             Client *c = find(e->window);
-            if (c && e->send_event) unmanage(e->window);
+            if (!c) break;
+            if (e->send_event) { unmanage(e->window); break; }
+            /* Plain client-initiated hide: unmanage unless the unmap is
+             * WM-initiated (monocle-hidden or ws-hidden windows stay
+             * managed). Attribute probe guards spurious events. */
+            if (c->hidden || c->ws != curws) break;
+            {
+                XWindowAttributes a;
+                if (XGetWindowAttributes(dpy, e->window, &a) &&
+                    a.map_state != IsUnmapped) break;
+            }
+            unmanage(e->window);
             break;
         }
         case SelectionClear: {
