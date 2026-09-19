@@ -764,8 +764,12 @@ void k_reload(int unused) {
     /* finalize may have moved curws or folded windows across it: re-sync
      * visibility like view() does (arrange maps tiled but never unmaps). */
     for (Client *c = clients; c; c = c->next) {
-        if (c->ws == curws) XMapWindow(dpy, c->win);
-        else XUnmapWindow(dpy, c->win);
+        if (c->ws == curws) {
+            /* Skip monocle-hidden windows: arrange() below re-hides them
+             * (or maps them if the layout is now tile). Mapping them here
+             * first only causes a transient over-map flash. */
+            if (!c->hidden) XMapWindow(dpy, c->win);
+        } else XUnmapWindow(dpy, c->win);
     }
     if (bar) XMoveResizeWindow(dpy, bar, mons[0].x, mons[0].y, (unsigned)barw, (unsigned)S(BAR_H));
     if (!bar_on && bar) XUnmapWindow(dpy, bar);
