@@ -397,8 +397,12 @@ int main(int argc, char **argv) {
             }
             Client *c = find(e->window);
             if (c) {
+                /* Known remap never steals sel: new manages focus via
+                 * manage(), but a remapped helper must not yank focus or
+                 * monocle visibility. Hover/pager decides focus. */
                 if (c->ws == curws && LAYOUT == L_TILE) XMapWindow(dpy, e->window);
-                if (c->ws == curws) { focus(c); arrange(); }
+                arrange();
+                ewmh_active();
             } else manage(e->window);
             hover_lock_arm();
             break;
