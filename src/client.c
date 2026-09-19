@@ -101,14 +101,14 @@ int client_wants_input(Window w) {
 }
 /* ICCCM WM_TAKE_FOCUS: endorsing clients take input themselves
  * (LocallyActive). Send ClientMessage instead of XSetInputFocus to avoid
- * double-focus. Atoms cached statically here until T-M5A centralizes them.
+ * double-focus. Atoms come from the T-M5A cache (fallback interns once if
+ * used before ewmh_init).
  * TODO(T-M5B): thread a real event timestamp instead of CurrentTime. */
 static int client_takes_focus(Window w) {
-    static Atom protos = None, take = None;
+    Atom protos = A_WM_PROTOCOLS != None ? A_WM_PROTOCOLS : XInternAtom(dpy, "WM_PROTOCOLS", False);
+    Atom take = A_WM_TAKE_FOCUS != None ? A_WM_TAKE_FOCUS : XInternAtom(dpy, "WM_TAKE_FOCUS", False);
     Atom *list = NULL;
     int n = 0, found = 0;
-    if (protos == None) protos = XInternAtom(dpy, "WM_PROTOCOLS", False);
-    if (take == None) take = XInternAtom(dpy, "WM_TAKE_FOCUS", False);
     if (protos == None || take == None) return 0;
     if (!XGetWMProtocols(dpy, w, &list, &n) || !list) return 0;
     for (int i = 0; i < n; i++)
@@ -117,10 +117,9 @@ static int client_takes_focus(Window w) {
     return found;
 }
 static void send_take_focus(Client *c) {
-    static Atom protos = None, take = None;
+    Atom protos = A_WM_PROTOCOLS != None ? A_WM_PROTOCOLS : XInternAtom(dpy, "WM_PROTOCOLS", False);
+    Atom take = A_WM_TAKE_FOCUS != None ? A_WM_TAKE_FOCUS : XInternAtom(dpy, "WM_TAKE_FOCUS", False);
     XEvent ev;
-    if (protos == None) protos = XInternAtom(dpy, "WM_PROTOCOLS", False);
-    if (take == None) take = XInternAtom(dpy, "WM_TAKE_FOCUS", False);
     if (protos == None || take == None) return;
     memset(&ev, 0, sizeof(ev));
     ev.xclient.type = ClientMessage;
@@ -284,11 +283,12 @@ void ws_toggle(int unused) {
 }
 
 void kill_client(Client *c) {
-    Atom *protos = NULL, del;
+    Atom *protos = NULL, del, msgtype;
     int n = 0, i, has_delete = 0;
     XEvent ev;
     if (!c) return;
-    del = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+    del = A_WM_DELETE != None ? A_WM_DELETE : XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+    msgtype = A_WM_PROTOCOLS != None ? A_WM_PROTOCOLS : XInternAtom(dpy, "WM_PROTOCOLS", True);
     if (XGetWMProtocols(dpy, c->win, &protos, &n)) {
         for (i = 0; i < n; i++)
             if (protos[i] == del) { has_delete = 1; break; }
@@ -303,7 +303,7 @@ void kill_client(Client *c) {
     memset(&ev, 0, sizeof(ev));
     ev.xclient.type = ClientMessage;
     ev.xclient.window = c->win;
-    ev.xclient.message_type = XInternAtom(dpy, "WM_PROTOCOLS", True);
+    ev.xclient.message_type = msgtype;
     ev.xclient.format = 32;
     ev.xclient.data.l[0] = (long)del;
     ev.xclient.data.l[1] = CurrentTime;

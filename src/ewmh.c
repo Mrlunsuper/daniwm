@@ -15,6 +15,9 @@
 /* ---- EWMH ---- */
 void ewmh_init(void) {
     A_WM_STATE = XInternAtom(dpy, "WM_STATE", False);
+    A_WM_DELETE = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+    A_WM_PROTOCOLS = XInternAtom(dpy, "WM_PROTOCOLS", False);
+    A_WM_TAKE_FOCUS = XInternAtom(dpy, "WM_TAKE_FOCUS", False);
     A_NET_SUPPORTED = XInternAtom(dpy, "_NET_SUPPORTED", False);
     A_NET_CLIENT_LIST = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
     A_NET_ACTIVE_WINDOW = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);

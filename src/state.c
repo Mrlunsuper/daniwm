@@ -113,6 +113,7 @@ Atom A_NET_SUPPORTED, A_NET_CLIENT_LIST, A_NET_ACTIVE_WINDOW,
     A_NET_NUMBER_OF_DESKTOPS, A_NET_CURRENT_DESKTOP,
     A_NET_WM_DESKTOP, A_NET_DESKTOP_NAMES;
 Atom A_WM_STATE = None;
+Atom A_WM_DELETE = None, A_WM_PROTOCOLS = None, A_WM_TAKE_FOCUS = None;
 
 Cursor cur_move = None, cur_resize = None, cur_hsplit = None;
 Drag drag = { 0 };
