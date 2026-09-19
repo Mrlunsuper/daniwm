@@ -605,8 +605,13 @@ int main(int argc, char **argv) {
                             setfullscreen(c, fs_prop);
                         } else if (da_prop && !c->urgent && c != sel) {
                             set_urgent(c, 1);
+                        } else if (!da_prop && c->urgent) {
+                            /* DA removal clears unless XUrgencyHint holds. */
+                            XWMHints *wmh = XGetWMHints(dpy, c->win);
+                            int hint_urg = wmh ? !!(wmh->flags & XUrgencyHint) : 0;
+                            if (wmh) XFree(wmh);
+                            if (!hint_urg) set_urgent(c, 0);
                         }
-                        /* DA removal clears urgency in T-M2. */
                         break;
                     }
                     if (pe->atom == A_NET_WM_STRUT || pe->atom == A_NET_WM_STRUT_PARTIAL) {
@@ -614,11 +619,14 @@ int main(int argc, char **argv) {
                         unmanage(dw);
                         manage_dock(dw);
                     } else if (pe->atom == XA_WM_HINTS) {
+                        /* Mirror hint (set or clear); focused never urgent.
+                         * DA-driven urgency is handled in the _NET_WM_STATE
+                         * arm above; last write wins on mixed sources. */
                         XWMHints *wmh = XGetWMHints(dpy, pe->window);
                         if (wmh) {
-                            if ((wmh->flags & XUrgencyHint) && c != sel)
-                                set_urgent(c, 1);
+                            int hint_urg = !!(wmh->flags & XUrgencyHint);
                             XFree(wmh);
+                            set_urgent(c, hint_urg && c != sel ? 1 : 0);
                         }
                     } else {
                         drawbar();
