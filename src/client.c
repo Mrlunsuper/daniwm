@@ -98,6 +98,38 @@ int client_wants_input(Window w) {
     }
     return want;
 }
+/* ICCCM WM_TAKE_FOCUS: endorsing clients take input themselves
+ * (LocallyActive). Send ClientMessage instead of XSetInputFocus to avoid
+ * double-focus. Atoms cached statically here until T-M5A centralizes them.
+ * TODO(T-M5B): thread a real event timestamp instead of CurrentTime. */
+static int client_takes_focus(Window w) {
+    static Atom protos = None, take = None;
+    Atom *list = NULL;
+    int n = 0, found = 0;
+    if (protos == None) protos = XInternAtom(dpy, "WM_PROTOCOLS", False);
+    if (take == None) take = XInternAtom(dpy, "WM_TAKE_FOCUS", False);
+    if (protos == None || take == None) return 0;
+    if (!XGetWMProtocols(dpy, w, &list, &n) || !list) return 0;
+    for (int i = 0; i < n; i++)
+        if (list[i] == take) { found = 1; break; }
+    XFree(list);
+    return found;
+}
+static void send_take_focus(Client *c) {
+    static Atom protos = None, take = None;
+    XEvent ev;
+    if (protos == None) protos = XInternAtom(dpy, "WM_PROTOCOLS", False);
+    if (take == None) take = XInternAtom(dpy, "WM_TAKE_FOCUS", False);
+    if (protos == None || take == None) return;
+    memset(&ev, 0, sizeof(ev));
+    ev.xclient.type = ClientMessage;
+    ev.xclient.window = c->win;
+    ev.xclient.message_type = protos;
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = (long)take;
+    ev.xclient.data.l[1] = CurrentTime; /* TODO(T-M5B): real timestamp */
+    XSendEvent(dpy, c->win, False, NoEventMask, &ev);
+}
 /* focus_ex: raise=1 restacks floating/fullscreen on top (explicit actions:
  * Mod+click/drag, keys, manage, pager requests). raise=0 is the
  * hover/sloppy path: auto-raise on Enter would trap a small floating
@@ -121,6 +153,13 @@ static void focus_ex(Client *c, int raise) {
     if (raise && (c->floating || c->fullscreen)) {
         XRaiseWindow(dpy, c->win);
         keep_docks_on_top();
+    }
+    if (client_takes_focus(c->win)) {
+        /* LocallyActive/GloballyActive: client takes input itself after
+         * the message; never double-focus with XSetInputFocus. */
+        send_take_focus(c);
+        ewmh_active();
+        return;
     }
     if (client_wants_input(c->win))
         XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
