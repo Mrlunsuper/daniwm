@@ -207,9 +207,11 @@ void view(int n) {
     curws = n;
     sel = ws_sel[n] && find(ws_sel[n]->win) && ws_sel[n]->ws == n ? ws_sel[n] : first_in_ws(n);
     ewmh_desktops();
-    arrange();  /* maps new workspace's windows */
+    /* Unmap old ws first: fewer transient double-mapped windows and a
+     * smaller UnmapNotify burst (H1A ignores it via ws mismatch). */
     for (Client *c = clients; c; c = c->next)
         if (c->ws == old) XUnmapWindow(dpy, c->win);
+    arrange();  /* maps new workspace's windows */
     if (sel) focus(sel);
     else {
         XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
@@ -233,9 +235,10 @@ void send_to(int n) {
     curws = n;
     sel = s;
     ewmh_desktops();
-    arrange(); /* map new workspace windows first, like view() */
+    /* Unmap old ws first, like view(). */
     for (Client *c = clients; c; c = c->next)
         if (c->ws == old) XUnmapWindow(dpy, c->win);
+    arrange(); /* maps new workspace windows */
     focus(s); /* follow: nhảy theo luôn */
 }
 /* external pager move: same as send_to but stays on current ws */
