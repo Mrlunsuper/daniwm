@@ -87,6 +87,17 @@ void keep_docks_on_top(void) {
     for (Client *c = clients; c; c = c->next)
         if (c->ws == curws && c->fullscreen) XRaiseWindow(dpy, c->win);
 }
+/* ICCCM WM_HINTS input gate: NoInput windows keep sel/active but never
+ * receive XSetInputFocus. Missing hints or missing InputHint means input. */
+int client_wants_input(Window w) {
+    XWMHints *h = XGetWMHints(dpy, w);
+    int want = 1;
+    if (h) {
+        if (h->flags & InputHint) want = h->input ? 1 : 0;
+        XFree(h);
+    }
+    return want;
+}
 /* focus_ex: raise=1 restacks floating/fullscreen on top (explicit actions:
  * Mod+click/drag, keys, manage, pager requests). raise=0 is the
  * hover/sloppy path: auto-raise on Enter would trap a small floating
@@ -111,7 +122,8 @@ static void focus_ex(Client *c, int raise) {
         XRaiseWindow(dpy, c->win);
         keep_docks_on_top();
     }
-    XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+    if (client_wants_input(c->win))
+        XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
     ewmh_active();
 }
 void focus(Client *c) {

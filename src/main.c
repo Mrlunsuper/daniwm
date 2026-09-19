@@ -454,7 +454,8 @@ int main(int argc, char **argv) {
                     if (c == sel) {
                         /* already focused: re-assert input, skip the
                          * expensive path (arrange/bar/ewmh spew). */
-                        XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+                        if (client_wants_input(c->win))
+                            XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
                         break;
                     }
                     if (c->ws != curws) view(c->ws);
