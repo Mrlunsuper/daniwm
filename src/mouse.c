@@ -222,8 +222,11 @@ void drag_motion(int px, int py) {
     }
     if (drag.mode == 2) {
         int w = drag.w + dx, h = drag.h + dy;
+        int maxw = sw > 0 ? sw * 2 : 4096, maxh = sh > 0 ? sh * 2 : 4096;
         if (w < 50) w = 50;
         if (h < 50) h = 50;
+        if (w > maxw) w = maxw;
+        if (h > maxh) h = maxh;
         XResizeWindow(dpy, c->win, (unsigned)w, (unsigned)h);
         XFlush(dpy); /* live feedback: push resizes immediately */
     } else {
@@ -271,6 +274,7 @@ void drag_end(int px, int py) {
             XWindowAttributes wa;
             if (XGetWindowAttributes(dpy, c->win, &wa)) {
                 c->fx = wa.x; c->fy = wa.y; c->fw = wa.width; c->fh = wa.height;
+                clamp_float_geom(&c->fx, &c->fy, &c->fw, &c->fh);
             }
         }
         arrange();

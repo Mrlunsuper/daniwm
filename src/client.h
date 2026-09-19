@@ -13,6 +13,7 @@ void    unmanage(Window w);
 void    focus(Client *c);
 void    focus_noraise(Client *c); /* hover/sloppy path: focus without restack */
 int     client_wants_input(Window w); /* WM_HINTS InputHint gate */
+void    clamp_float_geom(int *x, int *y, int *w, int *h); /* T-L2 */
 void    focus_step(int dir);
 void    view(int n);
 void    send_to(int n);

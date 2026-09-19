@@ -88,6 +88,18 @@ void keep_docks_on_top(void) {
     for (Client *c = clients; c; c = c->next)
         if (c->ws == curws && c->fullscreen) XRaiseWindow(dpy, c->win);
 }
+/* T-L2: keep saved floating geometry valid. w/h clamp to [1, 2x screen];
+ * position is left free (multi-monitor/offscreen drags are legitimate).
+ * Tiled layout math untouched. */
+void clamp_float_geom(int *x, int *y, int *w, int *h) {
+    int maxw = sw > 0 ? sw * 2 : 4096;
+    int maxh = sh > 0 ? sh * 2 : 4096;
+    (void)x; (void)y;
+    if (*w < 1) *w = 1;
+    if (*h < 1) *h = 1;
+    if (*w > maxw) *w = maxw;
+    if (*h > maxh) *h = maxh;
+}
 /* ICCCM WM_HINTS input gate: NoInput windows keep sel/active but never
  * receive XSetInputFocus. Missing hints or missing InputHint means input. */
 int client_wants_input(Window w) {
@@ -355,9 +367,10 @@ void toggle_floating_sel(void) {
             if (XGetWindowAttributes(dpy, sel->win, &wa)) {
                 sel->fx = wa.x; sel->fy = wa.y; sel->fw = wa.width; sel->fh = wa.height;
             }
-        } else {
-            XMoveResizeWindow(dpy, sel->win, sel->fx, sel->fy, (unsigned)sel->fw, (unsigned)sel->fh);
         }
+        clamp_float_geom(&sel->fx, &sel->fy, &sel->fw, &sel->fh);
+        if (sel->fw > 0 && sel->fh > 0)
+            XMoveResizeWindow(dpy, sel->win, sel->fx, sel->fy, (unsigned)sel->fw, (unsigned)sel->fh);
         XRaiseWindow(dpy, sel->win);
         keep_docks_on_top();
     }

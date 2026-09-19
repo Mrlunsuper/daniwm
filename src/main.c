@@ -535,6 +535,10 @@ int main(int argc, char **argv) {
                     if (e->value_mask & CWY) c->fy = wc.y;
                     if (e->value_mask & CWWidth) c->fw = wc.width;
                     if (e->value_mask & CWHeight) c->fh = wc.height;
+                    clamp_float_geom(&c->fx, &c->fy, &c->fw, &c->fh);
+                    /* Never ask the server for a 0/huge window. */
+                    if (wc.width < 1 || wc.width > sw * 2) wc.width = c->fw;
+                    if (wc.height < 1 || wc.height > sh * 2) wc.height = c->fh;
                 }
                 XConfigureWindow(dpy, e->window, (unsigned int)e->value_mask, &wc);
             } else {

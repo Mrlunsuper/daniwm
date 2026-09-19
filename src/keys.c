@@ -189,6 +189,7 @@ static void float_rszby(int dw, int dh) {
     if (!sel->floating) return;
     sel->fw += dw; if (sel->fw < 50) sel->fw = 50;
     sel->fh += dh; if (sel->fh < 50) sel->fh = 50;
+    clamp_float_geom(&sel->fx, &sel->fy, &sel->fw, &sel->fh);
     XResizeWindow(dpy, sel->win, (unsigned)sel->fw, (unsigned)sel->fh);
     XFlush(dpy);
 }
