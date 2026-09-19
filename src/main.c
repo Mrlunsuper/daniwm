@@ -594,6 +594,21 @@ int main(int argc, char **argv) {
             } else {
                 Client *c = find(pe->window);
                 if (c) {
+                    if (pe->atom == A_NET_WM_STATE) {
+                        /* T-M1: direct property writes converge to the same
+                         * fullscreen field as the ClientMessage path.
+                         * Compare-before-act guards our own ewmh_update_state
+                         * writes: they already match, so no loop. */
+                        int fs_prop = ewmh_hasstate(c->win, A_NET_WM_STATE_FS);
+                        int da_prop = ewmh_hasstate(c->win, A_NET_WM_STATE_DA);
+                        if (fs_prop != c->fullscreen) {
+                            setfullscreen(c, fs_prop);
+                        } else if (da_prop && !c->urgent && c != sel) {
+                            set_urgent(c, 1);
+                        }
+                        /* DA removal clears urgency in T-M2. */
+                        break;
+                    }
                     if (pe->atom == A_NET_WM_STRUT || pe->atom == A_NET_WM_STRUT_PARTIAL) {
                         Window dw = pe->window;
                         unmanage(dw);
