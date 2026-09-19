@@ -2,6 +2,7 @@
 #include "types.h"
 
 void ewmh_init(void);
+void ewmh_set_wm_state(Client *c, long state);
 int  ewmh_hasstate(Window w, Atom state);
 void ewmh_update_state(Client *c);
 void set_urgent(Client *c, int urg);

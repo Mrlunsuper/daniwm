@@ -14,6 +14,7 @@
 
 /* ---- EWMH ---- */
 void ewmh_init(void) {
+    A_WM_STATE = XInternAtom(dpy, "WM_STATE", False);
     A_NET_SUPPORTED = XInternAtom(dpy, "_NET_SUPPORTED", False);
     A_NET_CLIENT_LIST = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
     A_NET_ACTIVE_WINDOW = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
@@ -74,6 +75,15 @@ void ewmh_init(void) {
     ewmh_client_list(); /* empty list so pagers/wmctrl never query a missing prop */
     ewmh_desktops();
     update_struts();
+}
+/* ICCCM WM_STATE mirror: NormalState on manage, WithdrawnState on unmanage.
+ * Mirror only; the clients list stays the single source of truth. */
+void ewmh_set_wm_state(Client *c, long state) {
+    unsigned long s;
+    if (!c || A_WM_STATE == None) return;
+    s = (unsigned long)state;
+    XChangeProperty(dpy, c->win, A_WM_STATE, A_WM_STATE, 32,
+        PropModeReplace, (unsigned char *)&s, 1);
 }
 int ewmh_hasstate(Window w, Atom state) {
     Atom *p = NULL, rt; int rf, found = 0;

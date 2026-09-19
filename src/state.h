@@ -135,6 +135,7 @@ extern Atom A_NET_SUPPORTED, A_NET_CLIENT_LIST, A_NET_ACTIVE_WINDOW,
     A_NET_WM_STRUT, A_NET_WM_STRUT_PARTIAL, A_NET_WORKAREA,
     A_NET_NUMBER_OF_DESKTOPS, A_NET_CURRENT_DESKTOP,
     A_NET_WM_DESKTOP, A_NET_DESKTOP_NAMES;
+extern Atom A_WM_STATE; /* ICCCM WM_STATE mirror (Normal/Withdrawn) */
 
 /* ---- cursors ---- */
 extern Cursor cur_move, cur_resize, cur_hsplit;

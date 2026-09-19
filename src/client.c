@@ -447,6 +447,7 @@ void manage(Window w) {
     grabbuttons(c);
     XSetWindowBorderWidth(dpy, w, (unsigned)S(BORDER));
     attach(c);
+    ewmh_set_wm_state(c, NormalState);
     c->ws = rulews;
     ewmh_client_list();
     ewmh_set_wm_desktop(c);
@@ -466,6 +467,7 @@ void unmanage(Window w) {
         XUngrabPointer(dpy, CurrentTime);
     }
     detach(c);
+    ewmh_set_wm_state(c, WithdrawnState);
     free(c);
     ewmh_client_list();
     arrange();
