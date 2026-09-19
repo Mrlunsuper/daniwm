@@ -29,6 +29,7 @@
 #include "mouse.h"
 #include "sysmon.h"
 #include "tray.h"
+#include "xerr.h"
 
 /* ---- _NET_ACTIVE_WINDOW focus-fight guard ----
  * Spammy pages (window.focus() on blur, competing across two browsers)
@@ -129,8 +130,11 @@ static int bar_task_click(int x, unsigned button) {
         if (x >= task_hit_x0[i] && x <= task_hit_x1[i]) {
             Client *c = find(task_hit_win[i]);
             if (c && c->ws == curws) {
+                /* find() validated; trap makes a recycled stale XID loud. */
+                trap_errors(dpy);
                 if (button == Button1) focus(c);
                 else kill_client(c);
+                untrap_errors(dpy);
             }
             return 1;
         }
@@ -458,8 +462,11 @@ int main(int argc, char **argv) {
                     if (c == sel) {
                         /* already focused: re-assert input, skip the
                          * expensive path (arrange/bar/ewmh spew). */
-                        if (client_wants_input(c->win))
+                        if (client_wants_input(c->win)) {
+                            trap_errors(dpy);
                             XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+                            untrap_errors(dpy);
+                        }
                         break;
                     }
                     if (c->ws != curws) view(c->ws);

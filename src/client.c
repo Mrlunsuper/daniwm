@@ -17,6 +17,7 @@
 #include "mouse.h"
 #include "state.h"
 #include "tray.h"
+#include "xerr.h"
 
 /* ---- helpers ---- */
 Client *find(Window w) {
@@ -151,7 +152,9 @@ static void focus_ex(Client *c, int raise) {
         drawbar();
     }
     if (raise && (c->floating || c->fullscreen)) {
+        trap_errors(dpy);
         XRaiseWindow(dpy, c->win);
+        untrap_errors(dpy);
         keep_docks_on_top();
     }
     if (client_takes_focus(c->win)) {
@@ -161,8 +164,11 @@ static void focus_ex(Client *c, int raise) {
         ewmh_active();
         return;
     }
-    if (client_wants_input(c->win))
+    if (client_wants_input(c->win)) {
+        trap_errors(dpy);
         XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+        untrap_errors(dpy);
+    }
     ewmh_active();
 }
 void focus(Client *c) {
@@ -285,7 +291,12 @@ void kill_client(Client *c) {
             if (protos[i] == del) { has_delete = 1; break; }
     }
     if (protos) XFree(protos);
-    if (!has_delete) { XKillClient(dpy, c->win); return; }
+    if (!has_delete) {
+        trap_errors(dpy);
+        XKillClient(dpy, c->win);
+        untrap_errors(dpy);
+        return;
+    }
     memset(&ev, 0, sizeof(ev));
     ev.xclient.type = ClientMessage;
     ev.xclient.window = c->win;
@@ -302,7 +313,9 @@ void kill_sel(void) {
     if (!sel) return;
     time_t now = time(NULL);
     if (sel->win == last_kill_win && now - last_kill_time <= 2) {
+        trap_errors(dpy);
         XKillClient(dpy, sel->win);
+        untrap_errors(dpy);
         last_kill_win = None;
         return;
     }

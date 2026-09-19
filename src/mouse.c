@@ -9,6 +9,7 @@
 #include "layout.h"
 #include "monitor.h"
 #include "state.h"
+#include "xerr.h"
 
 /* ---- mouse: Mod+Left move, Mod+Right resize ----
  * Passive grabs live on client windows (grabbuttons). Plain Mod+click
@@ -30,15 +31,20 @@
  * but `c` is still skipped for safety. First match wins: tiles don't
  * overlap, so any hit is unambiguous. */
 static Client *tiled_at(Client *c, int px, int py) {
+    Client *hit = NULL;
+    trap_errors(dpy);
     for (Client *t = clients; t; t = t->next) {
         XWindowAttributes a;
         if (t == c || t->ws != c->ws || t->mon != c->mon ||
             t->floating || t->fullscreen) continue;
         if (!XGetWindowAttributes(dpy, t->win, &a)) continue;
-        if (px >= a.x && px < a.x + a.width && py >= a.y && py < a.y + a.height)
-            return t;
+        if (px >= a.x && px < a.x + a.width && py >= a.y && py < a.y + a.height) {
+            hit = t;
+            break;
+        }
     }
-    return NULL;
+    untrap_errors(dpy);
+    return hit;
 }
 /* drop-target highlight: border widens by 2px (color-agnostic, theme-safe).
  * arrange() resets widths on the next layout, drag_end() restores live. */

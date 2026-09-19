@@ -5,6 +5,7 @@
 #include "ewmh.h"
 #include "monitor.h"
 #include "state.h"
+#include "xerr.h"
 
 /* Raise floating/fullscreen clients above tiled ones while preserving
  * their current relative stacking (XQueryTree returns bottom->top).
@@ -14,6 +15,7 @@
 static void raise_floats(int mon) { /* mon < 0: all monitors */
     Window r, p, *kids = NULL;
     unsigned nk = 0;
+    trap_errors(dpy);
     if (XQueryTree(dpy, root, &r, &p, &kids, &nk) && kids) {
         for (unsigned i = 0; i < nk; i++) {
             Client *c = find(kids[i]);
@@ -23,6 +25,7 @@ static void raise_floats(int mon) { /* mon < 0: all monitors */
             XMapRaised(dpy, c->win);
         }
         XFree(kids);
+        untrap_errors(dpy);
         return;
     }
     /* XQueryTree failed: fall back to list order (better than nothing) */
@@ -30,6 +33,7 @@ static void raise_floats(int mon) { /* mon < 0: all monitors */
         if (c->ws == curws && (mon < 0 || c->mon == mon) &&
             (c->floating || c->fullscreen))
             XMapRaised(dpy, c->win);
+    untrap_errors(dpy);
 }
 
 /* ---- layouts (per monitor) ---- */
