@@ -18,7 +18,8 @@ void    view(int n);
 void    send_to(int n);
 void    move_to(Client *c, int n);
 void    kill_sel(void);
-void    kill_client(Client *c);
+void    kill_client(Client *c); /* compat: CurrentTime fallback */
+void    kill_client_ex(Client *c, Time t); /* event-driven: real timestamp */
 void    spawn(char **argv);
 void    toggle_floating_sel(void);
 void    zoom(int n);

@@ -282,7 +282,7 @@ void ws_toggle(int unused) {
     view(prevws);
 }
 
-void kill_client(Client *c) {
+void kill_client_ex(Client *c, Time t) {
     Atom *protos = NULL, del, msgtype;
     int n = 0, i, has_delete = 0;
     XEvent ev;
@@ -306,8 +306,13 @@ void kill_client(Client *c) {
     ev.xclient.message_type = msgtype;
     ev.xclient.format = 32;
     ev.xclient.data.l[0] = (long)del;
-    ev.xclient.data.l[1] = CurrentTime;
+    ev.xclient.data.l[1] = (long)t;
     XSendEvent(dpy, c->win, False, NoEventMask, &ev);
+}
+/* Compat wrapper: no event timestamp (key/pager paths). Documented
+ * fallback to CurrentTime; event-driven callers use kill_client_ex. */
+void kill_client(Client *c) {
+    kill_client_ex(c, CurrentTime);
 }
 /* double-kill within 2s force-kills hung windows (L4) */
 static Window last_kill_win = None;

@@ -124,7 +124,7 @@ static int xerror_ignore(Display *d, XErrorEvent *e) { (void)d; (void)e; return 
 /* tasklist click: Button1 focuses, Button2 closes (browser-tab style).
  * Returns 1 when the click landed on a task button: the caller must not
  * fall through to workspace view or tray checks. */
-static int bar_task_click(int x, unsigned button) {
+static int bar_task_click(int x, unsigned button, Time t) {
     if (button != Button1 && button != Button2) return 0;
     for (int i = 0; i < task_nhit; i++) {
         if (x >= task_hit_x0[i] && x <= task_hit_x1[i]) {
@@ -133,7 +133,7 @@ static int bar_task_click(int x, unsigned button) {
                 /* find() validated; trap makes a recycled stale XID loud. */
                 trap_errors(dpy);
                 if (button == Button1) focus(c);
-                else kill_client(c);
+                else kill_client_ex(c, t);
                 untrap_errors(dpy);
             }
             return 1;
@@ -667,7 +667,7 @@ int main(int argc, char **argv) {
                 }
                 else if (e->button == Button2 || e->button == Button3) {
                     if (on_vol) k_vol_mute(0); /* mid/right: mute */
-                    else bar_task_click(e->x, e->button); /* mid: close task */
+                    else bar_task_click(e->x, e->button, e->time); /* mid: close task */
                 }
                 else {
                     /* left-click on the volume segment mutes; anywhere
@@ -677,7 +677,7 @@ int main(int argc, char **argv) {
                         break;
                     }
                     /* tasklist: a matched click never falls through. */
-                    if (bar_task_click(e->x, e->button)) break;
+                    if (bar_task_click(e->x, e->button, e->time)) break;
                     /* v2: tray container background is dead zone — clicks
                      * there (not on an icon window) must never fall through
                      * to workspace view */
