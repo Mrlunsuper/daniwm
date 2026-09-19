@@ -1126,6 +1126,11 @@ int main(int argc, char **argv) {
             Atom ty = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
             Atom dg = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
             if (ty != None && dg != None) XChangeProperty(dpy, win, ty, XA_ATOM, 32, PropModeReplace, (unsigned char *)&dg, 1);
+            /* Mark as ABOVE so compositor and WM know this stays on top */
+            Atom state = XInternAtom(dpy, "_NET_WM_STATE", False);
+            Atom above = XInternAtom(dpy, "_NET_WM_STATE_ABOVE", False);
+            if (state != None && above != None)
+                XChangeProperty(dpy, win, state, XA_ATOM, 32, PropModeReplace, (unsigned char *)&above, 1);
             XStoreName(dpy, win, mode == MODE_FAV ? "dani-run fav" : mode == MODE_POWER ? "dani-run power" : mode == MODE_CALC ? "dani-run calc" : "dani-run");
         }
         XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask | PointerMotionMask);
@@ -1189,6 +1194,10 @@ int main(int argc, char **argv) {
     for (;;) {
         XEvent ev;
         XNextEvent(dpy, &ev);
+        /* Stay on top: daniwm may raise docks/floating/fullscreen via
+         * XRaiseWindow, pushing our override_redirect window down.
+         * Re-raise ourselves after every event to counter this. */
+        XRaiseWindow(dpy, win);
         if (ev.type == Expose) {
             if (ev.xexpose.count == 0) draw();
         } else if (ev.type == KeyPress) {

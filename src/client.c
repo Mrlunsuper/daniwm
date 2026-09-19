@@ -82,11 +82,24 @@ void swap_order(Client *a, Client *b) {
 
 /* ---- actions ---- */
 /* Stacking: docks/panels always on top of normal windows, fullscreen above
- * everything (covers bar/panels). Tiled needs no raise (non-overlapping). */
+ * everything (covers bar/panels). _NET_WM_STATE_ABOVE windows (e.g. dani-run)
+ * are raised last so they stay above everything including docks/fullscreen. */
 void keep_docks_on_top(void) {
     for (Dock *d = docks; d; d = d->next) XRaiseWindow(dpy, d->win);
     for (Client *c = clients; c; c = c->next)
         if (c->ws == curws && c->fullscreen) XRaiseWindow(dpy, c->win);
+    /* Raise _NET_WM_STATE_ABOVE windows (override_redirect popups like dani-run)
+     * above everything else. */
+    if (A_NET_WM_STATE_ABOVE != None) {
+        Window rwin, parent, *ch = NULL;
+        unsigned nch = 0;
+        if (XQueryTree(dpy, root, &rwin, &parent, &ch, &nch)) {
+            for (unsigned i = 0; i < nch; i++)
+                if (ewmh_hasstate(ch[i], A_NET_WM_STATE_ABOVE))
+                    XRaiseWindow(dpy, ch[i]);
+            if (ch) XFree(ch);
+        }
+    }
 }
 /* T-L2: keep saved floating geometry valid. w/h clamp to [1, 2x screen];
  * position is left free (multi-monitor/offscreen drags are legitimate).

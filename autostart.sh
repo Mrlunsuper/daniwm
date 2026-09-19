@@ -34,7 +34,7 @@ run_once clipit clipit
 run_once dunst dunst
 
 # Wallpaper lên sớm nhất có thể (feh decode ảnh 3K ~150ms, không chặn ai)
-"$HOME/.config/awesome/set-wallpaper.sh" >/dev/null 2>&1 &
+"$HOME/daniwm/set-wallpaper.sh" >/dev/null 2>&1 &
 
 xset r rate 300 30 >/dev/null 2>&1
 xsetroot -cursor_name left_ptr >/dev/null 2>&1
