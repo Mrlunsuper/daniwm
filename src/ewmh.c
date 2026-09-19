@@ -66,6 +66,12 @@ void ewmh_init(void) {
     XChangeProperty(dpy, root, A_NET_SUPPORTING_WM_CHECK, XA_WINDOW, 32,
         PropModeReplace, (unsigned char *)&checkwin, 1);
 
+    /* _NET_SUPPORTED advertisement policy (T-L5): every atom below is
+     * honored (client list, active, desktops, state, struts, types, names).
+     * Deliberately omitted by design: _NET_MOVERESIZE_WINDOW,
+     * _NET_RESTACK_WINDOW, maximize atoms, _NET_SHOWING_DESKTOP,
+     * _NET_DESKTOP_VIEWPORT (no viewport: static 0,0 unpublished),
+     * _NET_WM_VISIBLE_NAME/ICON (never set). Do not advertise them. */
     Atom sup[] = { A_NET_SUPPORTED, A_NET_CLIENT_LIST, A_NET_ACTIVE_WINDOW,
         A_NET_WM_STATE, A_NET_WM_STATE_FS, A_NET_WM_STATE_HIDDEN,
         A_NET_WM_STATE_DA, A_NET_WM_STATE_MODAL, A_NET_WM_WINDOW_TYPE, A_NET_CLOSE_WINDOW,
