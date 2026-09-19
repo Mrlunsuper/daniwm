@@ -106,6 +106,35 @@ def main():
     print("SYNC=%d" % sync)
     sys.stdout.flush()
 
+    # Storm: 50 forced focus flips A/B, no crash, active tracks last.
+    last = b
+    storm_ok = 1
+    try:
+        for i in range(50):
+            last = a if (i % 2 == 0) else b
+            last.set_input_focus(X.RevertToPointerRoot, X.CurrentTime)
+            d.flush()
+            time.sleep(0.05)
+    except Exception as e:
+        print("STORM-FAIL: %s" % e, file=sys.stderr)
+        storm_ok = 0
+    d.flush()
+    time.sleep(0.5)
+    s_active = active_window(root, net_active)
+    try:
+        f = d.get_input_focus().focus
+        s_focus = f.id if hasattr(f, "id") else int(f)
+    except Exception:
+        s_focus = 0
+    print("STORM_ACTIVE=%d" % s_active)
+    print("STORM_FOCUS=%d" % s_focus)
+    print("STORM_LAST=%d" % last.id)
+    if storm_ok and s_active == last.id and s_focus == last.id:
+        print("STORM_SYNC=1")
+    else:
+        print("STORM_SYNC=0")
+    sys.stdout.flush()
+
     for w in (a, b):
         try:
             w.destroy()

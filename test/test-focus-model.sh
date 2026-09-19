@@ -1,21 +1,17 @@
 #!/bin/bash
-# test-focus-model.sh - T-H2.0 focus-desync observation harness (test only).
+# test-focus-model.sh - T-H2.1 lock: external focus syncs sel/active.
 #
-# Problem (H2, audit:69-74): FocusIn/FocusOut selected in client.c:459 but
-# dropped in main.c:682 default arm. Real input focus moves without WM
-# knowledge, so WM sel / _NET_ACTIVE_WINDOW points elsewhere.
-#
-# XFAIL STATUS: asserts the current desync (EXPECTED_SYNC=0) so
-# `make check` stays green. T-H2.1 flips ONLY EXPECTED_SYNC to 1.
-# No WM code changes. Read-only probe.
+# Fixed: FocusIn updates sel/ws_sel, clears urgency, refreshes borders,
+# bar and _NET_ACTIVE_WINDOW without raise or arrange. FocusOut never
+# steals back. Keys/buttons still drive focus() directly.
 set -u
 TDIR=$(dirname "$0")
 . "$TDIR/find_display.sh"
 export DISPLAY=$D
 H=$(mktemp -d)
 
-# T-H2.1: flip to 1 (fixed: external XSetInputFocus syncs sel/active).
-EXPECTED_SYNC=0
+# Fixed behavior: external XSetInputFocus syncs sel/active.
+EXPECTED_SYNC=1
 
 fail=0
 assert() { local desc=$1; shift; if [ "$@" ]; then echo "PASS: $desc"; else echo "FAIL: $desc"; fail=1; fi; }
@@ -40,12 +36,12 @@ RC=$?
 echo "$OUT"
 [ "$RC" -eq 0 ] || { echo "FAIL: helper failed (rc=$RC)"; cat "$H/stderr.log"; exit 1; }
 SYNC=$(echo "$OUT" | sed -n 's/^SYNC=//p' | tail -n1)
+STORM=$(echo "$OUT" | sed -n 's/^STORM_SYNC=//p' | tail -n1)
 [ -n "${SYNC:-}" ] || { echo "FAIL: no SYNC from helper"; exit 1; }
+[ -n "${STORM:-}" ] || { echo "FAIL: no STORM_SYNC from helper"; exit 1; }
 
-if [ "$EXPECTED_SYNC" -eq 0 ]; then
-    echo "XFAIL(T-H2.0): external focus change desyncs WM sel/active; T-H2.1 flips EXPECTED_SYNC to 1"
-fi
-assert "focus sync state is $EXPECTED_SYNC" "$SYNC" -eq "$EXPECTED_SYNC"
+assert "external focus change syncs sel/active" "$SYNC" -eq "$EXPECTED_SYNC"
+assert "50-flip FocusIn storm tracks last window" "$STORM" -eq 1
 
 [ $fail -eq 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL"
 exit $fail

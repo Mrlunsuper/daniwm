@@ -680,6 +680,28 @@ int main(int argc, char **argv) {
             if (drag.win != None) drag_end(e->x_root, e->y_root);
             break;
         }
+        case FocusIn: {
+            XFocusChangeEvent *e = &ev.xfocus;
+            if (e->mode != NotifyNormal || e->detail == NotifyInferior) break;
+            Client *c = find(e->window);
+            if (!c || c->ws != curws || c->ws < 0 || c->ws >= NWS) break;
+            if (c == sel) { ewmh_active(); break; }
+            sel = c;
+            ws_sel[curws] = c;
+            if (c->urgent) set_urgent(c, 0);
+            for (Client *t = clients; t; t = t->next)
+                if (t->ws == curws)
+                    XSetWindowBorder(dpy, t->win, (t == sel) ? BORDER_FOCUS : BORDER_NORMAL);
+            drawbar();
+            ewmh_active();
+            break;
+        }
+        case FocusOut: {
+            /* Do not steal back: focus may rest on root/None or an
+             * override_redirect helper. Keep sel as-is; FocusIn (or
+             * keys/buttons/pager) re-syncs when input lands again. */
+            break;
+        }
         case MappingNotify: {
             /* doi keymap (setxkbmap, doi layout, autostart race luc khoi dong):
              * keycode cua phim co the doi -> grab lai toan bo, khong thi
