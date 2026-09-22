@@ -13,6 +13,8 @@
  *   font = SpaceMono Nerd Font:size=11
  *   cols = 5
  *   lines = 2
+ *   drun_icons = 1      (0/1: real icon-theme PNG icon next to each .desktop app)
+ *   icon_theme =        (optional: icon theme name; default = GTK theme)
  *   app = <icon>;<name>;<cmd>      (split only on the first 2 ';', cmd keeps spaces)
  *   power = <icon>;<name>;<cmd>
  *
@@ -63,6 +65,9 @@ typedef struct {
 /* ---- config ---- */
 static char font_pat[256] = "";
 static int opt_cols = 5, opt_lines = 2;
+#ifdef HAVE_CAIRO
+static char icon_theme[64];
+#endif
 
 static Entry *entries = NULL;
 static unsigned nentries = 0, capentries = 0;
@@ -85,13 +90,17 @@ static XftFont *f_main, *f_big;
 static XftFont *fbs[6];
 static int nfb;
 static int text_fb_done;
-static XftColor c_bg, c_fg, c_acc, c_dim, c_selbg, c_seltx;
+static XftColor c_bg, c_fg, c_acc, c_dim;
+static XftColor c_band, c_div, c_sel, c_selout;
+static XftColor c_love, c_gold, c_pine, c_foam;
 static int opt_width = 560; /* drun window width */
+static int opt_drun_icons = 1; /* Nerd glyph per .desktop app in the drun list */
 static XIM xim;
 static XIC xic;
 static int WW, HH;
 static int input_h = 44, row_h = 34, list_rows = 8; /* drun_lines */
 static int cell_w = 136, cell_h = 112;
+static int footer_h = 26;
 
 /* ---- state ---- */
 static Mode mode = MODE_DRUN;
@@ -298,6 +307,13 @@ static void load_run_config(void) {
         } else if (!strcmp(k, "cell_h")) {
             v = strtol(vv, NULL, 10);
             if (v >= 64 && v <= 200) cell_h = (int)v;
+        } else if (!strcmp(k, "drun_icons")) {
+            long iv = strtol(vv, NULL, 10);
+            opt_drun_icons = iv != 0;
+#ifdef HAVE_CAIRO
+        } else if (!strcmp(k, "icon_theme")) {
+            if (*vv) snprintf(icon_theme, sizeof(icon_theme), "%.63s", vv);
+#endif
         } else if (!strcmp(k, "app")) {
             char *ic, *nm, *cm;
             if (!parse_triple(vv, &ic, &nm, &cm)) {
@@ -354,7 +370,7 @@ static void scan_dir(const char *dir) {
         size_t L = strlen(de->d_name);
         char path[2048], line[1024];
         FILE *f;
-        char *name_plain = NULL, *name_any = NULL, *exec = NULL;
+        char *name_plain = NULL, *name_any = NULL, *exec = NULL, *icon_name = NULL;
         int terminal = 0, hidden = 0;
         if (L < 9 || strcmp(de->d_name + L - 8, ".desktop")) continue;
         snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
@@ -368,6 +384,7 @@ static void scan_dir(const char *dir) {
                 char *rb = strchr(s, '=');
                 if (rb && *(trim(rb + 1))) name_any = xstrdup(trim(rb + 1));
             } else if (!strncmp(s, "Exec=", 5) && !exec) exec = xstrdup(trim(s + 5));
+            else if (!strncmp(s, "Icon=", 5) && !icon_name) icon_name = xstrdup(trim(s + 5));
             else if (!strncmp(s, "Terminal=", 9))
                 terminal = !strcasecmp(trim(s + 9), "true");
             else if (!strncmp(s, "NoDisplay=", 10) || !strncmp(s, "Hidden=", 7))
@@ -378,7 +395,7 @@ static void scan_dir(const char *dir) {
             char *nm = name_plain ? name_plain : name_any;
             name_plain = NULL; name_any = NULL;
             if (!nm || !*nm || !exec || !*exec || hidden) {
-                free(nm); free(exec);
+                free(nm); free(exec); free(icon_name);
                 continue;
             }
             /* dedupe by name (user dir is scanned first, so it wins) */
@@ -386,12 +403,12 @@ static void scan_dir(const char *dir) {
                 int dup = 0;
                 for (unsigned i = 0; i < nentries; i++)
                     if (!strcmp(entries[i].name, nm)) { dup = 1; break; }
-                if (dup) { free(nm); free(exec); continue; }
+                if (dup) { free(nm); free(exec); free(icon_name); continue; }
             }
             {
                 char *ce = clean_exec(exec);
                 free(exec);
-                if (!ce || !*trim(ce)) { free(nm); free(ce); continue; }
+                if (!ce || !*trim(ce)) { free(nm); free(ce); free(icon_name); continue; }
                 {
                     char *t = trim(ce);
                     char *final_exec;
@@ -406,8 +423,9 @@ static void scan_dir(const char *dir) {
                         final_exec = xstrdup(t);
                         free(ce);
                     }
-                    if (!final_exec) { free(nm); continue; }
-                    push_entry_vec(&entries, &nentries, &capentries, nm, final_exec, xstrdup(""));
+                    if (!final_exec) { free(nm); free(icon_name); continue; }
+                    push_entry_vec(&entries, &nentries, &capentries, nm, final_exec,
+                        icon_name ? icon_name : xstrdup(""));
                     entries[nentries - 1].terminal = terminal;
                 }
             }
@@ -897,6 +915,450 @@ static void first_letter(const char *name, char *out, size_t n) {
     }
 }
 
+/* ============ polish: soft palette + rounded shapes ============ */
+/* mix a toward b by pct_b percent; both 0xRRGGBB */
+static unsigned long mix_hex(unsigned long a, unsigned long b, int pct_b) {
+    int pct_a = 100 - pct_b;
+    return (((((a >> 16) & 0xff) * pct_a + ((b >> 16) & 0xff) * pct_b) / 100) << 16)
+         | (((((a >> 8) & 0xff) * pct_a + ((b >> 8) & 0xff) * pct_b) / 100) << 8)
+         | (((a & 0xff) * pct_a + (b & 0xff) * pct_b) / 100);
+}
+/* rounded rectangle fill on the window (4 arcs + 2 strips, no XRender needed) */
+static void fill_rrect(unsigned long pixel, int x, int y, int w, int h, int r) {
+    XSetForeground(dpy, gc, pixel);
+    if (w < 3 || h < 3 || r < 1) {
+        XFillRectangle(dpy, win, gc, (unsigned)x, (unsigned)y, (unsigned)w, (unsigned)h);
+        return;
+    }
+    if (r > h / 2) r = h / 2;
+    if (r > w / 2) r = w / 2;
+    XFillRectangle(dpy, win, gc, (unsigned)(x + r), (unsigned)y, (unsigned)(w - 2 * r), (unsigned)h);
+    XFillRectangle(dpy, win, gc, (unsigned)x, (unsigned)(y + r), (unsigned)w, (unsigned)(h - 2 * r));
+    XFillArc(dpy, win, gc, x, y, 2 * r, 2 * r, 90 * 64, 90 * 64);
+    XFillArc(dpy, win, gc, x + w - 2 * r, y, 2 * r, 2 * r, 0, 90 * 64);
+    XFillArc(dpy, win, gc, x + w - 2 * r, y + h - 2 * r, 2 * r, 2 * r, 270 * 64, 90 * 64);
+    XFillArc(dpy, win, gc, x, y + h - 2 * r, 2 * r, 2 * r, 180 * 64, 90 * 64);
+}
+/* selection backdrop: rounded when r > 0, plain 1px-outline rect when r == 0 */
+static void pill(int x, int y, int w, int h, int r, unsigned long fill, unsigned long ring) {
+    if (r >= 1 && w >= 4 && h >= 4) {
+        fill_rrect(ring, x, y, w, h, r);
+        fill_rrect(fill, x + 1, y + 1, w - 2, h - 2, r - 1);
+        return;
+    }
+    if (w < 3 || h < 3) { fill_rrect(fill, x, y, w, h, 0); return; }
+    XSetForeground(dpy, gc, ring);
+    XFillRectangle(dpy, win, gc, (unsigned)x, (unsigned)y, (unsigned)w, 1);
+    XFillRectangle(dpy, win, gc, (unsigned)x, (unsigned)(y + h - 1), (unsigned)w, 1);
+    XFillRectangle(dpy, win, gc, (unsigned)x, (unsigned)(y + 1), 1, (unsigned)(h - 2));
+    XFillRectangle(dpy, win, gc, (unsigned)(x + w - 1), (unsigned)(y + 1), 1, (unsigned)(h - 2));
+    XSetForeground(dpy, gc, fill);
+    XFillRectangle(dpy, win, gc, (unsigned)(x + 1), (unsigned)(y + 1), (unsigned)(w - 2), (unsigned)(h - 2));
+}
+/* .desktop Icon= value -> lowercase basename without extension ("firefox.png"
+ * or "/usr/share/icons/x/firefox.png" -> "firefox"). Empty -> returns 0. */
+static int icon_key(const char *icon, char *out, size_t n) {
+    const char *p = icon;
+    size_t i = 0;
+    if (!p || !*p) { out[0] = 0; return 0; }
+    {
+        const char *sl = strrchr(p, '/');
+        if (sl) p = sl + 1;
+    }
+    while (p[i] && p[i] != '.' && i < n - 1) {
+        out[i] = (char)tolower((unsigned char)p[i]);
+        i++;
+    }
+    out[i] = 0;
+    return i > 0;
+}
+/* Icon name -> Nerd glyph; exact match, or substring match for keys of 4+
+ * chars. NULL when unmatched (caller then draws the first letter). All glyph
+ * codepoints verified present in SpaceMono/JetBrainsMono Nerd Fonts. */
+static const char *icon_glyph(const char *icon) {
+    static const struct { const char *k; const char *g; } m[] = {
+        /* browsers */
+        { "firefox",  "\xef\x89\xa9" }, { "chrome", "\xef\x89\xa8" },
+        { "brave",    "\xef\x89\xa8" }, { "edge",   "\xef\x89\xa8" },
+        { "opera",    "\xef\x89\xa8" }, { "vivaldi","\xef\x89\xa8" },
+        { "browser",  "\xef\x82\xac" }, { "web",    "\xef\x82\xac" },
+        /* terminals */
+        { "alacritty","\xef\x84\xa0" }, { "terminal","\xef\x84\xa0" },
+        { "konsole",  "\xef\x84\xa0" }, { "kitty",  "\xef\x84\xa0" },
+        { "wezterm",  "\xef\x84\xa0" }, { "console","\xef\x84\xa0" },
+        { "xterm",    "\xef\x84\xa0" },
+        /* dev */
+        { "code",     "\xef\x84\xa1" }, { "visual-studio","\xef\x84\xa1" },
+        { "codium",   "\xef\x84\xa1" }, { "idea",   "\xef\x84\xa1" },
+        { "pycharm",  "\xef\x84\xa1" }, { "sublime","\xef\x84\xa1" },
+        { "git",      "\xef\x82\x9b" }, { "github", "\xef\x82\x9b" },
+        { "postgres", "\xef\x86\xb9" }, { "mysql",  "\xef\x86\xb9" },
+        { "sqlite",   "\xef\x86\xb9" }, { "database","\xef\x86\xb9" },
+        /* chat */
+        { "slack",    "\xef\x86\x98" }, { "discord","\xef\x8a\x92" },
+        { "irc",      "\xef\x8a\x92" }, { "telegram","\xef\x8b\x86" },
+        { "whatsapp", "\xef\x88\xb2" }, { "chat",   "\xef\x81\xb5" },
+        { "message",  "\xef\x81\xb5" }, { "comments","\xef\x8b\x9b" },
+        /* mail / clock */
+        { "thunderbird","\xef\x83\xa0" }, { "mail",  "\xef\x83\xa0" },
+        { "evolution","\xef\x83\xa0" }, { "envelope","\xef\x83\xa0" },
+        { "calendar","\xef\x84\xb3" }, { "clock",  "\xef\x80\x97" },
+        /* files / docs */
+        { "files",    "\xef\x81\xbb" }, { "nautilus","\xef\x81\xbb" },
+        { "thunar",   "\xef\x81\xbb" }, { "nemo",   "\xef\x81\xbb" },
+        { "folder",   "\xef\x81\xbb" }, { "directory","\xef\x81\xbb" },
+        { "file",     "\xef\x85\x9b" }, { "document","\xef\x85\x9b" },
+        { "text",     "\xef\x85\x9b" }, { "office", "\xef\x85\x9c" },
+        { "libreoffice","\xef\x85\x9c" }, { "writer","\xef\x85\x9c" },
+        { "pdf",      "\xef\x87\x81" }, { "reader", "\xef\x87\x81" },
+        { "evince",   "\xef\x87\x81" },
+        /* media */
+        { "vlc",      "\xef\x80\xbd" }, { "mpv",    "\xef\x80\xbd" },
+        { "video",    "\xef\x80\xbd" }, { "obs",    "\xef\x80\xbd" },
+        { "handbrake","\xef\x80\xbd" }, { "music",  "\xef\x80\x81" },
+        { "rhythmbox","\xef\x80\x81" }, { "audio",  "\xef\x80\x81" },
+        { "spotify",  "\xef\x86\xbc" }, { "steam",  "\xef\x86\xb6" },
+        { "game",     "\xef\x84\x9b" },
+        /* graphics */
+        { "gimp",     "\xef\x80\xbe" }, { "image",  "\xef\x80\xbe" },
+        { "photo",    "\xef\x80\xbe" }, { "shotwell","\xef\x80\xbe" },
+        { "krita",    "\xef\x80\xbe" }, { "inkscape","\xef\x80\xbe" },
+        { "blender",  "\xef\x80\xbe" }, { "darktable","\xef\x80\xbe" },
+        /* system */
+        { "settings", "\xef\x80\x93" }, { "preferences","\xef\x80\x93" },
+        { "control",  "\xef\x80\x93" }, { "monitor", "\xef\x82\x80" },
+        { "htop",     "\xef\x82\x80" }, { "system", "\xef\x82\x80" },
+        { "calculator","\xef\x87\xac" }, { "camera", "\xef\x80\xb0" },
+        { "screenshot","\xef\x80\xb0" }, { "android","\xef\x85\xbb" },
+        { "map",      "\xef\x94\x9b" }, { "coffee", "\xef\x83\xb4" },
+        { "battery",  "\xef\x86\x86" }, { "bolt",   "\xef\x83\xa7" },
+        { "ping",     "\xef\x8b\x8d" }, { "network","\xef\x8b\x8d" },
+    };
+    char key[64];
+    if (!icon_key(icon, key, sizeof(key))) return NULL;
+    for (unsigned i = 0; i < sizeof(m) / sizeof(m[0]); i++) {
+        size_t kl = strlen(m[i].k);
+        if (!strcmp(m[i].k, key) || (kl >= 4 && strstr(key, m[i].k)))
+            return m[i].g;
+    }
+    return NULL;
+}
+
+#ifdef HAVE_CAIRO
+/* ---- real .desktop app icons (PNG from the FDO icon theme), rofi-style.
+ * Cairo decodes + scales + keeps alpha; the icon is alpha-blended onto the
+ * row background, so selected pills don't show a square box. Missing files
+ * fall back to the Nerd glyph table / first letter above. ---- */
+#include <cairo/cairo.h>
+#define ICONPIX 26
+#define ICONCACHE 48
+typedef struct { char key[256]; cairo_surface_t *surf; } IconEnt;
+static IconEnt icache[ICONCACHE];
+static int icache_n;
+/* path cache: Icon= name -> resolved file ("" = negative). find_icon_file()
+ * probes dozens of dirs/sizes per row, so it must not run every frame. */
+#define PATHCACHE 128
+typedef struct { char key[128]; char path[256]; } PathEnt;
+static PathEnt pcache[PATHCACHE];
+static int pcache_n;
+static int ico_rshift, ico_gshift, ico_bshift;
+static int ico_rbits, ico_gbits, ico_bbits;
+
+static void load_gtk_icon_theme(void) {
+    char path[1024], line[512];
+    const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
+    FILE *f;
+    if (icon_theme[0]) return;   /* run.config won */
+    if (xdg && *xdg) snprintf(path, sizeof(path), "%s/gtk-3.0/settings.ini", xdg);
+    else if (home && *home) snprintf(path, sizeof(path), "%s/.config/gtk-3.0/settings.ini", home);
+    else return;
+    f = fopen(path, "r");
+    if (!f) return;
+    while (fgets(line, sizeof(line), f)) {
+        char *s = trim(line), *eq;
+        if (!*s || *s == '#') continue;
+        eq = strchr(s, '=');
+        if (!eq) continue;
+        *eq = 0;
+        if (!strcmp(trim(s), "gtk-icon-theme-name")) {
+            snprintf(icon_theme, sizeof(icon_theme), "%.63s", trim(eq + 1));
+            break;
+        }
+    }
+    fclose(f);
+}
+static int file_is_png(const char *path) {
+    unsigned char sig[4];
+    FILE *f = fopen(path, "rb");
+    size_t r;
+    if (!f) return 0;
+    r = fread(sig, 1, 4, f);
+    fclose(f);
+    return r == 4 && sig[0] == 0x89 && sig[1] == 'P' && sig[2] == 'N' && sig[3] == 'G';
+}
+/* FDO-lite: theme dirs (user first) x [icon_theme, hicolor] x sizes, then
+ * any category under 48x48, then flat /usr/share/pixmaps. */
+static const char *find_icon_file(const char *icon, char *out, size_t n) {
+    char key[64], udir[1024];
+    const char *dirs[2];
+    const char *themes[8];
+    static const int sizes[] = { 48, 32, 64, 24, 22, 16, 128, 256, 96 };
+    const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
+    int nd = 0, nt = 0;
+    out[0] = 0;
+    if (!icon || !*icon) return NULL;
+    if (icon[0] == '/') { snprintf(out, n, "%.200s", icon); return out; }
+    if (!icon_key(icon, key, sizeof(key))) return NULL;
+    if (xdg && *xdg) snprintf(udir, sizeof(udir), "%s/icons", xdg);
+    else if (home && *home) snprintf(udir, sizeof(udir), "%s/.local/share/icons", home);
+    else udir[0] = 0;
+    if (udir[0]) dirs[nd++] = udir;
+    dirs[nd++] = "/usr/share/icons";
+    if (icon_theme[0] && strcmp(icon_theme, "hicolor")) themes[nt++] = icon_theme;
+    themes[nt++] = "hicolor";
+    for (int d = 0; d < nd; d++)
+        for (int t = 0; t < nt; t++) {
+            for (unsigned s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
+                snprintf(out, n, "%s/%s/%dx%d/apps/%s.png",
+                         dirs[d], themes[t], sizes[s], sizes[s], key);
+                if (file_is_png(out)) return out;
+            }
+            /* any category under 48x48 (misc/utility/... themes) */
+            snprintf(out, n, "%s/%s/48x48", dirs[d], themes[t]);
+            {
+                DIR *dp = opendir(out);
+                if (dp) {
+                    struct dirent *de;
+                    while ((de = readdir(dp))) {
+                        if (de->d_name[0] == '.' || strlen(de->d_name) > 120) continue;
+                        {
+                            /* build in a scratch sized for the worst case, then
+                             * copy bounded (gcc can't bound %s args here) */
+                            char tmp[2048];
+                            int tn = snprintf(tmp, sizeof(tmp), "%s/%s/48x48/%s/%s.png",
+                                              dirs[d], themes[t], de->d_name, key);
+                            if (tn <= 0) continue;
+                            if (tn >= (int)n) tn = (int)n - 1;
+                            memcpy(out, tmp, (size_t)tn);
+                            out[tn] = 0;
+                        }
+                        if (file_is_png(out)) { closedir(dp); return out; }
+                    }
+                    closedir(dp);
+                }
+            }
+        }
+    snprintf(out, n, "/usr/share/pixmaps/%s.png", key);
+    if (file_is_png(out)) return out;
+    return NULL;
+}
+/* cached find_icon_file(): keyed by the Icon= value; "" means negative hit. */
+static const char *icon_path_cached(const char *icon, char *out, size_t n) {
+    char key[128];
+    int i;
+    if (!icon || !*icon) return NULL;
+    snprintf(key, sizeof(key), "%.127s", icon);
+    for (i = 0; i < pcache_n; i++)
+        if (!strcmp(pcache[i].key, key)) break;
+    if (i == pcache_n) {
+        PathEnt e;
+        char tmp[256];
+        snprintf(e.key, sizeof(e.key), "%s", key);
+        if (find_icon_file(icon, tmp, sizeof(tmp)))
+            snprintf(e.path, sizeof(e.path), "%.255s", tmp);
+        else
+            e.path[0] = 0;
+        if ((size_t)pcache_n >= PATHCACHE) {
+            memmove(&pcache[1], &pcache[0], (PATHCACHE - 1) * sizeof(PathEnt));
+            pcache[0] = e;
+            i = 0;
+        } else {
+            pcache[pcache_n++] = e;
+            i = pcache_n - 1;
+        }
+    }
+    if (!pcache[i].path[0]) return NULL;
+    snprintf(out, n, "%s", pcache[i].path);
+    return out;
+}
+/* LRU cache of scaled ARGB32 surfaces (NULL entries = negative cache) */
+static cairo_surface_t *icon_surface(const char *path) {
+    for (int i = 0; i < icache_n; i++) {
+        if (!strcmp(icache[i].key, path)) {
+            IconEnt t = icache[i];
+            memmove(&icache[1], &icache[0], (size_t)i * sizeof(t));
+            icache[0] = t;
+            return icache[0].surf;
+        }
+    }
+    {
+        cairo_surface_t *im = cairo_image_surface_create_from_png(path);
+        cairo_surface_t *cs = NULL;
+        if (im && cairo_surface_status(im) == CAIRO_STATUS_SUCCESS) {
+            int w = cairo_image_surface_get_width(im);
+            int h = cairo_image_surface_get_height(im);
+            if (w > 0 && h > 0) {
+                cs = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, ICONPIX, ICONPIX);
+                if (cs && cairo_surface_status(cs) == CAIRO_STATUS_SUCCESS) {
+                    cairo_t *cr = cairo_create(cs);
+                    cairo_scale(cr, (double)ICONPIX / w, (double)ICONPIX / h);
+                    cairo_set_source_surface(cr, im, 0, 0);
+                    cairo_paint(cr);
+                    cairo_destroy(cr);
+                } else {
+                    if (cs) cairo_surface_destroy(cs);
+                    cs = NULL;
+                }
+            }
+        }
+        if (im) cairo_surface_destroy(im);
+        if (icache_n < ICONCACHE) {
+            snprintf(icache[icache_n].key, sizeof(icache[icache_n].key), "%s", path);
+            icache[icache_n].surf = cs;
+            icache_n++;
+        } else {
+            if (icache[ICONCACHE - 1].surf)
+                cairo_surface_destroy(icache[ICONCACHE - 1].surf);
+            memmove(&icache[1], &icache[0], (ICONCACHE - 1) * sizeof(IconEnt));
+            snprintf(icache[0].key, sizeof(icache[0].key), "%s", path);
+            icache[0].surf = cs;
+        }
+        return cs;
+    }
+}
+static void mask_bits(unsigned long m, int *shift, int *bits) {
+    int s = 0, b = 0;
+    if (!m) { *shift = 0; *bits = 0; return; }
+    while (!(m & 1)) { m >>= 1; s++; }
+    while (m & 1) { m >>= 1; b++; }
+    *shift = s; *bits = b;
+}
+/* premultiplied cairo ARGB32 (bytes B,G,R,A) blended onto row bg -> pixel */
+static unsigned long blend_pixel(const unsigned char *s, unsigned long bg) {
+    int a = s[3];
+    int r = s[2] + ((int)((bg >> 16) & 0xff) * (255 - a) + 127) / 255;
+    int g = s[1] + ((int)((bg >> 8) & 0xff) * (255 - a) + 127) / 255;
+    int b = s[0] + ((int)(bg & 0xff) * (255 - a) + 127) / 255;
+    unsigned long p = 0;
+    if (r > 255) r = 255;
+    if (g > 255) g = 255;
+    if (b > 255) b = 255;
+    if (ico_rbits) {
+        unsigned long rv = ico_rbits >= 8 ? (unsigned)(r << (ico_rbits - 8))
+                                          : (unsigned)(r >> (8 - ico_rbits));
+        p |= (rv & ((1UL << ico_rbits) - 1)) << ico_rshift;
+    }
+    if (ico_gbits) {
+        unsigned long gv = ico_gbits >= 8 ? (unsigned)(g << (ico_gbits - 8))
+                                          : (unsigned)(g >> (8 - ico_gbits));
+        p |= (gv & ((1UL << ico_gbits) - 1)) << ico_gshift;
+    }
+    if (ico_bbits) {
+        unsigned long bv = ico_bbits >= 8 ? (unsigned)(b << (ico_bbits - 8))
+                                          : (unsigned)(b >> (8 - ico_bbits));
+        p |= (bv & ((1UL << ico_bbits) - 1)) << ico_bshift;
+    }
+    return p;
+}
+static void draw_icon_img(cairo_surface_t *sf, int x, int y, unsigned long bg) {
+    unsigned char *d = cairo_image_surface_get_data(sf);
+    int stride = cairo_image_surface_get_stride(sf);
+    XImage *img = XCreateImage(dpy, DefaultVisual(dpy, screen), DefaultDepth(dpy, screen),
+                               ZPixmap, 0, NULL, ICONPIX, ICONPIX, 32, 0);
+    if (!img) return;
+    img->byte_order = ImageByteOrder(dpy);
+    img->bitmap_bit_order = ImageByteOrder(dpy);
+    XInitImage(img);
+    img->data = malloc((size_t)img->bytes_per_line * (unsigned)img->height);
+    if (!img->data) { XDestroyImage(img); return; }
+    {
+        unsigned int *pp = (unsigned int *)img->data;
+        for (int yy = 0; yy < ICONPIX; yy++) {
+            const unsigned char *row = d + (size_t)yy * (size_t)stride;
+            for (int xx = 0; xx < ICONPIX; xx++)
+                pp[(size_t)yy * ICONPIX + (size_t)xx] = (unsigned int)blend_pixel(row + xx * 4, bg);
+        }
+    }
+    XPutImage(dpy, win, gc, img, 0, 0, x, y, ICONPIX, ICONPIX);
+    XDestroyImage(img);
+}
+#endif /* HAVE_CAIRO */
+/* byte offsets of the query subsequence inside name (UTF-8 start bytes only,
+ * so matchers never split a multibyte char while drawing) */
+static void match_pos(const char *name, const char *q, int *pos, int npos) {
+    size_t ni = 0;
+    for (int qi = 0; qi < npos; qi++) {
+        char qc = (char)tolower((unsigned char)q[qi]);
+        while (name[ni] && (char)tolower((unsigned char)name[ni]) != qc) ni++;
+        if (!name[ni] || ((unsigned char)name[ni] & 0xC0) == 0x80) {
+            for (int j = qi; j < npos; j++) pos[j] = -1;
+            return;
+        }
+        pos[qi] = (int)ni++;
+    }
+}
+/* draw a name with the fuzzy-matched bytes in hl (base otherwise) */
+static void draw_match_text(XftColor *base, XftColor *hl, int x, int y,
+                            const char *name, const int *pos, int npos) {
+    char tmp[240];
+    size_t len = strlen(name);
+    int s = 0, pi = 0;
+    if (!name[0]) return;
+    if (len >= sizeof(tmp)) { runs_draw(NULL, base, x, y, name); return; }
+    while (s < (int)len) {
+        int hit = (pi < npos && pos[pi] == s);
+        int e;
+        if (hit) pi++;
+        e = s + 1;
+        while (e < (int)len && !(pi < npos && pos[pi] == e)) e++;
+        memcpy(tmp, name + s, (size_t)(e - s));
+        tmp[e - s] = 0;
+        runs_draw(NULL, hit ? hl : base, x, y, tmp);
+        x += runs_w(NULL, tmp);
+        s = e;
+    }
+}
+/* case-insensitive substring (strcasestr is GNU-only; avoid the dep) */
+static int has_ci(const char *hay, const char *needle) {
+    size_t n = strlen(needle);
+    if (!n) return 0;
+    for (const char *p = hay; *p; p++)
+        if (!strncasecmp(p, needle, n)) return 1;
+    return 0;
+}
+/* power grid: give each action its own Rosé Pine tint */
+static XftColor *power_color(const char *name) {
+    if (has_ci(name, "suspend") || has_ci(name, "lock")) return &c_foam;
+    if (has_ci(name, "logout")) return &c_gold;
+    if (has_ci(name, "reboot") || has_ci(name, "restart")) return &c_pine;
+    if (has_ci(name, "off") || has_ci(name, "shutdown")) return &c_love;
+    return &c_acc;
+}
+/* Nerd glyph prompt per mode, ASCII fallback when the font lacks the glyph */
+static const char *mode_glyph(void) {
+    static const char *g[4] = {
+        "\xef\x80\x82",           /* U+F002 search  */
+        "\xef\x80\x85",           /* U+F005 star    */
+        "\xef\x80\x91",           /* U+F011 power   */
+        "\xef\x87\xac",           /* U+F1EC calc    */
+    };
+    static const char *a[4] = { ">", "*", "\xc2\xbb", "\xe2\x88\x91" };
+    return pick_icon(g[mode], a[mode]);
+}
+static const char *placeholder(void) {
+    switch (mode) {
+    case MODE_DRUN: return "type to filter apps\xe2\x80\xa6";
+    case MODE_FAV:  return "type to filter favorites\xe2\x80\xa6";
+    case MODE_POWER: return "what do you want to do\xe2\x80\xa6";
+    case MODE_CALC: return "e.g. 2*(3+4)^2 + sqrt(16)";
+    }
+    return "";
+}
+static const char *help_hint(void) {
+    if (mode == MODE_CALC) return "\xe2\x86\xb5 copy \xc2\xb7 esc quit";
+    return "\xe2\x86\x91\xe2\x86\x93 move \xc2\xb7 \xe2\x86\xb5 run \xc2\xb7 esc quit";
+}
+
 /* ============ draw ============ */
 static void draw(void) {
     unsigned n;
@@ -907,57 +1369,90 @@ static void draw(void) {
     if (!xd) return;
     XSetForeground(dpy, gc, c_bg.pixel);
     XFillRectangle(dpy, win, gc, 0, 0, (unsigned)WW, (unsigned)HH);
+
+    /* ---- input band ---- */
+    XSetForeground(dpy, gc, c_band.pixel);
+    XFillRectangle(dpy, win, gc, 0, 0, (unsigned)WW, (unsigned)input_h);
     base = input_h / 2 + (f_main ? (f_main->ascent - f_main->descent) / 2 : 5);
-    /* input */
-    const char *prompt = mode == MODE_POWER ? "power>" : mode == MODE_CALC ? "calc>" : ">";
-    const char *prompt_sp = mode == MODE_POWER ? "power> " : mode == MODE_CALC ? "calc> " : "> ";
-    runs_draw(NULL, &c_dim, 16, base, prompt);
-    runs_draw(NULL, &c_fg, 16 + runs_w(NULL, prompt_sp), base, query);
     {
-        int cx = 16 + runs_w(NULL, prompt_sp) + runs_w(NULL, query);
-        XSetForeground(dpy, gc, c_acc.pixel);
-        XFillRectangle(dpy, win, gc, cx + 2, 10, 2, (unsigned)(input_h - 20));
+        const char *gly = mode_glyph();
+        int tx = 16;
+        runs_draw(NULL, &c_acc, tx, base, gly);
+        tx += runs_w(NULL, gly) + 12;
+        runs_draw(NULL, &c_fg, tx, base, query);
+        if (qlen == 0) runs_draw(NULL, &c_dim, tx + runs_w(NULL, query) + 10, base, placeholder());
+        fill_rrect(c_acc.pixel, tx + runs_w(NULL, query) + 6, input_h / 2 - 10, 2, 20, 0);
     }
-    if (mode == MODE_CALC) cnt[0] = 0;
-    else snprintf(cnt, sizeof(cnt), "%d/%d", nfilt ? sel + 1 : 0, nfilt);
-    runs_draw(NULL, &c_dim, WW - 16 - runs_w(NULL, cnt), base, cnt);
-    XSetForeground(dpy, gc, c_dim.pixel);
+    {
+        static const char *badge[4] = { "drun", "fav", "power", "calc" };
+        const char *b = badge[mode];
+        runs_draw(NULL, &c_acc, WW - 16 - runs_w(NULL, b), base, b);
+    }
+    XSetForeground(dpy, gc, c_div.pixel);
     XFillRectangle(dpy, win, gc, 0, input_h - 1, (unsigned)WW, 1);
 
     if (mode == MODE_DRUN) {
+        int icol = opt_drun_icons ? 40 : 0;   /* icon column width */
         for (int r = 0; r < list_rows; r++) {
             int idx = scroll + r;
             int y = input_h + r * row_h;
             int ty = y + row_h / 2 + (f_main ? (f_main->ascent - f_main->descent) / 2 : 5);
-            char label[160];
+            char label[180];
+            int pos[MAXQ];
+            int npos = 0;
             if (idx >= nfilt) break;
-            if (idx == sel) {
-                /* selected = iris pill: fill + bold text */
-                XSetForeground(dpy, gc, c_selbg.pixel);
-                XFillRectangle(dpy, win, gc, 8, y + 3, (unsigned)(WW - 16), (unsigned)(row_h - 6));
-                ellipsize(vec[filt[idx]].name, WW - 48, label, sizeof(label));
-                runs_draw(NULL, &c_seltx, 20, ty, label);
-            } else {
-                ellipsize(vec[filt[idx]].name, WW - 48, label, sizeof(label));
-                runs_draw(NULL, &c_fg, 20, ty, label);
+            {
+                char fl[16];
+                const char *ic;
+                int iw;
+#ifdef HAVE_CAIRO
+                char ipath[300];
+                cairo_surface_t *isf = NULL;
+                if (icol > 0 && icon_path_cached(vec[filt[idx]].icon, ipath, sizeof(ipath)))
+                    isf = icon_surface(ipath);
+#endif
+                if (runs_w(NULL, vec[filt[idx]].name) > WW - 48 - icol) {
+                    ellipsize(vec[filt[idx]].name, WW - 48 - icol, label, sizeof(label));
+                } else {
+                    snprintf(label, sizeof(label), "%s", vec[filt[idx]].name);
+                }
+                if (qlen > 0) { match_pos(label, query, pos, qlen); npos = qlen; }
+                /* pill first: it is opaque and would erase anything under it */
+                if (idx == sel) pill(12, y + 3, WW - 24, row_h - 6, 0, c_sel.pixel, c_selout.pixel);
+                if (icol > 0) {
+#ifdef HAVE_CAIRO
+                    if (isf) {
+                        unsigned long bg = (idx == sel) ? mix_hex(T_ACC, T_BG, 20) : T_BG;
+                        draw_icon_img(isf, 30 + (icol - ICONPIX) / 2, y + (row_h - ICONPIX) / 2, bg);
+                    } else
+#endif
+                    {
+                        first_letter(vec[filt[idx]].name, fl, sizeof(fl));
+                        ic = pick_icon(icon_glyph(vec[filt[idx]].icon), fl);
+                        iw = runs_w(f_main, ic);
+                        runs_draw(f_main, idx == sel ? &c_fg : &c_acc, 30 + (icol - iw) / 2, ty, ic);
+                    }
+                }
+                draw_match_text(&c_fg, &c_acc, 26 + icol, ty, label, npos ? pos : NULL, npos);
             }
         }
         if (!nfilt) {
-            const char *msg = qlen ? "Enter: run command directly" : "no apps found (empty .desktop?)";
-            runs_draw(NULL, &c_dim, 20, input_h + 24, msg);
+            const char *msg = qlen ? "\xe2\x86\xb5 run as command" : "no apps found";
+            runs_draw(NULL, &c_dim, 26,
+                input_h + row_h / 2 + (f_main ? (f_main->ascent - f_main->descent) / 2 : 5), msg);
         }
     } else if (mode == MODE_CALC) {
         double v;
         char res[64];
+        int cy = input_h + ((HH - input_h - footer_h) / 2);
+        int ty = cy + (f_big ? (f_big->ascent - f_big->descent) / 2 : 5);
+        if (qlen) runs_draw(NULL, &c_dim, 20, input_h + 22, query);
         if (calc_eval(query, &v)) {
             calc_str(v, res, sizeof(res));
-            runs_draw(f_big, &c_acc, 20, input_h + 72, res);
+            runs_draw(f_big, &c_acc, 20, ty, res);
         } else if (qlen) {
-            runs_draw(NULL, &c_dim, 20, input_h + 44, "nope - check the expression");
-        } else {
-            runs_draw(NULL, &c_dim, 20, input_h + 44, "e.g. 2*(3+4)^2 + sqrt(16) + sin(pi/2)");
+            runs_draw(NULL, &c_dim, 20, ty, "nope - check the expression");
         }
-        runs_draw(NULL, &c_dim, 20, HH - 14, "Enter: copy + print result, Esc: quit");
     } else {
         int per = opt_cols * opt_lines;
         int gx0 = (WW - opt_cols * cell_w) / 2;
@@ -972,20 +1467,49 @@ static void draw(void) {
             int iw, ty;
             if (idx >= nfilt) break;
             if (idx == sel) {
-                XSetForeground(dpy, gc, c_selbg.pixel);
-                XFillRectangle(dpy, win, gc, cx + 4, cy, (unsigned)(cell_w - 8), (unsigned)(cell_h - 8));
+                pill(cx + 6, cy + 2, cell_w - 12, cell_h - 4, 0,
+                    c_sel.pixel, c_selout.pixel);
             }
             first_letter(vec[filt[idx]].name, fl, sizeof(fl));
             ic = pick_icon(vec[filt[idx]].icon, fl);
             iw = runs_w(f_big, ic);
-            runs_draw(f_big, idx == sel ? &c_seltx : &c_acc, cx + (cell_w - iw) / 2, cy + 52, ic);
-            ellipsize(vec[filt[idx]].name, cell_w - 20, label, sizeof(label));
-            ty = cy + 78;
+            if (idx == sel) {
+                runs_draw(f_big, &c_fg, cx + (cell_w - iw) / 2, cy + 48, ic);
+            } else {
+                XftColor *cc = (mode == MODE_POWER) ? power_color(vec[filt[idx]].name) : &c_acc;
+                runs_draw(f_big, cc, cx + (cell_w - iw) / 2, cy + 48, ic);
+            }
+            ellipsize(vec[filt[idx]].name, cell_w - 24, label, sizeof(label));
             iw = runs_w(NULL, label);
-            runs_draw(NULL, idx == sel ? &c_seltx : &c_fg, cx + (cell_w - iw) / 2, ty, label);
+            ty = cy + cell_h - 28;
+            runs_draw(NULL, idx == sel ? &c_fg : &c_dim, cx + (cell_w - iw) / 2, ty, label);
             (void)fl;
         }
-        if (!nfilt) runs_draw(NULL, &c_dim, 20, input_h + 30, "no match - clear the filter to see all");
+        if (!nfilt) {
+            runs_draw(NULL, &c_dim, 26,
+                input_h + ((HH - input_h - footer_h) / 2) +
+                (f_main ? (f_main->ascent - f_main->descent) / 2 : 5),
+                "no match - clear the filter to see all");
+        }
+    }
+
+    /* footer band */
+    {
+        int fy = HH - footer_h / 2 + (f_main ? (f_main->ascent - f_main->descent) / 2 : 5);
+        int vis = (mode == MODE_DRUN) ? list_rows : opt_cols * opt_lines;
+        XSetForeground(dpy, gc, c_div.pixel);
+        XFillRectangle(dpy, win, gc, 0, HH - footer_h, (unsigned)WW, 1);
+        runs_draw(NULL, &c_dim, 16, fy, help_hint());
+        if (mode == MODE_CALC) {
+            snprintf(cnt, sizeof(cnt), "%s", "math");
+        } else {
+            snprintf(cnt, sizeof(cnt), "%d/%d", nfilt ? sel + 1 : 0, nfilt);
+            if (nfilt > 0 && (scroll + vis < nfilt || scroll > 0)) {
+                const char *ch = scroll + vis < nfilt ? "\xe2\x96\xbe" : "\xe2\x96\xb4";
+                runs_draw(NULL, &c_dim, WW - 16 - runs_w(NULL, cnt) - 20, fy, ch);
+            }
+        }
+        runs_draw(NULL, &c_dim, WW - 16 - runs_w(NULL, cnt), fy, cnt);
     }
     XFlush(dpy);
 }
@@ -1084,6 +1608,9 @@ int main(int argc, char **argv) {
     load_wm_theme();
     defaults();
     load_run_config();
+#ifdef HAVE_CAIRO
+    load_gtk_icon_theme();
+#endif
     if (!font_pat[0]) {
         if (T_FONT[0]) snprintf(font_pat, sizeof(font_pat), "%.255s", T_FONT);
         else snprintf(font_pat, sizeof(font_pat), "SpaceMono Nerd Font:size=11");
@@ -1107,12 +1634,12 @@ int main(int argc, char **argv) {
         int sw = DisplayWidth(dpy, screen), sh = DisplayHeight(dpy, screen);
         if (mode == MODE_DRUN || mode == MODE_CALC) {
             /* fit short screens: shrink the visible rows, minimum 3 */
-            int maxrows = (sh - 80 - input_h - 8) / row_h;
+            int maxrows = (sh - 80 - input_h - footer_h) / row_h;
             if (maxrows < 3) maxrows = 3;
             if (list_rows > maxrows) { list_rows = maxrows; refilter(); }
-            WW = opt_width; HH = input_h + row_h * list_rows + 8;
+            WW = opt_width; HH = input_h + row_h * list_rows + footer_h;
         }
-        else { WW = opt_cols * cell_w + 32; HH = input_h + 8 + opt_lines * cell_h + 8; }
+        else { WW = opt_cols * cell_w + 32; HH = input_h + 8 + opt_lines * cell_h + 8 + footer_h; }
         if (WW > sw - 40) WW = sw - 40;
         if (HH > sh - 80) HH = sh - 80;
         {
@@ -1182,12 +1709,26 @@ int main(int argc, char **argv) {
     }
     gc = XCreateGC(dpy, win, 0, NULL);
     xd = XftDrawCreate(dpy, win, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen));
+#ifdef HAVE_CAIRO
+    {
+        Visual *v = DefaultVisual(dpy, screen);
+        mask_bits(v->red_mask, &ico_rshift, &ico_rbits);
+        mask_bits(v->green_mask, &ico_gshift, &ico_gbits);
+        mask_bits(v->blue_mask, &ico_bshift, &ico_bbits);
+    }
+#endif
     xft_alloc(T_BG, &c_bg);
     xft_alloc(T_FG, &c_fg);
     xft_alloc(T_ACC, &c_acc);
     xft_alloc(T_DIM, &c_dim);
-    xft_alloc(T_ACC, &c_selbg);
-    xft_alloc(T_BG, &c_seltx);
+    xft_alloc(mix_hex(T_BG, T_FG, 5), &c_band);
+    xft_alloc(mix_hex(T_BG, T_FG, 8), &c_div);
+    xft_alloc(mix_hex(T_ACC, T_BG, 20), &c_sel);   /* soft iris tint */
+    xft_alloc(mix_hex(T_ACC, T_BG, 55), &c_selout); /* 1px accent ring */
+    xft_alloc(0xeb6f92, &c_love); /* Rosé Pine love  */
+    xft_alloc(0xf6c177, &c_gold); /* Rosé Pine gold  */
+    xft_alloc(0x31748f, &c_pine); /* Rosé Pine pine  */
+    xft_alloc(0x9ccfd8, &c_foam); /* Rosé Pine foam  */
     XSetWindowBackground(dpy, win, c_bg.pixel);
     XClearWindow(dpy, win);
 
