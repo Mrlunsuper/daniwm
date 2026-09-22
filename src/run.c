@@ -13,6 +13,15 @@
  *   font = SpaceMono Nerd Font:size=11
  *   cols = 5
  *   lines = 2
+ *   drun_lines = 12     (rows in the drun list)
+ *   width = 800         (drun window width)
+ *   cell_w = 136        (fav/power grid cell width)
+ *   cell_h = 112        (fav/power grid cell height)
+ *   input_h = 44        (input band height)
+ *   padding = 0         (inner margin around list/grid, all sides)
+ *   row_gap = 6         (vertical gap between drun rows)
+ *   cell_gap = 6        (vertical gap between fav/power grid cells)
+ *   margin = 12         (left/right margin of the selection pill)
  *   drun_icons = 1      (0/1: real icon-theme PNG icon next to each .desktop app)
  *   icon_theme =        (optional: icon theme name; default = GTK theme)
  *   app = <icon>;<name>;<cmd>      (split only on the first 2 ';', cmd keeps spaces)
@@ -101,6 +110,10 @@ static int WW, HH;
 static int input_h = 44, row_h = 34, list_rows = 8; /* drun_lines */
 static int cell_w = 136, cell_h = 112;
 static int footer_h = 26;
+/* spacing (all configurable): pad = inner window margin, row_gap = vertical
+ * gap between drun rows, cell_gap = gap between fav/power grid cells,
+ * margin = side margin for rows/cells (left/right). */
+static int opt_pad = 0, opt_row_gap = 6, opt_cell_gap = 6, opt_margin = 12;
 
 /* ---- state ---- */
 static Mode mode = MODE_DRUN;
@@ -310,6 +323,21 @@ static void load_run_config(void) {
         } else if (!strcmp(k, "drun_icons")) {
             long iv = strtol(vv, NULL, 10);
             opt_drun_icons = iv != 0;
+        } else if (!strcmp(k, "padding")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) opt_pad = (int)v;
+        } else if (!strcmp(k, "row_gap")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 32) opt_row_gap = (int)v;
+        } else if (!strcmp(k, "cell_gap")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) opt_cell_gap = (int)v;
+        } else if (!strcmp(k, "margin")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) opt_margin = (int)v;
+        } else if (!strcmp(k, "input_h")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 24 && v <= 96) input_h = (int)v;
 #ifdef HAVE_CAIRO
         } else if (!strcmp(k, "icon_theme")) {
             if (*vv) snprintf(icon_theme, sizeof(icon_theme), "%.63s", vv);
@@ -1395,7 +1423,7 @@ static void draw(void) {
         int icol = opt_drun_icons ? 40 : 0;   /* icon column width */
         for (int r = 0; r < list_rows; r++) {
             int idx = scroll + r;
-            int y = input_h + r * row_h;
+            int y = input_h + opt_pad + r * row_h;
             int ty = y + row_h / 2 + (f_main ? (f_main->ascent - f_main->descent) / 2 : 5);
             char label[180];
             int pos[MAXQ];
@@ -1418,7 +1446,9 @@ static void draw(void) {
                 }
                 if (qlen > 0) { match_pos(label, query, pos, qlen); npos = qlen; }
                 /* pill first: it is opaque and would erase anything under it */
-                if (idx == sel) pill(12, y + 3, WW - 24, row_h - 6, 0, c_sel.pixel, c_selout.pixel);
+                if (idx == sel)
+                    pill(opt_margin, y + opt_row_gap / 2, WW - 2 * opt_margin,
+                         row_h - opt_row_gap, 0, c_sel.pixel, c_selout.pixel);
                 if (icol > 0) {
 #ifdef HAVE_CAIRO
                     if (isf) {
@@ -1439,12 +1469,12 @@ static void draw(void) {
         if (!nfilt) {
             const char *msg = qlen ? "\xe2\x86\xb5 run as command" : "no apps found";
             runs_draw(NULL, &c_dim, 26,
-                input_h + row_h / 2 + (f_main ? (f_main->ascent - f_main->descent) / 2 : 5), msg);
+                input_h + opt_pad + row_h / 2 + (f_main ? (f_main->ascent - f_main->descent) / 2 : 5), msg);
         }
     } else if (mode == MODE_CALC) {
         double v;
         char res[64];
-        int cy = input_h + ((HH - input_h - footer_h) / 2);
+        int cy = input_h + opt_pad + ((HH - input_h - footer_h - opt_pad) / 2);
         int ty = cy + (f_big ? (f_big->ascent - f_big->descent) / 2 : 5);
         if (qlen) runs_draw(NULL, &c_dim, 20, input_h + 22, query);
         if (calc_eval(query, &v)) {
@@ -1634,12 +1664,15 @@ int main(int argc, char **argv) {
         int sw = DisplayWidth(dpy, screen), sh = DisplayHeight(dpy, screen);
         if (mode == MODE_DRUN || mode == MODE_CALC) {
             /* fit short screens: shrink the visible rows, minimum 3 */
-            int maxrows = (sh - 80 - input_h - footer_h) / row_h;
+            int maxrows = (sh - 80 - input_h - footer_h - 2 * opt_pad) / row_h;
             if (maxrows < 3) maxrows = 3;
             if (list_rows > maxrows) { list_rows = maxrows; refilter(); }
-            WW = opt_width; HH = input_h + row_h * list_rows + footer_h;
+            WW = opt_width; HH = input_h + row_h * list_rows + footer_h + 2 * opt_pad;
         }
-        else { WW = opt_cols * cell_w + 32; HH = input_h + 8 + opt_lines * cell_h + 8 + footer_h; }
+        else {
+            WW = opt_cols * cell_w + 2 * opt_pad + 32;
+            HH = input_h + opt_pad + opt_lines * (cell_h + opt_cell_gap) + opt_pad + footer_h;
+        }
         if (WW > sw - 40) WW = sw - 40;
         if (HH > sh - 80) HH = sh - 80;
         {
@@ -1827,12 +1860,12 @@ int main(int argc, char **argv) {
         } else if (ev.type == MotionNotify) {
             int mx = ev.xmotion.x, my = ev.xmotion.y, idx = -1;
             if (mode == MODE_DRUN) {
-                int r = (my - input_h) / row_h;
+                int r = (my - input_h - opt_pad) / row_h;
                 if (r >= 0 && r < list_rows && mx > 8 && mx < WW - 8) idx = scroll + r;
             } else {
                 int per = opt_cols * opt_lines;
-                int gx0 = (WW - opt_cols * cell_w) / 2, gy0 = input_h + 8;
-                int cx = (mx - gx0) / cell_w, cy = (my - gy0) / cell_h;
+                int gx0 = (WW - opt_cols * cell_w) / 2, gy0 = input_h + opt_pad;
+                int cx = (mx - gx0) / cell_w, cy = (my - gy0) / (cell_h + opt_cell_gap);
                 if (cx >= 0 && cx < opt_cols && cy >= 0 && cy < opt_lines) {
                     int k = cy * opt_cols + cx;
                     if (k < per) idx = scroll + k;
@@ -1851,11 +1884,11 @@ int main(int argc, char **argv) {
             }
             if (ev.xbutton.button != Button1) continue;
             if (mode == MODE_DRUN) {
-                int r = (my - input_h) / row_h;
+                int r = (my - input_h - opt_pad) / row_h;
                 if (r >= 0 && r < list_rows) idx = scroll + r;
             } else {
-                int gx0 = (WW - opt_cols * cell_w) / 2, gy0 = input_h + 8;
-                int cx = (mx - gx0) / cell_w, cy = (my - gy0) / cell_h;
+                int gx0 = (WW - opt_cols * cell_w) / 2, gy0 = input_h + opt_pad;
+                int cx = (mx - gx0) / cell_w, cy = (my - gy0) / (cell_h + opt_cell_gap);
                 if (cx >= 0 && cx < opt_cols && cy >= 0 && cy < opt_lines)
                     idx = scroll + cy * opt_cols + cx;
             }
