@@ -1156,14 +1156,15 @@ static const char *icon_glyph(const char *icon) {
  * fall back to the Nerd glyph table / first letter above. ---- */
 #include <cairo/cairo.h>
 #define ICONPIX 26
+#define ICONPATH 300   /* max icon file path (ipath buffer size) */
 #define ICONCACHE 48
-typedef struct { char key[256]; cairo_surface_t *surf; } IconEnt;
+typedef struct { char key[ICONPATH]; cairo_surface_t *surf; } IconEnt;
 static IconEnt icache[ICONCACHE];
 static int icache_n;
 /* path cache: Icon= name -> resolved file ("" = negative). find_icon_file()
  * probes dozens of dirs/sizes per row, so it must not run every frame. */
 #define PATHCACHE 128
-typedef struct { char key[128]; char path[256]; } PathEnt;
+typedef struct { char key[128]; char path[ICONPATH]; } PathEnt;
 static PathEnt pcache[PATHCACHE];
 static int pcache_n;
 static int ico_rshift, ico_gshift, ico_bshift;
@@ -1283,7 +1284,7 @@ static const char *icon_path_cached(const char *icon, char *out, size_t n) {
         }
     }
     if (!pcache[i].path[0]) return NULL;
-    snprintf(out, n, "%s", pcache[i].path);
+    snprintf(out, n, "%.299s", pcache[i].path);
     return out;
 }
 /* LRU cache of scaled ARGB32 surfaces (NULL entries = negative cache) */
@@ -1318,14 +1319,14 @@ static cairo_surface_t *icon_surface(const char *path) {
         }
         if (im) cairo_surface_destroy(im);
         if (icache_n < ICONCACHE) {
-            snprintf(icache[icache_n].key, sizeof(icache[icache_n].key), "%s", path);
+            snprintf(icache[icache_n].key, sizeof(icache[icache_n].key), "%.299s", path);
             icache[icache_n].surf = cs;
             icache_n++;
         } else {
             if (icache[ICONCACHE - 1].surf)
                 cairo_surface_destroy(icache[ICONCACHE - 1].surf);
             memmove(&icache[1], &icache[0], (ICONCACHE - 1) * sizeof(IconEnt));
-            snprintf(icache[0].key, sizeof(icache[0].key), "%s", path);
+            snprintf(icache[0].key, sizeof(icache[0].key), "%.299s", path);
             icache[0].surf = cs;
         }
         return cs;
