@@ -1477,7 +1477,7 @@ static void draw(void) {
                 if (icol > 0) {
 #ifdef HAVE_CAIRO
                     if (isf) {
-                        unsigned long bg = (idx == sel) ? mix_hex(T_ACC, T_BG, 20) : T_BG;
+                        unsigned long bg = (idx == sel) ? c_sel.pixel : T_BG;
                         draw_icon_img(isf, 30 + (icol - ICONPIX) / 2, y + (row_h - ICONPIX) / 2, bg);
                     } else
 #endif
@@ -1782,7 +1782,7 @@ int main(int argc, char **argv) {
     xft_alloc(T_DIM, &c_dim);
     xft_alloc(mix_hex(T_BG, T_FG, 5), &c_band);
     xft_alloc(mix_hex(T_BG, T_FG, 8), &c_div);
-    xft_alloc(mix_hex(T_ACC, T_BG, 20), &c_sel);   /* soft iris tint */
+    xft_alloc(mix_hex(T_BG, T_ACC, 22), &c_sel);   /* soft iris tint (mostly bg) */
     xft_alloc(mix_hex(T_ACC, T_BG, 55), &c_selout); /* 1px accent ring */
     xft_alloc(0xeb6f92, &c_love); /* Rosé Pine love  */
     xft_alloc(0xf6c177, &c_gold); /* Rosé Pine gold  */
