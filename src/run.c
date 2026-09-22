@@ -20,6 +20,7 @@
  *   input_h = 44        (input band height)
  *   padding = 0         (inner margin, all sides: top/right/bottom/left)
  *   padding_top/right/bottom/left = N   (per-side override of padding)
+ *   drun_padding*  / grid_padding* = N  (per-mode override for drun | grid)
  *   row_gap = 6         (vertical gap between drun rows)
  *   cell_gap = 6        (gap between grid cells, both axes)
  *   cell_gap_x / cell_gap_y = N         (per-axis override of cell_gap)
@@ -118,6 +119,10 @@ static int footer_h = 26;
  *   cell_gap_x/cell_gap_y = horizontal/vertical gap between grid cells
  *   margin    = left/right margin of the selection pill (drun) */
 static int opt_pad_t = 0, opt_pad_r = 0, opt_pad_b = 0, opt_pad_l = 0;
+/* per-mode padding overrides (default -1 = fall back to opt_pad_*):
+ * drun_padding* applies to MODE_DRUN, grid_padding* to MODE_FAV/MODE_POWER. */
+static int drun_pad_t = -1, drun_pad_r = -1, drun_pad_b = -1, drun_pad_l = -1;
+static int grid_pad_t = -1, grid_pad_r = -1, grid_pad_b = -1, grid_pad_l = -1;
 static int opt_row_gap = 6, opt_cell_gap_x = 0, opt_cell_gap_y = 6, opt_margin = 12;
 
 /* ---- state ---- */
@@ -224,6 +229,22 @@ static int parse_triple(const char *val, char **icon, char **name, char **cmd) {
 }
 
 /* ============ defaults (cleared when the config has its first app=/power= line) ============ */
+/* after load_run_config(): merge per-mode padding overrides into opt_pad_*.
+ * drun_padding* wins for MODE_DRUN, grid_padding* for fav/power; the plain
+ * padding* keys act as the base for every mode. */
+static void resolve_padding(void) {
+    if (mode == MODE_DRUN) {
+        if (drun_pad_t >= 0) opt_pad_t = drun_pad_t;
+        if (drun_pad_r >= 0) opt_pad_r = drun_pad_r;
+        if (drun_pad_b >= 0) opt_pad_b = drun_pad_b;
+        if (drun_pad_l >= 0) opt_pad_l = drun_pad_l;
+    } else if (mode == MODE_FAV || mode == MODE_POWER) {
+        if (grid_pad_t >= 0) opt_pad_t = grid_pad_t;
+        if (grid_pad_r >= 0) opt_pad_r = grid_pad_r;
+        if (grid_pad_b >= 0) opt_pad_b = grid_pad_b;
+        if (grid_pad_l >= 0) opt_pad_l = grid_pad_l;
+    }
+}
 static void defaults(void) {
     char *a, *b, *c;
     a = xstrdup(""); b = xstrdup("Firefox"); c = xstrdup("firefox");
@@ -344,6 +365,38 @@ static void load_run_config(void) {
         } else if (!strcmp(k, "padding_left")) {
             v = strtol(vv, NULL, 10);
             if (v >= 0 && v <= 64) opt_pad_l = (int)v;
+        } else if (!strcmp(k, "drun_padding")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64)
+                drun_pad_t = drun_pad_r = drun_pad_b = drun_pad_l = (int)v;
+        } else if (!strcmp(k, "drun_padding_top")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) drun_pad_t = (int)v;
+        } else if (!strcmp(k, "drun_padding_right")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) drun_pad_r = (int)v;
+        } else if (!strcmp(k, "drun_padding_bottom")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) drun_pad_b = (int)v;
+        } else if (!strcmp(k, "drun_padding_left")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) drun_pad_l = (int)v;
+        } else if (!strcmp(k, "grid_padding")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64)
+                grid_pad_t = grid_pad_r = grid_pad_b = grid_pad_l = (int)v;
+        } else if (!strcmp(k, "grid_padding_top")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) grid_pad_t = (int)v;
+        } else if (!strcmp(k, "grid_padding_right")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) grid_pad_r = (int)v;
+        } else if (!strcmp(k, "grid_padding_bottom")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) grid_pad_b = (int)v;
+        } else if (!strcmp(k, "grid_padding_left")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) grid_pad_l = (int)v;
         } else if (!strcmp(k, "row_gap")) {
             v = strtol(vv, NULL, 10);
             if (v >= 0 && v <= 32) opt_row_gap = (int)v;
@@ -1667,6 +1720,7 @@ int main(int argc, char **argv) {
 #ifdef HAVE_CAIRO
     load_gtk_icon_theme();
 #endif
+    resolve_padding();
     if (!font_pat[0]) {
         if (T_FONT[0]) snprintf(font_pat, sizeof(font_pat), "%.255s", T_FONT);
         else snprintf(font_pat, sizeof(font_pat), "SpaceMono Nerd Font:size=11");
