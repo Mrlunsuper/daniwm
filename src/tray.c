@@ -198,6 +198,13 @@ void tray_add(Window icon) {
             icon, a.width, a.height);
         return;
     }
+    /* forged REQUEST_DOCK: any client can send the opcode with a victim's
+     * window ID (via XQueryTree). Require _XEMBED_INFO so only real icons
+     * (which advertise it before docking) are reparented into the bar. */
+    if (!tray_is_icon_window(icon)) {
+        fprintf(stderr, "daniwm: tray: ignore dock for non-icon window 0x%lx\n", icon);
+        return;
+    }
     if (find_dock(icon)) return;
     if (find(icon)) {
         /* raced: small icon got manage()d before the opcode arrived.
