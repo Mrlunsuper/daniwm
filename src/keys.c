@@ -35,7 +35,7 @@ static void k_scratch(int unused) {
     Client *s = findscratch();
     if (!s) { spawn(scratchcmd); return; }
     XWindowAttributes a;
-    XGetWindowAttributes(dpy, s->win, &a);
+    if (!XGetWindowAttributes(dpy, s->win, &a)) { unmanage(s->win); return; }
     if (s->ws == curws && a.map_state == IsViewable) {
         s->ws = NWS; /* park: hidden, ignored by all ws loops */
         ewmh_set_wm_desktop(s); /* → sticky 0xFFFFFFFF */
