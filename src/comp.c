@@ -1029,7 +1029,9 @@ int main(int argc, char **argv) {
             InputOnly, CopyFromParent, CWOverrideRedirect, &wa);
         XSetSelectionOwner(dpy, A_CM, cm_win, CurrentTime);
         if (XGetSelectionOwner(dpy, A_CM) != cm_win) {
-            fprintf(stderr, "dani-comp: cannot own %s\n", XGetAtomName(dpy, A_CM));
+            char *cmname = XGetAtomName(dpy, A_CM);
+            fprintf(stderr, "dani-comp: cannot own %s\n", cmname ? cmname : "?");
+            if (cmname) XFree(cmname);
             return 1;
         }
     }
