@@ -519,6 +519,11 @@ void manage(Window w) {
     Window trans = None;
     c->fx = a.x; c->fy = a.y; c->fw = a.width; c->fh = a.height;
     c->cfact = 1.0f;
+    /* ghost-manage race: the window can die between the probe above and
+     * attach() below. Trap this window's X calls (errors get logged, not
+     * swallowed) and re-probe before attach; a dead window frees the
+     * struct instead of haunting the client list. */
+    trap_errors(dpy);
     if (XGetTransientForHint(dpy, w, &trans) || ewmh_isfloating_type(w) || rulefloat) {
         c->floating = 1;
         int ax, ay, aw, ah;
@@ -544,6 +549,9 @@ void manage(Window w) {
     XSelectInput(dpy, w, EnterWindowMask | FocusChangeMask | PropertyChangeMask | StructureNotifyMask);
     grabbuttons(c);
     XSetWindowBorderWidth(dpy, w, (unsigned)S(BORDER));
+    untrap_errors(dpy);
+    { XWindowAttributes re;
+      if (!XGetWindowAttributes(dpy, w, &re)) { free(c); return; } }
     attach(c);
     ewmh_set_wm_state(c, NormalState);
     c->ws = rulews;
