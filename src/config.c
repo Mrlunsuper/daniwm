@@ -59,6 +59,8 @@ static char **split_argv(const char *s) {
     wordexp_t w;
     if (wordexp(s, &w, WRDE_NOCMD) != 0) return NULL;
     if (w.we_wordc == 0) { wordfree(&w); return NULL; }
+    /* glob cap: pathname expansion in config must not yield thousands of words */
+    if (w.we_wordc > 64) { wordfree(&w); return NULL; }
     char **out = calloc(w.we_wordc + 1, sizeof(*out));
     if (!out) { wordfree(&w); return NULL; }
     for (size_t i = 0; i < w.we_wordc; i++) {
@@ -128,6 +130,8 @@ void ws_set_name(int idx, const char *val) {
 static void parse_ws_names(const char *val) {
     wordexp_t w;
     if (wordexp(val, &w, WRDE_NOCMD) != 0) return;
+    /* same glob cap as split_argv (only MAXWS slots are used anyway) */
+    if (w.we_wordc > 64) { wordfree(&w); return; }
     int pos = 0;
     for (size_t i = 0; i < w.we_wordc; i++) {
         const char *tok = w.we_wordv[i];
