@@ -203,6 +203,18 @@ static int parse_ws_icon_key(const char *key, const char *val) {
     char tmp[16];
     memcpy(tmp, val, n);
     tmp[n] = 0;
+    /* same UTF-8 boundary rule as ws_set_name: never split a codepoint */
+    {
+        size_t m = n;
+        while (m > 0 && (tmp[m - 1] & 0xC0) == 0x80) m--;
+        if (m > 0 && (tmp[m - 1] & 0x80)) {
+            unsigned char lead = (unsigned char)tmp[m - 1];
+            size_t want = (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : 4;
+            if (n - (m - 1) < want) m--;
+        }
+        tmp[m] = 0;
+    }
+    if (!tmp[0]) return 1; /* nothing but a split codepoint = no icon */
     ws_icons[idx] = xstrdup(tmp);
     return 1;
 }

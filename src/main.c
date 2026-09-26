@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 
 #include "types.h"
@@ -317,8 +318,21 @@ int main(int argc, char **argv) {
         if (xdg && *xdg) snprintf(path, sizeof(path), "%s/daniwm/autostart.sh", xdg);
         else if (home && *home) snprintf(path, sizeof(path), "%s/.config/daniwm/autostart.sh", home);
         if (home && *home) snprintf(fallback_autostart, sizeof(fallback_autostart), "%s/.config/tilewm/autostart.sh", home);
-        const char *run = (path[0] && !access(path, X_OK)) ? path : (fallback_autostart[0] && !access(fallback_autostart, X_OK) ? fallback_autostart : NULL);
+        /* pick the first existing regular executable (no access()+execl
+         * TOCTOU gap: exec permission is re-checked by execl itself). */
+        const char *run = NULL;
+        {
+            struct stat st;
+            if (path[0] && stat(path, &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & 0111))
+                run = path;
+            else if (fallback_autostart[0] && stat(fallback_autostart, &st) == 0 &&
+                S_ISREG(st.st_mode) && (st.st_mode & 0111))
+                run = fallback_autostart;
+        }
         if (run) {
+            struct stat st;
+            if (stat(run, &st) == 0 && (st.st_mode & 0022))
+                fprintf(stderr, "daniwm: autostart %s is world-writable, check ownership\n", run);
             pid_t pid = fork();
             if (pid == -1) {
                 perror("daniwm: fork autostart");
@@ -327,6 +341,7 @@ int main(int argc, char **argv) {
                 setsid();
                 signal(SIGCHLD, SIG_DFL);
                 execl(run, run, NULL);
+                fprintf(stderr, "daniwm: autostart exec %s failed: %s\n", run, strerror(errno));
                 _exit(1);
             }
         }

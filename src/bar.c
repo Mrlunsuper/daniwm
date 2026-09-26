@@ -313,13 +313,9 @@ void drawbar(void) {
     unsigned long c_ws_emp   = h_ws_emp   ? C_WS_EMP   : BAR_DIM;
     /* tasklist: explicit override, else follow ws/title so old configs look identical */
     int tstyle = BAR_TASK_STYLE >= 0 ? BAR_TASK_STYLE : BAR_WS_STYLE;
-    unsigned long c_task_act = h_task_act ? C_TASK_ACT : c_ws_act;
-    (void)c_task_act;
     unsigned long c_mode     = h_mode     ? C_MODE     : BAR_FG;
     unsigned long c_title    = h_title    ? C_TITLE    : BAR_DIM;
-    unsigned long c_sys      = h_sys      ? C_SYS      : BAR_FG;
     unsigned long c_sep      = h_sep      ? C_SEP      : BAR_DIM;
-    (void)c_sys; (void)c_title; (void)c_mode;
 
     /* text baseline from font metrics so bar_h != 24 stays vertically centered */
     int baseline = 16;
@@ -771,7 +767,9 @@ void drawbar(void) {
 
     /* bottom border: 1px, sits right below the active underline */
     XSetForeground(dpy, bargc, c_sep);
-    XFillRectangle(dpy, barpm, bargc, 0, (unsigned)(bar_h - 1), (unsigned)barw, 1);
+    int y0 = bar_h - 1;
+    if (y0 < 0) y0 = 0;
+    XFillRectangle(dpy, barpm, bargc, 0, y0, (unsigned)barw, 1);
 
     /* copy double-buffer to bar */
     XCopyArea(dpy, barpm, bar, bargc, 0, 0, (unsigned)barw, (unsigned)bar_h, 0, 0);

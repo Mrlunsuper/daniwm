@@ -8,7 +8,6 @@
 static int trap_depth;
 static int trapped_err;
 static int trapped_req, trapped_minor, trapped_code;
-static Display *trap_dpy;
 static int (*prev_handler)(Display *, XErrorEvent *);
 
 static int xerror_trapped(Display *d, XErrorEvent *e) {
@@ -23,10 +22,10 @@ static int xerror_trapped(Display *d, XErrorEvent *e) {
 }
 
 void trap_errors(Display *d) {
+    (void)d;
     if (trap_depth++ == 0) {
         trapped_err = 0;
         trapped_req = trapped_minor = trapped_code = 0;
-        trap_dpy = d;
         prev_handler = XSetErrorHandler(xerror_trapped);
     }
 }
@@ -45,5 +44,4 @@ void untrap_errors(Display *d) {
     }
     if (prev_handler) XSetErrorHandler(prev_handler);
     prev_handler = NULL;
-    trap_dpy = NULL;
 }

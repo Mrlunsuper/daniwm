@@ -134,7 +134,9 @@ void drag_motion(int px, int py) {
     int dx, dy;
     if (drag.win == None) return;
     c = find(drag.win);
-    if (!c) { drag.win = None; drag.mode = 0; XUngrabPointer(dpy, CurrentTime); return; }
+    /* drag-client died mid-drag: also drop a live swap highlight, or the
+     * +2px border sticks until the next arrange(). */
+    if (!c) { swap_highlight(drag.swap_target, 0); drag.swap_target = None; drag.win = None; drag.mode = 0; XUngrabPointer(dpy, CurrentTime); return; }
     dx = px - drag.px; dy = py - drag.py;
     int dz = S(4); if (dz < 2) dz = 2;
     if (abs(dx) < dz && abs(dy) < dz) return;

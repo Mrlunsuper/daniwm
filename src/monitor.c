@@ -83,6 +83,10 @@ void on_monitors_changed(void) {
     for (Client *c = clients; c; c = c->next) {
         if (c->mon < 0 || c->mon >= nmons) c->mon = mon_at(c->fx + c->fw / 2, c->fy + c->fh / 2);
         if (c->floating) { /* keep floating windows on-screen */
+            /* shrink first when the new monitor is smaller than the window,
+             * or the pos clamp below pushes x/y off-screen with no fixup */
+            if (mons[c->mon].w > 0 && c->fw > mons[c->mon].w) c->fw = mons[c->mon].w;
+            if (mons[c->mon].h > 0 && c->fh > mons[c->mon].h) c->fh = mons[c->mon].h;
             if (c->fx < mons[c->mon].x) c->fx = mons[c->mon].x;
             if (c->fy < mons[c->mon].y) c->fy = mons[c->mon].y;
             if (c->fx + c->fw > mons[c->mon].x + mons[c->mon].w)
