@@ -120,6 +120,14 @@ static int xerror_other_wm(Display *d, XErrorEvent *e) {
     return -1;
 }
 static int xerror_ignore(Display *d, XErrorEvent *e) { (void)d; (void)e; return 0; }
+/* X I/O errors (server killed/restarted) bypass XErrorHandler and the
+ * select() loop; without this the default handler exits silently. */
+static int xio_fatal(Display *d) {
+    (void)d;
+    fprintf(stderr, "daniwm: X I/O error, exiting\n");
+    _exit(1);
+    return 0;
+}
 
 /* tasklist click: Button1 focuses, Button2 closes (browser-tab style).
  * Returns 1 when the click landed on a task button: the caller must not
@@ -188,6 +196,7 @@ int main(int argc, char **argv) {
         snprintf(progpath, sizeof(progpath), "%s", argv[0]);
     session_init();
     signal(SIGCHLD, SIG_IGN); /* auto-reap spawn()ed children, no zombies */
+    XSetIOErrorHandler(xio_fatal);
     dpy = XOpenDisplay(NULL);
     if (!dpy) { fprintf(stderr, "daniwm: cannot open display\n"); return 1; }
     screen = DefaultScreen(dpy);
