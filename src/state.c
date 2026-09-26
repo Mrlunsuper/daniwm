@@ -59,6 +59,7 @@ float COMP_DIM = 0.92f;
 
 Display *dpy;
 Window root, bar, checkwin;
+Time last_evtime = 0;
 Pixmap barpm = None;
 GC bargc;
 XftFont *barfont = NULL;

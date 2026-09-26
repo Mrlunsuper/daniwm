@@ -127,8 +127,7 @@ int client_wants_input(Window w) {
 /* ICCCM WM_TAKE_FOCUS: endorsing clients take input themselves
  * (LocallyActive). Send ClientMessage instead of XSetInputFocus to avoid
  * double-focus. Atoms come from the T-M5A cache (fallback interns once if
- * used before ewmh_init).
- * TODO(T-M5B): thread a real event timestamp instead of CurrentTime. */
+ * used before ewmh_init). Timestamp is the last user event (T-M5B). */
 static int client_takes_focus(Window w) {
     Atom protos = A_WM_PROTOCOLS != None ? A_WM_PROTOCOLS : XInternAtom(dpy, "WM_PROTOCOLS", False);
     Atom take = A_WM_TAKE_FOCUS != None ? A_WM_TAKE_FOCUS : XInternAtom(dpy, "WM_TAKE_FOCUS", False);
@@ -152,7 +151,7 @@ static void send_take_focus(Client *c) {
     ev.xclient.message_type = protos;
     ev.xclient.format = 32;
     ev.xclient.data.l[0] = (long)take;
-    ev.xclient.data.l[1] = CurrentTime; /* TODO(T-M5B): real timestamp */
+    ev.xclient.data.l[1] = (long)wm_time();
     XSendEvent(dpy, c->win, False, NoEventMask, &ev);
 }
 /* focus_ex: raise=1 restacks floating/fullscreen on top (explicit actions:
@@ -190,7 +189,7 @@ static void focus_ex(Client *c, int raise) {
     }
     if (client_wants_input(c->win)) {
         trap_errors(dpy);
-        XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+        XSetInputFocus(dpy, c->win, RevertToPointerRoot, wm_time());
         untrap_errors(dpy);
     }
     ewmh_active();
@@ -238,7 +237,7 @@ void view(int n) {
     arrange();  /* maps new workspace's windows */
     if (sel) focus(sel);
     else {
-        XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+        XSetInputFocus(dpy, root, RevertToPointerRoot, wm_time());
         ewmh_active();
         drawbar();
     }
@@ -287,7 +286,7 @@ void move_to(Client *c, int n) {
             arrange();
             if (nx) focus(nx);
             else {
-                XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+                XSetInputFocus(dpy, root, RevertToPointerRoot, wm_time());
                 ewmh_active();
                 drawbar();
             }
@@ -354,7 +353,7 @@ void kill_sel(void) {
     }
     last_kill_win = sel->win;
     last_kill_time = now;
-    kill_client(sel);
+    kill_client_ex(sel, wm_time()); /* key path: last KeyPress time */
 }
 
 void spawn(char **argv) {
@@ -580,7 +579,7 @@ void unmanage(Window w) {
     if (sel) focus(sel);
     else if (first_in_ws(curws)) focus(first_in_ws(curws));
     else {
-        XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+        XSetInputFocus(dpy, root, RevertToPointerRoot, wm_time());
         ewmh_active();
         drawbar();
     }

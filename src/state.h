@@ -12,6 +12,13 @@
 extern Display *dpy;
 extern Window root, bar, checkwin;
 extern int screen, sw, sh;
+/* last user-event timestamp (Key/Button/Crossing); 0 = none yet.
+ * wm_time() prefers it over CurrentTime for focus/kill requests
+ * (ICCCM 4.1.7); falls back to CurrentTime with no event to blame. */
+extern Time last_evtime;
+static inline Time wm_time(void) {
+    return last_evtime ? last_evtime : CurrentTime;
+}
 
 /* ---- clients ---- */
 extern Client *clients;

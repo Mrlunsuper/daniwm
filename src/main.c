@@ -464,7 +464,7 @@ int main(int argc, char **argv) {
                          * expensive path (arrange/bar/ewmh spew). */
                         if (client_wants_input(c->win)) {
                             trap_errors(dpy);
-                            XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+                            XSetInputFocus(dpy, c->win, RevertToPointerRoot, wm_time());
                             untrap_errors(dpy);
                         }
                         break;
@@ -579,6 +579,7 @@ int main(int argc, char **argv) {
              * cửa sổ. */
             if (e->mode != NotifyNormal || e->detail == NotifyInferior) break;
             if (hover_locked(e)) break;
+            last_evtime = e->time; /* hover focus uses its own crossing time */
             /* hover/sloppy focus must not restack: auto-raise here would
              * lift a big floating window over a nested small one as the
              * pointer crosses it, making the small one unreachable.
@@ -644,6 +645,7 @@ int main(int argc, char **argv) {
             break;
         case KeyPress: {
             XKeyEvent *e = &ev.xkey;
+            last_evtime = e->time; /* key-driven focus/kill uses this press */
             KeySym ks = XkbKeycodeToKeysym(dpy, (KeyCode)e->keycode, 0, 0);
             for (unsigned i = 0; i < nkeys; i++) {
                 if (keys[i].keysym == ks &&
@@ -656,6 +658,7 @@ int main(int argc, char **argv) {
         }
         case ButtonPress: {
             XButtonEvent *e = &ev.xbutton;
+            last_evtime = e->time; /* click-driven focus uses this press */
             if (e->window == bar) {
                 /* mute (trái/giữa/phải) chỉ khi bấm trúng cụm volume,
                  * bấm trượt chỗ khác = no-op (trước đây phải/trái bấm đâu cũng mute) */
