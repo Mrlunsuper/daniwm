@@ -22,7 +22,7 @@ fix trên HEAD sạch để mỗi commit chỉ chứa đúng phần fix. Cuối 
 | 7 | `config.c` wordexp glob bomb | CONFIRMED | `a10087c` fix(config) | config `ws_names = /*/*/*/*/*` → WM khởi động bình thường, names fallback `1..5`, không spike; `test-config.sh` PASS | FIXED |
 | 8 | EWMH ClientMessage không check sender | BY DESIGN | `923f6e6` docs(ewmh) | đúng spec EWMH trust-based (pager/wmctrl cần); chỉ thêm 1 câu document vào README, không đổi code | DOCUMENTED |
 | 9 | `comp.c` leak `XGetAtomName` | CONFIRMED | `65224d9` fix(comp) | đọc code + build + `test-comp.sh` PASS | FIXED |
-| 10 | `ws_icon_N` xé UTF-8 | CONFIRMED, REGRESSION ngày 26/09 | `885f7f3` fix(low) + `f4fb75f`(dự kiến) | unit `/tmp/opencode/utf8cap-test.c` + Xephyr screenshot icon `é` hiện lại | FIXED, xem NOTE |
+| 10 | `ws_icon_N` xé UTF-8 | CONFIRMED, REGRESSION ngày 26/09 | `885f7f3` + `0e29aae` | unit `/tmp/opencode/utf8cap-test.c` + Xephyr screenshot icon `é` hiện lại | FIXED, xem NOTE |
 | 11 | drag `swap_target` rò highlight | CONFIRMED | `885f7f3` fix(low) | đọc code + `test-mouse.sh` PASS | FIXED |
 | 12 | `bar.c:774` `-Wsign-conversion` | CONFIRMED | `885f7f3` fix(low) | `gcc -Wconversion`: từ 1 warning → 0 warning | FIXED |
 | 13 | `xerr.c` `trap_dpy` dead-store | CONFIRMED MỘT PHẦN | `885f7f3` fix(low) | xóa `trap_dpy`; nesting đã đúng via `trap_depth` (audit mô tả sai phần này); `test-xerr.sh` PASS | FIXED |
