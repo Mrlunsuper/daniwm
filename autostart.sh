@@ -28,9 +28,10 @@ run_once blueman-applet blueman-applet
 run_once clipit clipit
 #run_once eww "$HOME/.local/bin/eww" daemon
 
-# Picom — chỉ start 1 instance duy nhất
-#run_once picom picom --config "$HOME/.config/picom/picom.conf" -b
-
+# dani-comp (compositor của nhà trồng) — chỉ start 1 instance duy nhất.
+# Chỉnh shadow/fade/dim ở đây: daniwm không quản lý compositor nữa.
+#run_once dani-comp "$HOME/daniwm/dani-comp" --shadow --no-fade --dim 0
+run_once fastcompmgr -o 0.4 -r 12 -c -C
 run_once dunst dunst
 
 # Wallpaper lên sớm nhất có thể (feh decode ảnh 3K ~150ms, không chặn ai)

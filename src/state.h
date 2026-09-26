@@ -107,6 +107,7 @@ extern int BAR_WS_PAD; /* px text inset each side inside a named ws cell (0..32)
 extern float ui_scale;
 extern char *font_name;
 extern int bar_on;
+extern int FOCUS_MODE; /* 0=hover 1=click 2=both (default 0) */
 extern int gaps_on;
 extern int gap_outer;
 extern int gap_inner;
@@ -118,12 +119,6 @@ extern char *RENAME_CMD; /* prompt cmd for ws_rename (stdout = new name) */
 extern char *ws_icons[MAXWS]; /* per-ws bar icon glyph, NULL = none */
 
 extern char progpath[1024]; /* argv[0] saved at startup for restart-in-place exec */
-
-/* ---- dani-comp (compositor đơn giản của nhà trồng) ---- */
-extern int COMP_ON;     /* compositor = 1: daniwm tự spawn dani-comp lúc khởi động */
-extern int COMP_SHADOW; /* shadow = 1/0: bóng đổ */
-extern int COMP_FADE;   /* fade = 1/0: fade-in khi map */
-extern float COMP_DIM;  /* inactive_dim 0.5..1.0: độ sáng cửa sổ nền (1 = tắt) */
 
 /* ---- EWMH atoms ---- */
 extern Atom A_TRAY_SEL, A_TRAY_OPCODE, A_XEMBED, A_XEMBED_INFO,

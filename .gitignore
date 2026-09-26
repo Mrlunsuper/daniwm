@@ -9,3 +9,7 @@ src/*.d
 test/click-helper
 test/menu-helper
 test/dialog-helper
+test/float-click-helper
+dev/xdiag
+dev/include/
+dev/lib/

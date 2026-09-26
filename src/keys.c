@@ -117,7 +117,10 @@ static void k_bar(int unused) {
 }
 static void k_fullscreen(int unused) { (void)unused; if (sel) setfullscreen(sel, !sel->fullscreen); }
 /* compositor toggle: đang chạy dani-comp thì pkill, chưa thì spawn.
- * Check qua _NET_WM_CM_Sn để restart-in-place không spawn trùng. */
+ * Khởi động chính thức giờ nằm ở autostart.sh; phím này chỉ để restart/
+ * test nhanh. Check qua _NET_WM_CM_Sn để restart-in-place không spawn
+ * trùng. Flags nhẹ (transparent + shadow, không fade/dim) — muốn chỉnh cờ thì
+ * sửa autostart.sh, không phải config daniwm nữa. */
 static void k_compositor(int unused) {
     (void)unused;
     char cm[32];
@@ -138,29 +141,33 @@ static void k_compositor(int unused) {
         char sibling[1152];
         if (slash) { size_t dl = (size_t)(slash - self) + 1; memcpy(sibling, self, dl); snprintf(sibling + dl, sizeof(sibling) - dl, "dani-comp"); }
         else snprintf(sibling, sizeof(sibling), "dani-comp");
-        char dim[16];
-        snprintf(dim, sizeof(dim), "%.2f", COMP_DIM);
-        const char *shadow = COMP_SHADOW ? "--shadow" : "--no-shadow";
-        const char *fade = COMP_FADE ? "--fade" : "--no-fade";
-        execl(sibling, "dani-comp", shadow, fade, "--dim", dim, NULL);
-        execlp("dani-comp", "dani-comp", shadow, fade, "--dim", dim, NULL);
+        execl(sibling, "dani-comp", "--shadow", "--no-fade", "--dim", "1", NULL);
+        execlp("dani-comp", "dani-comp", "--shadow", "--no-fade", "--dim", "1", NULL);
         _exit(1);
     }
-    COMP_ON = !running;
 }
-/* Volume interaction: amixer, fire-and-forget. vol_ts = 0 forces the 1s tick
- * to re-sample so the bar refreshes promptly (no blocking sample here). */
-static char *vol_up_am[]   = { "amixer", "set", "Master", "5%+", NULL };
-static char *vol_down_am[] = { "amixer", "set", "Master", "5%-", NULL };
+/* Volume interaction: fire-and-forget setters. vol_ts = 0 forces the 1s
+ * tick to re-sample so the bar refreshes promptly (no blocking sample here).
+ * k_vol_delta() applies an arbitrary accumulated step in ONE spawn: the
+ * wheel path coalesces a scroll burst into a single call, so a fast flick
+ * doesn't fork an amixer/wpctl/pactl per queued ButtonPress. */
 static char *vol_mute_am[] = { "amixer", "set", "Master", "toggle", NULL };
-static char *vol_up_wp[]   = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+", NULL };
-static char *vol_down_wp[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-", NULL };
 static char *vol_mute_wp[] = { "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle", NULL };
-static char *vol_up_pa[]   = { "pactl", "set-sink-volume", "@DEFAULT_SINK@", "+5%", NULL };
-static char *vol_down_pa[] = { "pactl", "set-sink-volume", "@DEFAULT_SINK@", "-5%", NULL };
 static char *vol_mute_pa[] = { "pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle", NULL };
-void k_vol_up(int unused)   { (void)unused; spawn(vol_set_cmd(vol_up_am, vol_up_wp, vol_up_pa)); vol_ts = 0; }
-void k_vol_down(int unused) { (void)unused; spawn(vol_set_cmd(vol_down_am, vol_down_wp, vol_down_pa)); vol_ts = 0; }
+void k_vol_delta(int delta) {
+    if (!delta) return;
+    int n = delta > 0 ? delta : -delta;
+    char step_pw[16], step_pa[16]; /* amixer/wpctl: "N%+" ; pactl: "+N%" */
+    snprintf(step_pw, sizeof step_pw, "%d%%%c", n, delta > 0 ? '+' : '-');
+    snprintf(step_pa, sizeof step_pa, "%c%d%%", delta > 0 ? '+' : '-', n);
+    char *am[] = { "amixer", "set", "Master", step_pw, NULL };
+    char *wp[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", step_pw, NULL };
+    char *pa[] = { "pactl", "set-sink-volume", "@DEFAULT_SINK@", step_pa, NULL };
+    spawn(vol_set_cmd(am, wp, pa));
+    vol_ts = 0;
+}
+void k_vol_up(int unused)   { (void)unused; k_vol_delta(5); }
+void k_vol_down(int unused) { (void)unused; k_vol_delta(-5); }
 void k_vol_mute(int unused) { (void)unused; spawn(vol_set_cmd(vol_mute_am, vol_mute_wp, vol_mute_pa)); vol_ts = 0; }
 /* Keyboard float move/resize: 20px steps, key repeat = smooth.
  * Tiled windows promote to floating first (same as mouse drag). */

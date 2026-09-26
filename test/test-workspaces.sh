@@ -23,7 +23,7 @@ alive() { # alive <stage>
     if kill -0 $WM 2>/dev/null; then echo "PASS: wm alive ($1)"; else echo "FAIL: wm dead ($1)"; fail=1; fi
 }
 
-trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$H"; exit $fail' EXIT INT TERM
+trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$H"' EXIT INT TERM
 
 # --- part 1: workspaces = 3 bounds ---
 echo "workspaces = 3" > "$H/.config/daniwm/config"

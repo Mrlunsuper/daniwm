@@ -23,7 +23,7 @@ workspaces = 7                       # 1..10 — đồng bộ với bspwm (I-VII
 # tên workspace (hiện trên bar + _NET_DESKTOP_NAMES cho pager).
 # Dạng khác: "My Web" (giữ space) | 1:Web 2:Code (theo index) | ws_name_1 = Web.
 # Thiếu tên = hiện số. Reload nóng Super+Shift+r.
-ws_names = chat dev web term media mics wtf # tên ws1..6, ws7 hiện số
+ws_names = chat dev web term trade mics wtf # tên ws1..6, ws7 hiện số
 ws_icon_1 =   # icon từng ws (Nerd Font, hiện trước tên trên bar)
 ws_icon_2 = 
 ws_icon_3 = 
@@ -31,7 +31,7 @@ ws_icon_4 = 
 ws_icon_5 = 
 ws_icon_6 = 
 ws_icon_7 = 
-mfact = 0.55                         # master chiếm 0.1..0.9 chiều ngang
+mfact = 0.50                        # master chiếm 0.1..0.9 chiều ngang
 nmaster = 1                          # số cửa sổ master
 border = 2
 border_focus = c4a7e7                # Rosé Pine iris (focused)
@@ -40,14 +40,10 @@ gaps_on = 1
 gap_outer = 4
 gap_inner = 8
 # ---------- dani-comp (compositor của nhà trồng, thay picom) ----------
-# compositor = 1: daniwm tự spawn ./dani-comp lúc khởi động (nhường nếu đã
-# có picom/compositor khác giữ _NET_WM_CM_Sn). Mặc định 0 để không đè picom
-# trong autostart.sh của bạn.
-compositor = 0
-shadow = 1         # bóng đổ 3 lớp (1/0)
-fade = 1             # fade-in khi map (1/0)
-inactive_dim = 0.92  # độ sáng cửa sổ nền 0.5..1.0 (1 = tắt dim)
-# toggle nóng: bind = mod+c:compositor  (chưa có mặc định, tự thêm nếu thích)
+# daniwm KHÔNG quản lý compositor nữa — khởi động ở autostart.sh:
+#   run_once dani-comp "$HOME/daniwm/dani-comp" --shadow --no-fade --dim 1
+# Muốn chỉnh shadow/fade/dim thì sửa dòng đó trong autostart.sh.
+# Toggle nóng để restart/test: bind = mod+c:compositor  (tùy chọn)
 bar_on = 1
 tray = 1                          # system tray XEmbed ở mép phải bar (1/0)
 tray_gap = 8                     # khoảng cách giữa các icon tray (px, 0..32)
@@ -106,6 +102,7 @@ rule = org.mozilla.firefox:*:tile:3
 rule = slack:*:tile:1               # tự mở vào ws2 (bỏ nếu không dùng)
 rule = brave-browser:*:tile:3
 rule = thunar:*:float:*
+rule = helium:*:tile:3
 bind+ = mod+c:exec dani-run --calc
 # ---------- bảng phím ----------
 # focus & cửa sổ
@@ -165,3 +162,5 @@ bind = mod+ctrl+e:quit               # thoát WM (kết thúc session X)
 rule = flameshot:*:float:*
 rule = telegram:*:float:*
 rule = local:*:float:7
+rule = terminal64:*:float:*
+rule = wine:*:float:*

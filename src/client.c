@@ -155,13 +155,16 @@ static void send_take_focus(Client *c) {
     XSendEvent(dpy, c->win, False, NoEventMask, &ev);
 }
 /* focus_ex: raise=1 restacks floating/fullscreen on top (explicit actions:
- * Mod+click/drag, keys, manage, pager requests). raise=0 is the
+ * Mod+click/drag, keys, manage, pager requests, and plain clicks observed
+ * via XI2 raw events — see xi2_raw_click in main.c). raise=0 is the
  * hover/sloppy path: auto-raise on Enter would trap a small floating
  * window nested inside a bigger one — crossing the big window raises it
  * over the small one, so the pointer can never reach the small window.
- * Hover therefore never restacks; raise with Mod+click or the keyboard.
- * (Plain clicks go straight to the app: observing them would starve the
- * app of button events, so the WM deliberately stays blind to them.) */
+ * Hover therefore never restacks; raise with Mod+click, a plain click
+ * (XI2 raw observation: the app still gets the press untouched), or the
+ * keyboard. (Core ButtonPress stays blind to plain clicks on purpose:
+ * the WM observes them via XI_RawButtonPress instead, so apps never lose
+ * a button event.) */
 static void focus_ex(Client *c, int raise) {
     if (!c) return;
     sel = c;

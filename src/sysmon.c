@@ -141,6 +141,19 @@ static int vol_try_pactl(void) {
     else snprintf(vol_cache, sizeof(vol_cache), "%d%%", pct);
     return 1;
 }
+/* Optimistic display: shift the cached % by delta so the bar tracks the
+ * wheel in real time. Never blocks, never spawns; the next 1s tick
+ * (sys_vol_update) re-samples the true value and reconciles. */
+void sys_vol_adjust(int delta) {
+    if (!delta || !vol_cache[0] || !strncmp(vol_cache, "MUTE", 4)) return;
+    char *end = NULL;
+    long cur = strtol(vol_cache, &end, 10);
+    if (end == vol_cache || *end != '%') return;
+    long nv = cur + delta;
+    if (nv < 0) nv = 0;
+    if (nv > 100) nv = 100;
+    snprintf(vol_cache, sizeof(vol_cache), "%ld%%", nv);
+}
 void sys_vol_update(void) {
     time_t now = time(NULL);
     int ok = 0;

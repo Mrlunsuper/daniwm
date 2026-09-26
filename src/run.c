@@ -107,6 +107,9 @@ static XftColor c_band, c_div, c_sel, c_selout;
 static XftColor c_love, c_gold, c_pine, c_foam;
 static int opt_width = 560; /* drun window width */
 static int opt_drun_icons = 1; /* Nerd glyph per .desktop app in the drun list */
+static int opt_opacity = 100; /* window opacity %, _NET_WM_WINDOW_OPACITY (100 = opaque).
+                               * Default opaque: semi-transparency washes out whatever sits
+                               * behind the launcher (tray, terminal) and looks like a bug. */
 static XIM xim;
 static XIC xic;
 static int WW, HH;
@@ -349,6 +352,9 @@ static void load_run_config(void) {
         } else if (!strcmp(k, "drun_icons")) {
             long iv = strtol(vv, NULL, 10);
             opt_drun_icons = iv != 0;
+        } else if (!strcmp(k, "opacity")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 1 && v <= 100) opt_opacity = (int)v;
         } else if (!strcmp(k, "padding")) {
             v = strtol(vv, NULL, 10);
             if (v >= 0 && v <= 64)
@@ -1773,6 +1779,15 @@ int main(int argc, char **argv) {
             if (state != None && above != None)
                 XChangeProperty(dpy, win, state, XA_ATOM, 32, PropModeReplace, (unsigned char *)&above, 1);
             XStoreName(dpy, win, mode == MODE_FAV ? "dani-run fav" : mode == MODE_POWER ? "dani-run power" : mode == MODE_CALC ? "dani-run calc" : "dani-run");
+            /* whole-window translucency: dani-comp reads _NET_WM_WINDOW_OPACITY
+             * for every window (incl. override-redirect) and composites alpha */
+            if (opt_opacity < 100) {
+                Atom opac = XInternAtom(dpy, "_NET_WM_WINDOW_OPACITY", False);
+                if (opac != None) {
+                    unsigned long op = 0xffffffffUL * (unsigned long)opt_opacity / 100UL;
+                    XChangeProperty(dpy, win, opac, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&op, 1);
+                }
+            }
         }
         XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask | PointerMotionMask);
         XMapWindow(dpy, win);
@@ -1913,23 +1928,8 @@ int main(int argc, char **argv) {
                 else scroll = 0;
                 draw();
             } else if (n > 0) {
-                /* hjkl navigates while the query is empty (vim-style), no Ctrl;
-                 * calc: always type (function names like sqrt need letters) */
-                if (mode != MODE_CALC && qlen == 0 && !ctrl && n == 1 &&
-                    (buf[0] == 'j' || buf[0] == 'k' || buf[0] == 'h' || buf[0] == 'l')) {
-                    if (mode == MODE_DRUN) {
-                        if (buf[0] == 'j') move_sel(1);
-                        else if (buf[0] == 'k') move_sel(-1);
-                        else if (buf[0] == 'h') move_sel(-list_rows);
-                        else move_sel(list_rows);
-                    } else {
-                        if (buf[0] == 'j') move_sel(opt_cols);
-                        else if (buf[0] == 'k') move_sel(-opt_cols);
-                        else if (buf[0] == 'h') move_sel(-1);
-                        else move_sel(1);
-                    }
-                    draw();
-                } else if ((unsigned char)buf[0] >= 0x20 || (unsigned char)buf[0] >= 0x80) {
+                /* typing always filters; move with arrows or Ctrl+hjkl above */
+                if ((unsigned char)buf[0] >= 0x20 || (unsigned char)buf[0] >= 0x80) {
                     if (qlen + n < MAXQ - 1) {
                         memcpy(query + qlen, buf, (size_t)n);
                         qlen += n;

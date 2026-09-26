@@ -1,7 +1,7 @@
 /* comp.c - dani-comp: compositor đơn giản cho daniwm.
  *
  * Tính năng (cố tình minimal, ~600 dòng):
- *   - bóng đổ mềm 3 lớp (XRender, không blur convolution)
+ *   - bóng mềm 7 lớp (XRender, không blur convolution)
  *   - fade-in khi map (~160ms)
  *   - dim cửa sổ inactive (mặc định 0.92, tắt khi focus/fullscreen)
  *   - tôn trọng _NET_WM_WINDOW_OPACITY (transset, rules opacity...)
@@ -34,6 +34,10 @@
 #include <X11/extensions/Xfixes.h>
 #include <X11/extensions/shape.h>
 #include <X11/extensions/Xrender.h>
+#ifdef WITH_XPRESENT
+#include <X11/extensions/Xpresent.h>
+#include <X11/extensions/Xrandr.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +63,7 @@ static Atom A_WM_STATE;    /* _NET_WM_STATE */
 static Atom A_WM_STATE_FS; /* _NET_WM_STATE_FULLSCREEN */
 static Atom A_WM_WINTYPE;  /* _NET_WM_WINDOW_TYPE */
 static Atom A_WM_WINTYPE_DOCK;
+static Atom A_WM_WINTYPE_DIALOG;
 static Atom A_XROOTPMAP;  /* _XROOTPMAP_ID (feh đổi wallpaper) */
 static Atom A_XSETROOT;   /* _XSETROOT_ID */
 
@@ -72,8 +77,26 @@ static int opt_verbose = 0;
 /* damage ext */
 static int dmg_event = 0, dmg_error = 0;
 
+/* render ext error base: picture chết theo window gây RenderBadPicture
+ * (wire code = base + BadPicture, đo thực tế = base+1) — cần cho
+ * xerror_ignore phân biệt race vô hại với lỗi Render thật. */
+static int render_errbase = 0;
+
 /* shape ext (bounding shape cho shaped window) */
 static int shape_ok = 0, shape_event = 0;
+
+/* present ext (hardware vsync). present_ok luôn 0 khi build không có
+ * XPresent -> mọi frame đi qua XCopyArea (cùng cấu trúc rẽ nhánh). */
+static int present_ok = 0;
+#ifdef WITH_XPRESENT
+static int present_opcode = 0;     /* major opcode, nhận diện XGE cookie */
+static int present_event = 0;      /* event base (chỉ để log) */
+static XID present_eid = None;     /* event ID từ XPresentSelectInput */
+static uint32_t present_serial = 0; /* serial cho XPresentPixmap */
+static int present_pending = 0;    /* có present đang chờ complete? */
+static long long present_sent_ms = 0; /* thời điểm gửi present */
+#define PRESENT_TIMEOUT_MS 200     /* fallback nếu complete không về */
+#endif
 
 /* render: double-buffer — dựng frame trên back_buf rồi present 1 blit.
  * Visible root không bao giờ bị clear giữa frame nên hết chớp. */
@@ -97,7 +120,7 @@ static int dmg_have = 0;
 static int full_dirty = 1;       /* frame tới phải vẽ toàn màn (không dùng hộp) */
 static XserverRegion dmg_scratch = None; /* vùng tạm đọc rect damage */
 
-static void dmg_add(int x1, int y1, int x2, int y2) {
+static void dmg_bbox_add(int x1, int y1, int x2, int y2) {
     if (!dmg_have) {
         dmg_x1 = x1; dmg_y1 = y1; dmg_x2 = x2; dmg_y2 = y2;
         dmg_have = 1;
@@ -107,6 +130,14 @@ static void dmg_add(int x1, int y1, int x2, int y2) {
         if (x2 > dmg_x2) dmg_x2 = x2;
         if (y2 > dmg_y2) dmg_y2 = y2;
     }
+}
+
+/* thêm 1 rect damage (toạ độ root, x2/y2 là mép phải/dưới) vào hộp bao.
+ * Chỉ giữ bbox (không giữ list): vùng damage của cửa sổ con (icon tray)
+ * server không báo lên damage của cha, nên clip theo list sẽ bỏ sót vùng
+ * đó mãi mãi (tray đen). Bbox bao phủ rộng hơn nên luôn vẽ đủ từ pict. */
+static void dmg_add(int x1, int y1, int x2, int y2) {
+    dmg_bbox_add(x1, y1, x2, y2);
 }
 
 /* buffer clip dùng lại giữa các frame (khỏi malloc/free mỗi cửa sổ shaped) */
@@ -120,7 +151,12 @@ static XRectangle *clipbuf_ensure(int n) {
     return clipbuf;
 }
 
-/* đặt clip đích về hộp damage (hoặc bỏ clip nếu full-frame).
+static int rect_intersect(const XRectangle *a, const XRectangle *b, XRectangle *out);
+
+/* đặt clip đích về vùng damage (hoặc bỏ clip nếu full-frame).
+ * Luôn clip bằng bbox (cur_clip): copy nền + composite + present đều dùng
+ * cùng một vùng nên không bao giờ lệch nhau (trước đây clip list rect hẹp
+ * hơn bbox gây đen vùng icon tray mà server không báo damage).
  * Lưu ý: SetPictureClipRectangles với n=0 = clip RỖNG (không vẽ gì), nên bỏ
  * clip phải dùng ChangePicture clip_mask=None, không phải mảng rỗng. */
 static void back_clip_reset(void) {
@@ -163,6 +199,7 @@ struct Win {
     int override;        /* override_redirect (bar/tray/menu...) */
     int fullscreen;
     int dock;
+    Atom wintype;        /* _NET_WM_WINDOW_TYPE đầu tiên, None nếu không có */
     unsigned opacity;    /* _NET_WM_WINDOW_OPACITY, mặc định ~0U */
     long long born;      /* ms, để fade-in */
     XRectangle *clip_rects; /* bounding shape (window coords), NULL nếu không shaped */
@@ -176,12 +213,12 @@ static Window active_win = None;
 static int dirty = 1;       /* cần repaint */
 static int stack_dirty = 1; /* geometry/stacking đổi: cần pre-pass + re-query root */
 /* cache để khỏi round-trip/alloc mỗi frame */
-static Picture shadow_fill[3] = { None, None, None }; /* solid fill 3 lớp bóng */
+static Picture shadow_fill[7] = { None, None, None, None, None, None, None }; /* solid fill 7 lớp bóng */
 /* mask alpha: các cửa sổ khác nhau có alpha khác nhau (active/inactive/
  * opacity riêng) nên cache 4 giá trị gần nhất thay vì 1. */
-#define ALPHA_SLOTS 4
-static Picture alpha_slot[ALPHA_SLOTS] = { None, None, None, None };
-static double alpha_val[ALPHA_SLOTS] = { -1.0, -1.0, -1.0, -1.0 };
+#define ALPHA_SLOTS 8
+static Picture alpha_slot[ALPHA_SLOTS] = { None, None, None, None, None, None, None, None };
+static double alpha_val[ALPHA_SLOTS] = { -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0 };
 static unsigned alpha_next = 0;
 /* cache stacking order: frame content-only reuse, khỏi QueryTree mỗi frame */
 static Window *stack_cache = NULL;
@@ -197,10 +234,72 @@ static long long last_paint;
 
 #define OPAQUE (~0U)
 
+/* ---- error handler (forward decl) ---- */
+static int xerror_ignore(Display *d, XErrorEvent *e);
+
+/* ---- trapped-error infrastructure (T-E1) ---- */
+static int trap_depth;
+static int trapped_err;
+static int trapped_code;
+
+static int xerror_trapped(Display *d, XErrorEvent *e) {
+    (void)d;
+    if (!trapped_err) {
+        trapped_err = 1;
+        trapped_code = (int)e->error_code;
+    }
+    return 0;
+}
+
+static void trap_errors(void) {
+    if (trap_depth++ == 0) {
+        trapped_err = 0;
+        trapped_code = 0;
+        XSetErrorHandler(xerror_trapped);
+    }
+}
+
+static void untrap_errors(void) {
+    if (trap_depth <= 0) return;
+    if (--trap_depth > 0) return;
+    XSync(dpy, False);
+    if (trapped_err) {
+        char msg[128] = "";
+        XGetErrorText(dpy, trapped_code, msg, sizeof(msg) - 1);
+        msg[sizeof(msg) - 1] = 0;
+        fprintf(stderr, "dani-comp: trapped X error code=%d (%s)\n", trapped_code, msg);
+    }
+    XSetErrorHandler(xerror_ignore);
+}
+
 static long long now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
+
+/* Gate repaint: chặn vẽ khi flip XPresent đang chờ. repaint() dựng lại cả
+ * back_buf (chục lệnh XRender) — nếu chạy trong lúc server đang chờ flip
+ * pixmap đó thì vblank lấy frame dở dang -> chớp đúng vào lúc mật độ frame
+ * cao (cuộn trang, video). Chỉ được vẽ khi present trước đã complete;
+ * timeout 200ms thì tắt hẳn XPresent (fallback XCopyArea) để khỏi đứng
+ * hình. Với build không XPresent, present_pending luôn 0 -> gate rảnh. */
+static int repaint_due(void) {
+    if (!dirty && !fading) return 0;
+    if (now_ms() - last_paint < 16) return 0;
+#ifdef WITH_XPRESENT
+    if (present_pending) {
+        if (now_ms() - present_sent_ms > PRESENT_TIMEOUT_MS) {
+            present_ok = 0;
+            present_pending = 0;
+            if (opt_debug)
+                fprintf(stderr, "dani-comp: XPresent timeout, fallback to XCopyArea\n");
+        } else {
+            return 0; /* flip đang chờ PresentCompleteNotify */
+        }
+    }
+#endif
+    return 1;
 }
 
 
@@ -281,6 +380,20 @@ static int has_atom(Window id, Atom prop, Atom val) {
     return found;
 }
 
+/* atom đầu tiên của _NET_WM_WINDOW_TYPE (None nếu không đặt) */
+static Atom read_wintype(Window id) {
+    Atom rt; int rf; unsigned long n = 0, extra = 0;
+    unsigned char *data = NULL;
+    Atom ty = None;
+    if (A_WM_WINTYPE == None) return None;
+    if (XGetWindowProperty(dpy, id, A_WM_WINTYPE, 0, 4, False, XA_ATOM,
+            &rt, &rf, &n, &extra, &data) == Success && data) {
+        if (rf == 32 && n >= 1) ty = ((Atom *)data)[0];
+        XFree(data);
+    }
+    return ty;
+}
+
 static void win_refresh_flags(Win *w) {
     XWindowAttributes a;
     if (!XGetWindowAttributes(dpy, w->id, &a)) { w->mapped = 0; return; }
@@ -291,6 +404,7 @@ static void win_refresh_flags(Win *w) {
     w->opacity = read_opacity(w->id);
     w->fullscreen = has_atom(w->id, A_WM_STATE, A_WM_STATE_FS);
     w->dock = has_atom(w->id, A_WM_WINTYPE, A_WM_WINTYPE_DOCK);
+    w->wintype = read_wintype(w->id);
 }
 
 static Win *win_add(Window id) {
@@ -319,7 +433,9 @@ static Win *win_add(Window id) {
     XSelectInput(dpy, id, PropertyChangeMask | StructureNotifyMask);
     if (shape_ok)
         XShapeSelectInput(dpy, id, ShapeNotifyMask); /* bounding shape đổi */
+    trap_errors();
     w->damage = XDamageCreate(dpy, id, XDamageReportNonEmpty);
+    untrap_errors();
     win_refresh_flags(w);
     /* override_redirect (bar của daniwm, menu...) không fade: hiện ngay */
     if (w->override) w->born = 0;
@@ -409,8 +525,10 @@ static double win_dim(const Win *w) {
 
 static int should_shadow(const Win *w) {
     if (!opt_shadow) return 0;
-    if (w->override) return 0;   /* bar/tray/menu: không bóng */
     if (w->dock) return 0;
+    /* override: bar/tray/menu không bóng; dani-run (DIALOG) được bóng
+     * như cửa sổ thường */
+    if (w->override && w->wintype != A_WM_WINTYPE_DIALOG) return 0;
     if (w->shaped) return 0;     /* bóng chữ nhật quanh hình tròn: xấu */
     if (w->fullscreen) return 0; /* fullscreen phủ hết: bóng vô nghĩa */
     return 1;
@@ -505,17 +623,23 @@ static void recapture_background(int w, int h, int depth) {
     bg_dirty = 0;
 }
 
-/* vẽ bóng: 3 lớp chữ nhật đen mờ lệch xuống dưới. Solid fill tạo 1 lần
- * rồi reuse (trước đây create/free 3 cái mỗi cửa sổ mỗi frame). */
+/* vẽ bóng: 7 lớp đen mờ chồng nhau, alpha tăng dần từ ngoài vào trong
+ * (đuôi gaussian: rìa ngoài chỉ ~2% nên không còn viền cứng, gần cửa sổ
+ * đậm dần ~30% như picom radius 12). Mỗi lớp 1 lần composite, chỉ trong
+ * vành bóng nên nhẹ hơn blur convolution nhiều. */
 static void paint_shadow(int x, int y, int w, int h) {
     static const struct { int grow; int dy; unsigned short alpha; } layers[] = {
-        { 9, 4, 0x0e00 }, /* ngoài cùng, nhạt nhất */
-        { 5, 3, 0x1600 },
-        { 2, 2, 0x2600 }, /* sát cửa sổ, đậm nhất */
+        { 12, 5, 0x0600 }, /* ngoài cùng, nhạt nhất */
+        { 10, 4, 0x0800 },
+        { 8, 4, 0x0a00 },
+        { 6, 3, 0x0c00 },
+        { 4, 2, 0x0e00 },
+        { 3, 2, 0x1000 },
+        { 2, 1, 0x1200 }, /* sát cửa sổ, đậm nhất */
     };
     /* P5: cửa sổ (mờ đục) sẽ phủ phần giữa -> chỉ vẽ vành bóng, khỏi blend
      * phần bị che (overdraw phí). Vành = bao ngoài trừ hộp cửa sổ = 4 rect. */
-    int ox = x - 9, oy = y - 9 + 4, ow = w + 18, oh = h + 18; /* bao ngoài mọi lớp */
+    int ox = x - 12, oy = y - 12 + 5, ow = w + 24, oh = h + 24; /* bao ngoài mọi lớp */
     XRectangle ring[4];
     int nr = 0;
     if (y > oy)                 ring[nr++] = (XRectangle){ (short)ox, (short)oy, (unsigned short)ow, (unsigned short)(y - oy) };
@@ -560,11 +684,15 @@ static int ensure_win_pict(Win *w) {
     w->depth = a.depth;
     win_free_pix(w);
     /* cửa sổ vừa unmap/map lại: pixmap cũ vô nghĩa */
+    trap_errors();
     Pixmap pm = XCompositeNameWindowPixmap(dpy, w->id);
+    untrap_errors();
     if (!pm) return 0;
     XRenderPictFormat *fmt = XRenderFindVisualFormat(dpy, a.visual);
     if (!fmt) { XFreePixmap(dpy, pm); return 0; }
+    trap_errors();
     Picture pict = XRenderCreatePicture(dpy, pm, fmt, 0, NULL);
+    untrap_errors();
     if (!pict) { XFreePixmap(dpy, pm); return 0; }
     w->pixmap = pm; w->pict = pict;
     w->w = a.width; w->h = a.height;
@@ -664,20 +792,24 @@ static void repaint(void) {
      * cache (tiết kiệm 1 QueryTree + alloc/free mỗi frame). */
     if (stack_dirty || !stack_cache) {
         if (!XQueryTree(dpy, root, &r, &p, &kids, &nk)) return;
-        free(stack_cache);
-        stack_cache = NULL; stack_nk = 0;
         if (nk > 0) {
-            stack_cache = malloc(nk * sizeof(Window));
-            if (stack_cache) {
-                memcpy(stack_cache, kids, nk * sizeof(Window));
+            if (nk > stack_nk) {
+                free(stack_cache);
+                stack_cache = malloc(nk * sizeof(Window));
+                if (!stack_cache) { XFree(kids); stack_nk = 0; return; }
                 stack_nk = nk;
             }
+            memcpy(stack_cache, kids, nk * sizeof(Window));
+            XFree(kids);
+            kids = stack_cache;
+        } else {
+            free(stack_cache);
+            stack_cache = NULL; stack_nk = 0;
         }
     } else {
         nk = stack_nk;
         kids = stack_cache; /* mượn tạm, KHÔNG free ở cuối */
     }
-    int kids_owned = (kids != stack_cache);
     /* Pre-pass: chỉ khi stack đổi (map/unmap/configure...). Frame content
      * thuần (gõ chữ/fade tick) bỏ qua: tiết kiệm n round-trip, event đã
      * giữ cache (x/y/mapped) tươi. */
@@ -758,7 +890,6 @@ static void repaint(void) {
          * composite loop vẽ bậy; ghost còn -> server tự hiển thị. */
         XCopyArea(dpy, back_buf, root, present_gc,
             0, 0, (unsigned)ra.width, (unsigned)ra.height, 0, 0);
-        if (kids_owned && kids) XFree(kids);
         XFlush(dpy);
         last_paint = now;
         dirty = 0;
@@ -845,16 +976,51 @@ static void repaint(void) {
         if (had_clip)
             back_clip_reset(); /* trả clip về hộp damage (hoặc None) */
     }
-    if (kids_owned && kids) XFree(kids);
-    /* present bằng 1 blit: content-only chỉ blit hộp damage -> hết scale
-     * theo diện tích màn; full-frame blit cả màn. */
-    if (cur_clip_on)
-        XCopyArea(dpy, back_buf, root, present_gc,
-            cur_clip.x, cur_clip.y, cur_clip.width, cur_clip.height,
-            cur_clip.x, cur_clip.y);
-    else
-        XCopyArea(dpy, back_buf, root, present_gc,
-            0, 0, (unsigned)ra.width, (unsigned)ra.height, 0, 0);
+    /* present: XPresentPixmap (hardware vsync) nếu bật, XCopyArea nếu không.
+     * back_buf cùng cỡ root nên gốc pixmap (0,0) = gốc window (0,0):
+     * x_off/y_off phải là 0, update-area là hộp damage theo toạ độ window
+     * (= toạ độ pixmap). (Truyền cur_clip vào x_off/y_off từng đặt pixmap
+     * (0,0) vào giữa màn hình -> sai nội dung vùng repaint cục bộ.) */
+#ifdef WITH_XPRESENT
+    if (present_ok && present_pending && now_ms() - present_sent_ms > PRESENT_TIMEOUT_MS) {
+        /* timeout: complete không về (Xvfb, driver cũ) -> tắt hẳn */
+        present_ok = 0;
+        present_pending = 0;
+        if (opt_debug)
+            fprintf(stderr, "dani-comp: XPresent timeout, fallback to XCopyArea\n");
+    }
+    if (present_ok && !present_pending) {
+        /* A/B: DANI_COMP_NO_PRESENT=1 tắt hẳn XPresent -> fallback XCopyArea.
+         * Mẹo chẩn đoán lỗi content-only trên hardware thật (Xvfb không có
+         * XPresent nên không test được path này). */
+        if (getenv("DANI_COMP_NO_PRESENT")) { present_ok = 0; }
+        else {
+        XserverRegion update = None; /* None = cả window */
+        if (cur_clip_on) {
+            update = XFixesCreateRegion(dpy, NULL, 0);
+            XRectangle upd_r = cur_clip;
+            XFixesSetRegion(dpy, update, &upd_r, 1);
+        }
+        XPresentPixmap(dpy, root, back_buf, present_serial++,
+            None, update,
+            0, 0,
+            0, None, None,
+            PresentOptionNone, 0, 0, 0, NULL, 0);
+        if (update != None) XFixesDestroyRegion(dpy, update);
+        present_pending = 1;
+        present_sent_ms = now_ms();
+        }
+    }
+#endif
+    if (!present_ok) {
+        if (cur_clip_on)
+            XCopyArea(dpy, back_buf, root, present_gc,
+                cur_clip.x, cur_clip.y, cur_clip.width, cur_clip.height,
+                cur_clip.x, cur_clip.y);
+        else
+            XCopyArea(dpy, back_buf, root, present_gc,
+                0, 0, (unsigned)ra.width, (unsigned)ra.height, 0, 0);
+    }
     /* P1: đã tiêu thụ hộp damage + cờ full cho frame này */
     dmg_have = 0;
     full_dirty = 0;
@@ -892,7 +1058,19 @@ static void repaint(void) {
 
 static int xerror_ignore(Display *d, XErrorEvent *e) {
     (void)d;
-    if (opt_debug) {
+    /* BadWindow, BadDamage và RenderBadPicture là race bình thường: cửa
+     * sổ hủy ở server kéo theo Damage/pixmap redirect/Picture chết cùng.
+     * Entry zombie còn lại tới gc_sweep nên repaint composite bằng picture
+     * chết (RenderBadPicture) và cleanup XDamageDestroy dính BadDamage —
+     * server bỏ qua các request này. Chỉ log ở debug mode. Log mọi lỗi
+     * khác (BadMatch, BadPictOp... = bug thật). */
+    if (e->error_code != BadWindow && e->error_code != BadDamage &&
+        e->error_code != render_errbase + BadPicture) {
+        char msg[128] = "";
+        XGetErrorText(dpy, e->error_code, msg, sizeof(msg));
+        fprintf(stderr, "dani-comp: Xerror %s req=%d/%d res=0x%lx\n",
+            msg, (int)e->request_code, (int)e->minor_code, (unsigned long)e->resourceid);
+    } else if (opt_debug) {
         char msg[128] = "";
         XGetErrorText(dpy, e->error_code, msg, sizeof(msg));
         fprintf(stderr, "dani-comp: Xerror %s req=%d/%d res=0x%lx\n",
@@ -906,7 +1084,7 @@ static void usage(const char *prog) {
         "dani-comp — compositor đơn giản cho daniwm\n"
         "usage: %s [-d display] [--shadow/--no-shadow] [--fade/--no-fade]\n"
         "         [--dim 0.5..1] [--fade-ms N] [-v] [-h]\n"
-        "  --dim 0.92  độ sáng cửa sổ inactive (1 = tắt dim)\n", prog);
+        "  --dim 0.92  độ sáng cửa sổ inactive (0 hoặc 1 = tắt dim)\n", prog);
 }
 
 int main(int argc, char **argv) {
@@ -929,6 +1107,7 @@ int main(int argc, char **argv) {
             opt_fade = 1;
         } else if (!strcmp(argv[i], "--dim") && i + 1 < argc) {
             opt_dim = strtod(argv[++i], NULL);
+            if (opt_dim <= 0.0) opt_dim = 1.0; /* 0 = tắt dim (khỏi bẫy clamp 0.5) */
             if (opt_dim < 0.5) opt_dim = 0.5;
             if (opt_dim > 1.0) opt_dim = 1.0;
         } else if ((!strcmp(argv[i], "--fade-ms") || !strcmp(argv[i], "--fade-time")) && i + 1 < argc) {
@@ -973,6 +1152,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "dani-comp: Render extension missing\n");
                 return 1;
             }
+            render_errbase = err2; /* cho xerror_ignore (RenderBadPicture) */
         }
         /* tùy chọn: XShape cho shaped window (XFixes không cần nữa) */
         {
@@ -981,6 +1161,17 @@ int main(int argc, char **argv) {
             if (opt_verbose)
                 fprintf(stderr, "dani-comp: shape=%d\n", shape_ok);
         }
+#ifdef WITH_XPRESENT
+        /* tùy chọn: XPresent cho hardware vsync (events là XGE cookies:
+         * cần opcode + evtype, không phải event base kiểu ShapeNotify) */
+        {
+            int err4;
+            present_ok = XPresentQueryExtension(dpy, &present_opcode, &present_event, &err4);
+            if (opt_verbose)
+                fprintf(stderr, "dani-comp: present=%d opcode=%d event=%d\n",
+                    present_ok, present_opcode, present_event);
+        }
+#endif
     }
     {
         int major = 0, minor = 0;
@@ -1001,6 +1192,7 @@ int main(int argc, char **argv) {
     A_WM_STATE_FS = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
     A_WM_WINTYPE = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
     A_WM_WINTYPE_DOCK = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
+    A_WM_WINTYPE_DIALOG = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
     A_XROOTPMAP = XInternAtom(dpy, "_XROOTPMAP_ID", False);
     A_XSETROOT = XInternAtom(dpy, "_XSETROOT_ID", False);
     {
@@ -1039,6 +1231,15 @@ int main(int argc, char **argv) {
     XSelectInput(dpy, root,
         SubstructureNotifyMask | PropertyChangeMask | StructureNotifyMask | ExposureMask);
 
+#ifdef WITH_XPRESENT
+    /* XPresent: đăng ký nhận events trên root */
+    if (present_ok) {
+        present_eid = XPresentSelectInput(dpy, root,
+            PresentCompleteNotifyMask);
+        present_ok = (present_eid != None);
+    }
+#endif
+
     /* quản lý cửa sổ đang có */
     {
         Window r, p, *kids = NULL;
@@ -1069,19 +1270,31 @@ int main(int argc, char **argv) {
             /* trả redirect về cho server: không thì cửa sổ đông cứng
              * offscreen sau khi compositor chết. Xóa frame composite
              * khỏi root để server vẽ lại cửa sổ thật. */
+            for (int i = 0; i < 7; i++)
+                if (shadow_fill[i] != None) XRenderFreePicture(dpy, shadow_fill[i]);
+            if (present_gc != None) XFreeGC(dpy, present_gc);
+            if (dmg_scratch != None) XFixesDestroyRegion(dpy, dmg_scratch);
             XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
             XClearArea(dpy, root, 0, 0, 0, 0, True);
             XFlush(dpy);
+            XCloseDisplay(dpy);
             return 0;
         }
-        /* P2: tối đa 1 repaint / 16ms. Đủ 16ms và có việc -> vẽ ngay. */
-        if (dirty && now_ms() - last_paint >= 16) { repaint(); continue; }
+        /* P2: tối đa 1 repaint / 16ms. Đủ 16ms và có việc -> vẽ ngay.
+         * (repaint_due cũng chặn khi flip XPresent đang chờ -> hết chớp.) */
+        if (repaint_due()) { repaint(); continue; }
         /* Lịch chờ: dirty/fading -> tick tới mốc 16ms; P6 shape recheck ->
          * tick tới mốc 100/400ms; không có gì -> block tới event. */
         struct timeval tv, *tvp = NULL;
         long budget = -1; /* us; -1 = block vô hạn */
         if (dirty || fading) {
             long long elapsed = now_ms() - last_paint;
+#ifdef WITH_XPRESENT
+            if (present_pending &&
+                now_ms() - present_sent_ms <= PRESENT_TIMEOUT_MS) {
+                budget = -1; /* flip đang chờ: đừng poll 0us — đợi complete về */
+            } else
+#endif
             budget = (elapsed >= 16) ? 0 : (long)((16 - elapsed) * 1000);
         }
         long long swake = shape_next_wake(now_ms());
@@ -1115,7 +1328,7 @@ int main(int argc, char **argv) {
                  * hoặc đang có việc — khỏi full-repaint chỉ để poll. */
                 if (shape_poll(now_ms())) dirty = 1;
                 gc_sweep(now_ms());
-                if (dirty || fading) repaint();
+                if (repaint_due()) repaint();
                 continue;
             }
         }
@@ -1135,6 +1348,12 @@ int main(int argc, char **argv) {
                      * root + nới theo border -> gom vào hộp bao frame. */
                     if (dmg_scratch == None)
                         dmg_scratch = XFixesCreateRegion(dpy, NULL, 0);
+                    /* Xóa region TRƯỚC subtract: nếu subtract dính BadDamage
+                     * (window đã destroy, damage đã chết — xem log Xerror),
+                     * region giữ nguyên rỗng thay vì giữ rect CŨ của lần
+                     * subtract trước — tránh add nhầm damage stale gây repaint
+                     * bậy đè lên vùng khác (tray/terminal). */
+                    XFixesSetRegion(dpy, dmg_scratch, NULL, 0);
                     XDamageSubtract(dpy, dw->damage, None, dmg_scratch);
                     int nr = 0;
                     XRectangle *rr = XFixesFetchRegion(dpy, dmg_scratch, &nr);
@@ -1255,12 +1474,39 @@ int main(int argc, char **argv) {
             case SelectionClear:
                 if (ev.xselectionclear.selection == A_CM) {
                     fprintf(stderr, "dani-comp: replaced, exiting\n");
+                    for (int i = 0; i < 7; i++)
+                        if (shadow_fill[i] != None) XRenderFreePicture(dpy, shadow_fill[i]);
+                    if (present_gc != None) XFreeGC(dpy, present_gc);
+                    if (dmg_scratch != None) XFixesDestroyRegion(dpy, dmg_scratch);
                     XCompositeUnredirectSubwindows(dpy, root, CompositeRedirectManual);
                     XClearArea(dpy, root, 0, 0, 0, 0, True);
                     XFlush(dpy);
+                    XCloseDisplay(dpy);
                     return 0;
                 }
                 break;
+            case GenericEvent: {
+#ifdef WITH_XPRESENT
+                /* PresentCompleteNotify là XGE (type=35): complete về dạng
+                 * cookie, không phải plain event — check ev.type ==
+                 * present_event + ... kiểu ShapeNotify là dead code. */
+                XGenericEventCookie *cook = &ev.xcookie;
+                if (present_ok && cook->extension == present_opcode &&
+                    cook->evtype == PresentCompleteNotify &&
+                    XGetEventData(dpy, cook)) {
+                    XPresentCompleteNotifyEvent *pe =
+                        (XPresentCompleteNotifyEvent *)cook->data;
+                    /* frame đã hiển thị: sẵn sàng cho frame tiếp */
+                    present_pending = 0;
+                    if (opt_debug >= 2)
+                        fprintf(stderr, "dani-comp: present complete serial=%u ust=%llu msc=%llu mode=%u\n",
+                            pe->serial_number, (unsigned long long)pe->ust,
+                            (unsigned long long)pe->msc, pe->mode);
+                    XFreeEventData(dpy, cook);
+                }
+#endif
+                break;
+            }
             default:
                 if (shape_ok && ev.type == shape_event + (int)ShapeNotify) {
                     /* bounding shape đổi (xeyes, menu bo góc...): đọc lại */
@@ -1273,7 +1519,7 @@ int main(int argc, char **argv) {
         }
         /* P2: throttle ở đầu vòng giữ nhịp <=60Hz. Đủ 16ms thì vẽ; chưa đủ
          * thì để dirty, vòng sau tick nốt phần còn lại. */
-        if (dirty && now_ms() - last_paint >= 16) repaint();
+        if (repaint_due()) repaint();
     }
     return 0;
 }

@@ -23,7 +23,7 @@ cleanup() {
     for p in $MENU $DLG $WM $XVFB; do [ "$p" -gt 0 ] 2>/dev/null && kill "$p" 2>/dev/null; done
     rm -rf "$H"
 }
-trap 'cleanup; exit $fail' EXIT INT TERM
+trap 'cleanup' EXIT INT TERM
 MENU=0; DLG=0; WM=0; XVFB=0
 
 for b in menu-helper dialog-helper; do

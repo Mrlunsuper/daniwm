@@ -48,7 +48,7 @@ do_restart() { # do_restart <desc> — poll heartbeat for the re-exec
     assert "$desc" "$swapped" -eq 1
 }
 
-trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$H"; exit $fail' EXIT INT TERM
+trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$H"' EXIT INT TERM
 
 Xvfb $D -screen 0 1280x800x24 &
 XVFB=$!

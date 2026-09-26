@@ -16,7 +16,7 @@ assert() {
     local desc=$1; shift
     if [ "$@" ]; then echo "PASS: $desc"; else echo "FAIL: $desc"; fail=1; fi
 }
-trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$H"; exit $fail' EXIT INT TERM
+trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$H"' EXIT INT TERM
 
 # stacking helper: prints xterm window ids, bottom -> top (XQueryTree order)
 HELPER=$H/stackorder

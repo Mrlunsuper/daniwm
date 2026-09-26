@@ -33,7 +33,7 @@ xywh() { # xywh <winid> -> "x y w h"
 shot() { import -window root "$SHOT/$1.png"; }
 settle() { sleep 1; }
 
-trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$CFG"; exit $fail' EXIT INT TERM
+trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$CFG"' EXIT INT TERM
 
 Xvfb $D -screen 0 1280x800x24 &
 XVFB=$!

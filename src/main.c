@@ -4,6 +4,7 @@
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
 #include <X11/XKBlib.h>
+#include <X11/extensions/XInput2.h>
 #include <X11/extensions/Xrandr.h>
 
 #include <stdio.h>
@@ -114,6 +115,64 @@ static int hover_locked(const XCrossingEvent *e) {
     return 1;
 }
 
+/* ---- XI2 raw button observation: click-to-raise on floating windows ----
+ * Plain clicks on a floating window behind another float never used to
+ * bring it forward: the WM cannot select ButtonPress on foreign windows
+ * (BadAccess), passive grabs would starve the app (ReplayPointer re-triggers
+ * the same grab on Xorg, so the app never gets the press). The one clean
+ * way to OBSERVE a click without touching its delivery is an XI2 raw
+ * event: raw events are broadcast to every client that selects them on
+ * the device, and the app still receives the normal core press.
+ * On XI_RawButtonPress we ask the pointer for the top-level window under
+ * it (XQueryPointer.child is exactly the X11 click target) and, if it is
+ * a floating/fullscreen client on the current workspace, focus it —
+ * focus() raises floats (focus_ex raise=1). Tiled windows are skipped:
+ * they never stack. Mod+click is skipped too (that is the drag grab
+ * path). The app's click is delivered untouched in all cases. */
+static int xi2_ok = 0;
+static int xi2_opcode = 0;
+static void xi2_init(void) {
+    int xi_ev = 0, xi_err = 0;
+    int maj = 2, min = 0;
+    if (XQueryExtension(dpy, "XInputExtension", &xi2_opcode, &xi_ev, &xi_err) != True)
+        return;
+    if (XIQueryVersion(dpy, &maj, &min) != Success)
+        return;
+    int ndev = 0;
+    XIDeviceInfo *info = XIQueryDevice(dpy, XIAllDevices, &ndev);
+    if (!info) return;
+    unsigned char mask[4] = { 0 }; /* XI_EVENT_MASK_LEN; covers raw events */
+    XISetMask(mask, XI_RawButtonPress);
+    /* Raw events are per-device: select on every master pointer so clicks
+     * on any pointer (multi-pointer setups) raise floats. */
+    for (int i = 0; i < ndev; i++) {
+        if (info[i].use != XIMasterPointer) continue;
+        XIEventMask em = { .deviceid = info[i].deviceid,
+            .mask_len = (int)sizeof(mask), .mask = mask };
+        trap_errors(dpy);
+        if (XISelectEvents(dpy, root, &em, 1) == Success)
+            xi2_ok = 1;
+        untrap_errors(dpy);
+    }
+    XIFreeDeviceInfo(info);
+    if (!xi2_ok)
+        fprintf(stderr, "daniwm: XI2 raw selection failed, click-to-raise off\n");
+}
+/* plain-click raise for the window under the pointer; returns after focus */
+static void xi2_raw_click(int button) {
+    Window r, child;
+    int rx, ry, wx, wy;
+    unsigned m;
+    if (drag.win != None) return;            /* WM drag in progress */
+    if (button < Button1 || button > Button3) return; /* wheel/extra: no */
+    if (!XQueryPointer(dpy, root, &r, &child, &rx, &ry, &wx, &wy, &m)) return;
+    if (!child || m & MOD) return;           /* Mod+aButton = drag grab path */
+    Client *c = find(child);
+    if (!c || c->ws != curws || c->ws < 0 || c->ws >= NWS) return;
+    if (!c->floating && !c->fullscreen) return; /* tiled: no stacking to fix */
+    focus(c);                                /* raises floats (raise=1) */
+}
+
 static int xerror_other_wm(Display *d, XErrorEvent *e) {
     (void)d; (void)e;
     fprintf(stderr, "daniwm: another WM is already running\n");
@@ -192,7 +251,15 @@ static void session_init(void) {
     }
 }
 
+/* monotonic ms for wheel-volume flush scheduling */
+static long long ms_now(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 int main(int argc, char **argv) {
+
     if (argc > 0 && argv && argv[0] && *argv[0])
         snprintf(progpath, sizeof(progpath), "%s", argv[0]);
     session_init();
@@ -254,6 +321,10 @@ int main(int argc, char **argv) {
     tray_init();
 
     grabkeys();
+
+    /* XI2 raw-button observation: click-to-raise on floating windows
+     * (plain clicks are otherwise invisible to the WM on this X stack). */
+    xi2_init();
 
     Window r, p, *kids = NULL; unsigned int nk = 0;
     /* restart-in-place: the previous instance published its workspace on
@@ -347,47 +418,32 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* dani-comp: compositor của nhà trồng. Chỉ spawn khi config bật và
-     * chưa có compositor nào giữ _NET_WM_CM_Sn (tránh trùng sau restart). */
-    if (COMP_ON) {
-        char cm[32];
-        snprintf(cm, sizeof(cm), "_NET_WM_CM_S%d", screen);
-        Atom cmatom = XInternAtom(dpy, cm, False);
-        if (cmatom == None || XGetSelectionOwner(dpy, cmatom) == None) {
-            pid_t pid = fork();
-            if (pid == -1) {
-                perror("daniwm: fork dani-comp");
-            } else if (pid == 0) {
-                if (dpy) close(ConnectionNumber(dpy));
-                setsid();
-                signal(SIGCHLD, SIG_DFL);
-                char sibling[1152];
-                snprintf(sibling, sizeof(sibling), "%s", progpath[0] ? progpath : "dani-comp");
-                char *slash = strrchr(sibling, '/');
-                if (slash) snprintf(slash + 1, sizeof(sibling) - (size_t)(slash + 1 - sibling), "dani-comp");
-                else snprintf(sibling, sizeof(sibling), "dani-comp");
-                char dim[16];
-                snprintf(dim, sizeof(dim), "%.2f", COMP_DIM);
-                const char *shadow = COMP_SHADOW ? "--shadow" : "--no-shadow";
-                const char *fade = COMP_FADE ? "--fade" : "--no-fade";
-                execl(sibling, "dani-comp", shadow, fade, "--dim", dim, NULL);
-                execlp("dani-comp", "dani-comp", shadow, fade, "--dim", dim, NULL);
-                _exit(1);
-            }
-        }
-    }
-
     rename_init(); /* self-pipe for async ws_rename results */
     int xfd = ConnectionNumber(dpy);
     int rfd = rename_fd();
     int select_errs = 0;
+
+    /* ---- wheel-volume coalescing ----
+     * A fast flick queues several Button4/5 events; spawning one amixer
+     * per notch (old behavior) forks a storm and races the setters. Instead
+     * accumulate the signed % and flush ONE command (k_vol_delta) once the
+     * burst quiets down, then paint an optimistic bar right away while the
+     * next 1s tick reconciles with the real sampled value. */
+    static int vol_pend = 0;          /* accumulated %, signed; 0 = idle */
+    static long long vol_due_ms = 0;  /* CLOCK_MONOTONIC ms when flush is due */
+    enum { VOL_STEP = 5, VOL_FLUSH_MS = 60 };
     for (;;) {
         while (!XPending(dpy)) {
-            /* 1s tick for clock */
+            /* 1s tick for clock; shorter sleep while a vol batch is due */
             fd_set rfds; FD_ZERO(&rfds); FD_SET(xfd, &rfds);
             int nfds = xfd + 1;
             if (rfd >= 0) { FD_SET(rfd, &rfds); if (rfd + 1 > nfds) nfds = rfd + 1; }
-            struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+            struct timeval tv;
+            if (vol_pend) {
+                long long rem = vol_due_ms - ms_now();
+                if (rem < 0) rem = 0;
+                tv.tv_sec = rem / 1000; tv.tv_usec = (long)(rem % 1000) * 1000;
+            } else { tv.tv_sec = 1; tv.tv_usec = 0; }
             int ret = select(nfds, &rfds, NULL, NULL, &tv);
             if (ret < 0) {
                 if (errno == EINTR) continue;
@@ -399,7 +455,15 @@ int main(int argc, char **argv) {
                 break; /* fall through to blocking XNextEvent */
             }
             select_errs = 0;
-            if (ret == 0) { sys_vol_update(); tray_poll(); drawbar(); }
+            if (ret == 0) {
+                sys_vol_update(); tray_poll();
+                if (vol_pend && ms_now() >= vol_due_ms) {
+                    int d = vol_pend; vol_pend = 0;
+                    k_vol_delta(d);       /* one spawn for the whole batch */
+                    sys_vol_adjust(d);    /* optimistic bar, reconciled next tick */
+                }
+                drawbar();
+            }
             else {
                 if (rfd >= 0 && FD_ISSET(rfd, &rfds)) rename_poll();
                 if (!XPending(dpy)) continue; /* rename-only wakeup, no X events */
@@ -603,11 +667,14 @@ int main(int argc, char **argv) {
              * cửa sổ. */
             if (e->mode != NotifyNormal || e->detail == NotifyInferior) break;
             if (hover_locked(e)) break;
+            if (FOCUS_MODE == 1) break; /* focus=click: no hover focus */
             last_evtime = e->time; /* hover focus uses its own crossing time */
             /* hover/sloppy focus must not restack: auto-raise here would
              * lift a big floating window over a nested small one as the
              * pointer crosses it, making the small one unreachable.
-             * Mod+click/drag and the keyboard still raise explicitly. */
+             * Explicit actions still raise: Mod+click/drag, keys, and
+             * plain clicks on floats (observed via XI2 raw events in
+             * xi2_raw_click, which never touches the app's press). */
             if (c && c != sel && c->ws == curws) focus_noraise(c);
             break;
         }
@@ -688,16 +755,24 @@ int main(int argc, char **argv) {
                  * bấm trượt chỗ khác = no-op (trước đây phải/trái bấm đâu cũng mute) */
                 int on_vol = (vol_hit_x0 >= 0 && e->x >= vol_hit_x0 && e->x <= vol_hit_x1);
                 /* scroll over ws cells cycles workspaces (wraps);
-                 * scroll anywhere else = volume (old behavior) */
+                 * scroll anywhere else = volume, coalesced: notches are
+                 * accumulated and applied in ONE backend call once the
+                 * burst quiets down (see vol_pend flush in the select
+                 * loop) — a fast flick no longer forks per queued event */
                 if (e->button == Button4) {
                     if (ws_hit((int)e->x) >= 0) view((curws - 1 + NWS) % NWS);
-                    else k_vol_up(0);
+                    else { vol_pend += VOL_STEP; vol_due_ms = ms_now() + VOL_FLUSH_MS; }
                 } else if (e->button == Button5) {
                     if (ws_hit((int)e->x) >= 0) view((curws + 1) % NWS);
-                    else k_vol_down(0);
+                    else { vol_pend -= VOL_STEP; vol_due_ms = ms_now() + VOL_FLUSH_MS; }
                 }
                 else if (e->button == Button2 || e->button == Button3) {
-                    if (on_vol) k_vol_mute(0); /* mid/right: mute */
+                    if (on_vol) {
+                        if (e->button == Button3) { /* phải: mở pavucontrol */
+                            char *pa[] = { "pavucontrol", NULL };
+                            spawn(pa);
+                        } else k_vol_mute(0); /* giữa: mute */
+                    }
                     else bar_task_click(e->x, e->button, e->time); /* mid: close task */
                 }
                 else {
@@ -722,7 +797,10 @@ int main(int argc, char **argv) {
                 break;
             } else {
                 /* grabbed presses report window == client; plain clicks
-                 * propagate from root with subwindow == client */
+                 * propagate from root with subwindow == client. Plain
+                 * clicks on floating windows are observed via XI2 raw
+                 * events instead (see xi_raw_click()), so the app keeps
+                 * every button event untouched. */
                 Client *c = e->window == root ? find(e->subwindow) : find(e->window);
                 if (c && c->ws == curws) {
                     focus(c);
@@ -744,6 +822,19 @@ int main(int argc, char **argv) {
         case ButtonRelease: {
             XButtonEvent *e = &ev.xbutton;
             if (drag.win != None) drag_end(e->x_root, e->y_root);
+            break;
+        }
+        case GenericEvent: {
+            /* XI2 raw button press (broadcast, app untouched):
+             * click-to-raise for floating windows. */
+            XGenericEventCookie *cook = &ev.xcookie;
+            if (cook->extension == xi2_opcode &&
+                cook->evtype == XI_RawButtonPress &&
+                XGetEventData(dpy, cook)) {
+                XIRawEvent *re = (XIRawEvent *)cook->data;
+                xi2_raw_click(re->detail);
+                XFreeEventData(dpy, cook);
+            }
             break;
         }
         case FocusIn: {

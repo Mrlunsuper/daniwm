@@ -11,10 +11,23 @@ CFLAGS  += -fstack-protector-strong -fPIE
 CFLAGS  += -Wformat=2 -Wformat-security
 CFLAGS  += $(shell pkg-config --cflags xft 2>/dev/null)
 CFLAGS  += -MMD -MP
-LDFLAGS ?= -lX11 -lXinerama -lXrandr
+LDFLAGS ?= -lX11 -lXi -lXinerama -lXrandr
 LDFLAGS += $(shell pkg-config --libs xft 2>/dev/null)
 LDFLAGS += -pie -Wl,-z,relro,-z,now
-COMP_LDFLAGS = -lX11 -lXcomposite -lXdamage -lXfixes -lXrender -lXext -pie -Wl,-z,relro,-z,now
+
+# XPresent (hardware vsync) cho dani-comp: ưu tiên header hệ thống, kế đến
+# dev/ (vendored cho máy thiếu libXpresent-devel), không có thì build thiếu
+# XPresent -> dani-comp tự fallback XCopyArea (xem WITH_XPRESENT trong comp.c).
+COMP_CFLAGS =
+COMP_XPRESENT_LIBS =
+ifneq ($(wildcard /usr/include/X11/extensions/Xpresent.h),)
+COMP_CFLAGS += -DWITH_XPRESENT
+COMP_XPRESENT_LIBS = -lXpresent
+else ifneq ($(wildcard dev/include/X11/extensions/Xpresent.h),)
+COMP_CFLAGS += -DWITH_XPRESENT -Idev/include
+COMP_XPRESENT_LIBS = -Ldev/lib -lXpresent
+endif
+COMP_LDFLAGS = -lX11 -lXcomposite -lXdamage -lXfixes -lXrender -lXext $(COMP_XPRESENT_LIBS) -pie -Wl,-z,relro,-z,now
 # gcc nix không thấy header/lib hệ thống và linker nix bỏ qua RUNPATH +
 # cache hệ thống -> binary link xong vẫn "cannot open shared object" lúc
 # chạy. Vá ở đây cho build chính (với gcc hệ thống thì vô hiệu).
@@ -34,6 +47,14 @@ CFLAGS += $(SYS_CFLAGS)
 LDFLAGS += $(SYS_LDFLAGS)
 COMP_LDFLAGS += $(SYS_LDFLAGS)
 
+# cairo (real PNG app icons for dani-run, rofi-style): auto-detect; when
+# missing, dani-run falls back to Nerd glyphs / first letters (like XPresent).
+CAIRO_LIBS =
+ifneq ($(shell pkg-config --exists cairo && echo yes),)
+CFLAGS += -DHAVE_CAIRO $(shell pkg-config --cflags cairo)
+CAIRO_LIBS = $(shell pkg-config --libs cairo)
+endif
+
 SRCS = src/state.c src/monitor.c src/sysmon.c src/bar.c src/ewmh.c \
        src/layout.c src/client.c src/mouse.c src/keys.c src/config.c src/tray.c src/rename.c src/xerr.c src/main.c
 OBJS = $(SRCS:.c=.o)
@@ -44,10 +65,13 @@ daniwm: $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 dani-run: src/run.o
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(CAIRO_LIBS) -lm
 
 dani-comp: src/comp.o
 	$(CC) $(CFLAGS) -o $@ $^ $(COMP_LDFLAGS)
+
+src/comp.o: src/comp.c
+	$(CC) $(CFLAGS) $(COMP_CFLAGS) -c -o $@ $<
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -69,8 +93,11 @@ test/menu-helper: test/menu-helper.c
 test/dialog-helper: test/dialog-helper.c
 	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11 $(SYS_LDFLAGS)
 
+test/float-click-helper: test/float-click-helper.c
+	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11 $(SYS_LDFLAGS)
+
 check: daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper \
-       test/menu-helper test/dialog-helper
+       test/menu-helper test/dialog-helper test/float-click-helper
 	./test/run-all.sh
 
 install: daniwm dani-comp dani-run install-examples
@@ -111,6 +138,6 @@ uninstall:
 	rm -f $(DESTDIR)$(EXAMPLEDIR)/config.example $(DESTDIR)$(EXAMPLEDIR)/run.config.example $(DESTDIR)$(EXAMPLEDIR)/autostart.sh.example
 
 clean:
-	rm -f daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper test/menu-helper test/dialog-helper src/*.o src/*.d
+	rm -f daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper test/menu-helper test/dialog-helper test/float-click-helper src/*.o src/*.d
 
 .PHONY: all clean check install install-examples install-user uninstall

@@ -253,7 +253,7 @@ void config_defaults(void) {
     free(font_name);
     font_name = xstrdup("JetBrainsMono Nerd Font Mono:size=10");
     bar_on = 1; gaps_on = 1; gap_outer = 10; gap_inner = 8;
-    COMP_ON = 0; COMP_SHADOW = 1; COMP_FADE = 1; COMP_DIM = 0.92f;
+    FOCUS_MODE = 0;
     def_mfact = 0.55f; def_nmaster = 1;
     set_cmd(&termcmd, "xterm");
     set_cmd(&menucmd, "dmenu_run");
@@ -400,6 +400,11 @@ static void parse_scalar(char *key, char *val) {
         else fprintf(stderr, "daniwm: bad tray_gap '%s' (want 0..32)\n", val);
     } else if (!strcmp(key, "bar_on")) {
         if (parse_bool(val, &b)) bar_on = b;
+    } else if (!strcmp(key, "focus")) {
+        if (!strcasecmp(val, "hover")) FOCUS_MODE = 0;
+        else if (!strcasecmp(val, "click")) FOCUS_MODE = 1;
+        else if (!strcasecmp(val, "both")) FOCUS_MODE = 2;
+        else fprintf(stderr, "daniwm: bad focus '%s' (want hover|click|both)\n", val);
     } else if (!strcmp(key, "gaps_on")) {
         if (parse_bool(val, &b)) gaps_on = b;
 
@@ -422,16 +427,6 @@ static void parse_scalar(char *key, char *val) {
     } else if (!strcmp(key, "rename_cmd") || !strcmp(key, "rename")) {
         char *dup = xstrdup(val);
         if (dup) { free(RENAME_CMD); RENAME_CMD = dup; }
-    } else if (!strcmp(key, "compositor")) {
-        if (parse_bool(val, &b)) COMP_ON = b;
-    } else if (!strcmp(key, "shadow")) {
-        if (parse_bool(val, &b)) COMP_SHADOW = b;
-    } else if (!strcmp(key, "fade")) {
-        if (parse_bool(val, &b)) COMP_FADE = b;
-    } else if (!strcmp(key, "inactive_dim")) {
-        f = strtof(val, NULL);
-        if (f >= 0.5f && f <= 1.0f) COMP_DIM = f;
-        else fprintf(stderr, "daniwm: bad inactive_dim '%s' (want 0.5..1.0)\n", val);
     } else if (!strcmp(key, "term")) {
         set_cmd(&termcmd, val);
     } else if (!strcmp(key, "menu")) {
@@ -710,9 +705,9 @@ void load_config(const char *path) {
             strcmp(k, "ico_mem") && strcmp(k, "ico_bat") && strcmp(k, "ico_vol") &&
             strcmp(k, "ico_mute") && strcmp(k, "ico_clk") && strcmp(k, "bar_pad_l") &&
             strcmp(k, "bar_pad_r") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "bar_ws_pad") && strcmp(k, "ws_pad") && strcmp(k, "tray") && strcmp(k, "tray_gap") && strcmp(k, "tray_pad") &&
-            strcmp(k, "tray_spacing") && strcmp(k, "tray_icons_gap") && strcmp(k, "bar_on") && strcmp(k, "gaps_on") &&
-            strcmp(k, "gap_outer") && strcmp(k, "gap_inner") && strcmp(k, "compositor") &&
-            strcmp(k, "shadow") && strcmp(k, "fade") && strcmp(k, "inactive_dim") && strcmp(k, "mfact") &&
+            strcmp(k, "tray_spacing") && strcmp(k, "tray_icons_gap") && strcmp(k, "bar_on") && strcmp(k, "focus") && strcmp(k, "gaps_on") &&
+            strcmp(k, "gap_outer") && strcmp(k, "gap_inner") &&
+            strcmp(k, "mfact") &&
             strcmp(k, "nmaster") && strcmp(k, "workspaces") && strcmp(k, "rename_cmd") &&
             strcmp(k, "rename") && strcmp(k, "ws_names") &&
             strcmp(k, "wsnames") && strcmp(k, "workspace_names") &&

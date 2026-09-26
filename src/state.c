@@ -41,6 +41,7 @@ int BAR_WS_PAD = 12;
 float ui_scale = 1.0f;
 char *font_name = NULL;
 int bar_on = 1;
+int FOCUS_MODE = 0;
 int gaps_on = 1;
 int gap_outer = 10;
 int gap_inner = 8;
@@ -51,11 +52,6 @@ char *ws_names[MAXWS] = { 0 };
 char *RENAME_CMD = NULL;
 char *ws_icons[MAXWS] = { 0 };
 char progpath[1024] = "";
-
-int COMP_ON = 0;
-int COMP_SHADOW = 1;
-int COMP_FADE = 1;
-float COMP_DIM = 0.92f;
 
 Display *dpy;
 Window root, bar, checkwin;

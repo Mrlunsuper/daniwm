@@ -62,6 +62,13 @@ Task buttons (one per window on this workspace, Awesome-style): left-click focus
 middle-click closes. Urgent windows glow in the urgent color.
 Scroll over workspaces = prev/next ws (wraps), scroll elsewhere = volume up/down, left-click on the volume module = mute toggle
 (middle/right-click anywhere on the bar also mutes)
+
+Pointer focus & stacking: hover (sloppy) focuses — moving the pointer over a window
+activates it without restacking (a small floating window nested inside a big one stays
+reachable). Plain clicks never get stolen from apps: the WM observes them via XI2 raw
+events, so a click on a floating window brings it to the front (click-to-raise) while
+the app still receives every button event (press and release) untouched. `Super+click`
+still does move/resize drags, and `Super+j/k` cycle focus with raise.
 (backend auto: `amixer` → `wpctl` → `pactl`; laptop `XF86Audio*` keys work out of the box).
 Bar text is UTF-8 via Xft with per-glyph fallback (Vietnamese, symbols).
 Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL DD/MM HH:MM`, custom `·` separators; falls back to `C/M/B/V` letters without a Nerd Font; low battery/MUTE/CPU≥80%/MEM≥80% in the urgent color; battery/volume hidden if unavailable, volume cached 2s; battery/volume icons change with level/charge/mute; layout shows a tile/monocle icon + window count, no brackets)
@@ -74,7 +81,7 @@ Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL DD/MM HH:MM`, custom 
 - **Rules**: config `rule` lines match class/title substring → float / send to ws (default: scratchpad, Gimp, mpv float).
 - **Scratchpad**: `Super+s` toggles `xterm -name scratchpad` (2/3 centered float; first press spawns it). A custom `scratch =` command must produce a window with `scratchpad` in its class/name (e.g. `xterm -name scratchpad`, `alacritty --class scratchpad`); otherwise toggle keeps spawning instead of toggling.
 - **Autostart**: runs `~/.config/daniwm/autostart.sh` if executable.
-- **Compositor** (`dani-comp`, a picom alternative if you like): 3-layer drop shadows, 160ms fade-in,
+- **Compositor** (`dani-comp`, a picom alternative if you like): soft 7-layer drop shadow (picom-style), 160ms fade-in,
   inactive window dim (`inactive_dim`, default 0.92), honors
   `_NET_WM_WINDOW_OPACITY` (works with `transset`), advertises `_NET_WM_CM_Sn`
   (yields if picom is already running). Run `dani-comp [--no-shadow] [--no-fade]
@@ -85,14 +92,16 @@ Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL DD/MM HH:MM`, custom 
   only), shaped windows clipped on the back buffer, no real vsync.
 - **Launcher** (`dani-run`, a rofi replacement): `dani-run` = vertical fuzzy drun list
   (scans `/usr/share/applications` + `~/.local/share/applications`, wraps `Terminal=true`
-  in `${TERMINAL:-alacritty} -e`, fuzzy sort + history at `~/.cache/dani-run/history`);
+  in `${TERMINAL:-alacritty} -e`, fuzzy sort + history at `~/.cache/dani-run/history`, and
+  shows each app's real icon from the icon theme — PNG via cairo when available, Nerd
+  glyph/first-letter fallback otherwise; `drun_icons = 0` turns the icons off);
   `dani-run --fav` = favorite-app icon grid (filterable); `dani-run --power` =
   power-menu grid (reuses the fav UI); `dani-run --calc` = calculator
   (`+ - * / % ^`, parens, `sqrt/sin/cos/tan/exp/abs/ln/log`, `pi`/`e`;
   `Enter` copies the result to clipboard + prints to stdout). Config at `~/.config/daniwm/run.config`
   (symlinked to the repo, `app = icon;name;cmd`, `power = ...`, empty icon → first
   letter; `cols`/`lines`/`font`; the first `app`/`power` line clears defaults). Keys:
-  `↑↓←→`/`Ctrl+hjkl` (+ bare `hjkl` when input is empty) to move, `Enter` to run
+  `↑↓←→`/`Ctrl+hjkl` to move, `Enter` to run
   (unmatched drun input runs as a command), `Esc` to quit, mouse scroll = prev/next.
   Note this repo's own config uses a full `bind =` list (e.g. `mod+d` = menu,
   `mod+Shift+q` = kill) + `bind+` to add (`mod+a` = fav,
@@ -201,7 +210,11 @@ Needs `xorg-x11-server-Xvfb` (or unpack its rpm userspace-side if no sudo).
 
 ```sh
 ./test/verify.sh     # one suite
-./test/run-all.sh    # all 9 suites: verify config kill mouse workspaces strut randr tray restart
+./test/run-all.sh    # all suites: verify config kill mouse workspaces strut randr tray
+#                    # restart tasklist comp nested-float click-delivery click-raise-float
+#                    # focus-steal ghost-unmap wm-state focus-model noinput takefocus
+#                    # remap-steal xerr direct-state urgency ws-storm kill-stamp
+#                    # clamp-float reload-hidden supported
 ```
 
 Dựng Xvfb 1280x800, spawn 3 xterm qua `Super+Return`, assert geometry bằng

@@ -15,7 +15,7 @@ cleanup() {
     kill $XVFB 2>/dev/null
     rm -rf "$H" "$TDIR/xerr-test"
 }
-trap 'cleanup; exit $fail' EXIT INT TERM
+trap 'cleanup' EXIT INT TERM
 XVFB=0
 
 Xvfb $D -screen 0 1280x800x24 &

@@ -12,6 +12,7 @@ extern unsigned nkeys;
 void k_vol_up(int unused);
 void k_vol_down(int unused);
 void k_vol_mute(int unused);
+void k_vol_delta(int delta);
 
 void grabkeys(void);
 void add_default_keys(void);

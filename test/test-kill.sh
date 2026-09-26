@@ -21,7 +21,7 @@ alive() { # alive <stage>
     if kill -0 $WM 2>/dev/null; then echo "PASS: wm alive ($1)"; else echo "FAIL: wm dead ($1)"; fail=1; fi
 }
 
-trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$H"; exit $fail' EXIT INT TERM
+trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$H"' EXIT INT TERM
 
 Xvfb $D -screen 0 1280x800x24 &
 XVFB=$!

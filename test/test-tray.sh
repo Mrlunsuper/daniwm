@@ -24,7 +24,7 @@ assert_contains() {
 }
 
 ICON=""; ICONOUT=""
-trap 'kill $ICON $WM $XVFB 2>/dev/null; rm -rf "$H" "$ICONOUT"; exit $fail' EXIT INT TERM
+trap 'kill $ICON $WM $XVFB 2>/dev/null; rm -rf "$H" "$ICONOUT"' EXIT INT TERM
 
 ${CC:-gcc} ${CFLAGS:--O2} -o "$TDIR/tray-icon-helper" "$TDIR/tray-icon-helper.c" -lX11 || { echo "FAIL: build helper"; exit 1; }
 

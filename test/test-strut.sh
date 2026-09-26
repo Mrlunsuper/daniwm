@@ -34,7 +34,7 @@ geom() {
 }
 
 DOCK=""
-trap 'kill $DOCK $WM $XVFB 2>/dev/null; rm -rf "$H"; exit $fail' EXIT INT TERM
+trap 'kill $DOCK $WM $XVFB 2>/dev/null; rm -rf "$H"' EXIT INT TERM
 
 Xvfb $D -screen 0 1280x800x24 &
 XVFB=$!

@@ -13,7 +13,7 @@ cleanup() {
     kill $WM $XVFB 2>/dev/null
     rm -rf "$H"
 }
-trap 'cleanup; exit $fail' EXIT INT TERM
+trap 'cleanup' EXIT INT TERM
 WM=0; XVFB=0
 
 Xvfb $D -screen 0 1280x800x24 &

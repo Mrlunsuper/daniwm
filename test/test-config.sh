@@ -27,7 +27,7 @@ geom() { # geom <winid> -> "x w"
     xdotool getwindowgeometry --shell "$1" 2>/dev/null | awk -F= '/^X=/{x=$2} /^WIDTH=/{w=$2} END{print x+0, w+0}'
 }
 
-trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$H"; exit $fail' EXIT INT TERM
+trap 'kill $WM $XVFB 2>/dev/null; rm -rf "$H"' EXIT INT TERM
 
 Xvfb $D -screen 0 1280x800x24 &
 XVFB=$!
