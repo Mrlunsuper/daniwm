@@ -119,6 +119,7 @@ void ws_set_name(int idx, const char *val) {
         unsigned char lead = (unsigned char)tmp[m - 1];
         size_t want = (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : 4;
         if (n - (m - 1) < want) m--;
+        else m = n; /* trailing char is complete: keep it whole */
     }
     tmp[m] = 0;
     if (!tmp[0]) return;
@@ -211,6 +212,7 @@ static int parse_ws_icon_key(const char *key, const char *val) {
             unsigned char lead = (unsigned char)tmp[m - 1];
             size_t want = (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : 4;
             if (n - (m - 1) < want) m--;
+            else m = n; /* trailing char is complete: keep it whole */
         }
         tmp[m] = 0;
     }
