@@ -103,6 +103,17 @@ rule = slack:*:tile:1               # tự mở vào ws2 (bỏ nếu không dùn
 rule = brave-browser:*:tile:3
 rule = thunar:*:float:*
 rule = helium:*:tile:3
+rule = helium:Sign in:float:*
+rule = WCVF:*:tile:2
+rule = WCVP:*:tile:2
+rule = WCVE:*:tile:2
+rule = WCVSU:*:tile:2
+rule = WCVStripe:*:tile:2
+rule = SaveTo:*:tile:2
+rule = WWP:*:tile:2
+rule = WWPP:*:tile:2
+rule = WWQ:*:tile:2
+rule = WPAY:*:tile:2
 bind+ = mod+c:exec dani-run --calc
 # ---------- bảng phím ----------
 # focus & cửa sổ
@@ -137,7 +148,8 @@ bind = mod+i:nmaster_inc
 bind = mod+g:gap
 bind = mod+minus:gap_dec
 bind = mod+equal:gap_inc
-bind = mod+b:bar
+bind = mod+shift+b:bar
+bind = mod+b:exec sh -c "wmctrl -x -a helium.Helium || helium"
 
 # workspace 1..7
 bind = mod+1:ws1
