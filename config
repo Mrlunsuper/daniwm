@@ -176,3 +176,6 @@ rule = telegram:*:float:*
 rule = local:*:float:7
 rule = terminal64:*:float:*
 rule = wine:*:float:*
+rule = mt5setup:*:float:*
+rule = *:MetaTrader:float:*
+rule = *:Wine Desktop:float:*
