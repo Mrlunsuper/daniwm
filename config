@@ -114,6 +114,7 @@ rule = WWP:*:tile:2
 rule = WWPP:*:tile:2
 rule = WWQ:*:tile:2
 rule = WPAY:*:tile:2
+rule = WWOF:*:tile:2
 bind+ = mod+c:exec dani-run --calc
 # ---------- bảng phím ----------
 # focus & cửa sổ
