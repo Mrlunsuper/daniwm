@@ -106,7 +106,12 @@ static void k_nmasterdec(int unused){ (void)unused; if (NMASTER > 1) NMASTER--; 
 static void k_nmasterinc(int unused){ (void)unused; if (NMASTER < 8) NMASTER++; arrange(); } /* cap 8, like config */
 static void k_gap(int unused)       { (void)unused; gaps_on = !gaps_on; arrange(); }
 static void k_gapdec(int unused)    { (void)unused; gap_outer = gap_outer >= 2 ? gap_outer - 2 : 0; if (gap_inner > 0) gap_inner -= 1; arrange(); }
-static void k_gapinc(int unused)    { (void)unused; gap_outer += 2; gap_inner += 1; arrange(); }
+static void k_gapinc(int unused) { /* capped like the config range (#8) */
+    (void)unused;
+    if (gap_outer < 64) gap_outer += 2;
+    if (gap_inner < 64) gap_inner += 1;
+    arrange();
+}
 static void k_bar(int unused) {
     (void)unused;
     bar_on = !bar_on;

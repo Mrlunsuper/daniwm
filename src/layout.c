@@ -123,10 +123,11 @@ void monocle_mon(int m) {
         if (c->ws != curws || c->mon != m || c->floating || c->fullscreen) continue;
         if (c == show) {
             int g = gaps_on ? S(gap_inner) : 0;
+            int ww = aw - 2 * S(BORDER) - g, wh = ah - 2 * S(BORDER) - g;
+            if (ww < 1) ww = 1; /* never wrap to a huge unsigned size (#8) */
+            if (wh < 1) wh = 1;
             XMoveResizeWindow(dpy, c->win,
-                ax + g / 2, ay + g / 2,
-                (unsigned)(aw - 2 * S(BORDER) - g),
-                (unsigned)(ah - 2 * S(BORDER) - g));
+                ax + g / 2, ay + g / 2, (unsigned)ww, (unsigned)wh);
             XMapWindow(dpy, c->win);
             if (c->hidden) { c->hidden = 0; ewmh_update_state(c); }
         } else {
