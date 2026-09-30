@@ -486,7 +486,7 @@ int main(int argc, char **argv) {
             }
             select_errs = 0;
             if (ret == 0) {
-                sys_vol_update(); tray_poll();
+                sys_vol_update(); tray_poll(); rename_tick();
                 if (vol_pend && ms_now() >= vol_due_ms) {
                     int d = vol_pend; vol_pend = 0;
                     k_vol_delta(d);       /* one spawn for the whole batch */

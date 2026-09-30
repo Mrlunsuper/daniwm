@@ -1,10 +1,12 @@
 #include "rename.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "bar.h"
@@ -22,6 +24,9 @@
 static int rpipe[2] = { -1, -1 };
 static int pending_idx = -1;
 static char pending_file[256] = "";
+static pid_t pending_pid = -1;
+static time_t pending_since;
+#define RENAME_MAX_AGE 300 /* s: a silent child is declared dead */
 
 static void on_sigusr1(int sig) {
     (void)sig;
@@ -49,6 +54,22 @@ int rename_fd(void) {
     return rpipe[0];
 }
 
+/* 1s tick watchdog (audit-0930 #9): a child that dies without finishing
+ * its sh line (kill -9) never sends SIGUSR1, so pending_idx would stay
+ * latched and every later rename would print "already in progress".
+ * Reap it from the tick when the process is gone or way too old. */
+void rename_tick(void) {
+    if (pending_idx < 0) return;
+    if (pending_pid > 0) {
+        if (kill(pending_pid, 0) == -1 && errno == ESRCH) goto reap;
+        if (time(NULL) - pending_since < RENAME_MAX_AGE) return;
+    }
+reap:
+    fprintf(stderr, "daniwm: rename child %d lost, clearing pending\n",
+        (int)pending_pid);
+    on_sigusr1(0);  /* wake self through the normal poll path */
+}
+
 static void rename_path(char *out, size_t n) {
     const char *xdg = getenv("XDG_CACHE_HOME");
     const char *home = getenv("HOME");
@@ -73,6 +94,8 @@ void k_wsrename(int unused) {
     snprintf(pending_file, sizeof(pending_file), "%s", file);
     pid_t pid = fork();
     if (pid == -1) { perror("daniwm: fork rename"); pending_idx = -1; return; }
+    pending_pid = pid;
+    pending_since = time(NULL);
     if (pid == 0) {
         /* child: detached, no X, no pipe; prompt -> file, then wake parent */
         if (rpipe[0] >= 0) close(rpipe[0]);
@@ -116,6 +139,7 @@ void rename_poll(void) {
     if (pending_idx < 0) return;
     int idx = pending_idx;
     pending_idx = -1;
+    pending_pid = -1;
     FILE *f = fopen(pending_file, "r");
     if (!f) return; /* prompt cancelled: keep the old name */
     char buf[128];
