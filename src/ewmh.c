@@ -244,7 +244,7 @@ void setfullscreen(Client *c, int fs) {
             XMoveResizeWindow(dpy, c->win, c->fx, c->fy, (unsigned)c->fw, (unsigned)c->fh);
     }
     arrange();
-    focus(c);
+    if (c->ws == curws) focus(c); /* off-ws window is unmapped (#5) */
 }
 
 /* ---- docks + EWMH struts ---- */
