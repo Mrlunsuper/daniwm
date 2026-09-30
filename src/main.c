@@ -126,9 +126,9 @@ static int hover_locked(const XCrossingEvent *e) {
  * On XI_RawButtonPress we ask the pointer for the top-level window under
  * it (XQueryPointer.child is exactly the X11 click target) and, if it is
  * a floating/fullscreen client on the current workspace, focus it —
- * focus() raises floats (focus_ex raise=1). Tiled windows are skipped:
- * they never stack. Mod+click is skipped too (that is the drag grab
- * path). The app's click is delivered untouched in all cases. */
+ * focus() raises floats (focus_ex raise=1). Tiled windows never stack:
+ * they only get focus_noraise() when focus = click|both. Mod+click is
+ * skipped too (that is the drag grab path). The app's click is delivered untouched in all cases. */
 static int xi2_ok = 0;
 static int xi2_opcode = 0;
 static void xi2_init(void) {
@@ -169,7 +169,11 @@ static void xi2_raw_click(int button) {
     if (!child || m & MOD) return;           /* Mod+aButton = drag grab path */
     Client *c = find(child);
     if (!c || c->ws != curws || c->ws < 0 || c->ws >= NWS) return;
-    if (!c->floating && !c->fullscreen) return; /* tiled: no stacking to fix */
+    if (!c->floating && !c->fullscreen) {
+        /* tiled: nothing to raise, but click-focus must move focus (#2) */
+        if (FOCUS_MODE != 0 && c != sel) focus_noraise(c);
+        return;
+    }
     focus(c);                                /* raises floats (raise=1) */
 }
 
@@ -834,6 +838,7 @@ int main(int argc, char **argv) {
                 cook->evtype == XI_RawButtonPress &&
                 XGetEventData(dpy, cook)) {
                 XIRawEvent *re = (XIRawEvent *)cook->data;
+                last_evtime = re->time;
                 xi2_raw_click(re->detail);
                 XFreeEventData(dpy, cook);
             }
