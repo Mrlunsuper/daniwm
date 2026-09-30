@@ -231,6 +231,20 @@ static int is_sticky(Window w) {
     return sticky;
 }
 
+/* ICCCM WM_STATE: -1 = no property */
+static long read_wm_state(Window w) {
+    Atom rt; int rf; unsigned long n, extra;
+    unsigned char *data = NULL;
+    long st = -1;
+    if (A_WM_STATE == None) return -1;
+    if (XGetWindowProperty(dpy, w, A_WM_STATE, 0, 2, False, A_WM_STATE,
+        &rt, &rf, &n, &extra, &data) == Success && data) {
+        if (rf == 32 && n >= 1) st = *(long *)data;
+        XFree(data);
+    }
+    return st;
+}
+
 /* systemd/D-Bus env propagation (fix portal + notifications).
  * WM custom mà quên bước này thì systemd user services không thấy DISPLAY,
  * xdg-desktop-portal D-Bus activate fail. Fork non-blocking, auto-reap
@@ -356,6 +370,9 @@ int main(int argc, char **argv) {
             /* Hidden window carrying our desktop hint was managed before the
              * restart (lives on another workspace): adopt it back. Windows
              * without the hint are foreign/withdrawn helpers — leave them. */
+            /* withdrawn (or never managed) windows stay put (#4) */
+            long wst = read_wm_state(kids[i]);
+            if (wst != NormalState && wst != IconicState) continue;
             /* read before manage(): it rewrites _NET_WM_DESKTOP to curws */
             int sticky = is_sticky(kids[i]);
             if (ewmh_read_desktop(kids[i]) < 0 && !sticky) continue;

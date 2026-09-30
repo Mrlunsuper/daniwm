@@ -575,7 +575,11 @@ void unmanage(Window w) {
         XUngrabPointer(dpy, CurrentTime);
     }
     detach(c);
+    /* window may already be gone (DestroyNotify): trap logs BadWindow */
+    trap_errors(dpy);
     ewmh_set_wm_state(c, WithdrawnState);
+    XDeleteProperty(dpy, w, A_NET_WM_DESKTOP); /* EWMH: WM removes on withdraw */
+    untrap_errors(dpy);
     free(c);
     ewmh_client_list();
     arrange();
