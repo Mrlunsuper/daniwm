@@ -141,7 +141,17 @@ void monocle_mon(int m) {
 void monocle(void) {
     for (int m = 0; m < nmons; m++) monocle_mon(m);
 }
+/* Coalesced arrange (audit-0930 #7): client-triggered paths (Configure-
+ * Request, known remap) only mark dirty; the event loop flushes once the
+ * queue drains, so a request storm costs one relayout, not one per event.
+ * A direct arrange() (user actions) cancels any pending one. */
+static int arrange_dirty;
+void arrange_later(void) { arrange_dirty = 1; }
+void arrange_flush(void) {
+    if (arrange_dirty) arrange();
+}
 void arrange(void) {
+    arrange_dirty = 0;
     if (LAYOUT == L_MONOCLE) monocle();
     else tile();
     for (int m = 0; m < nmons; m++) {

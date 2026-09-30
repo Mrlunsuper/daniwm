@@ -460,6 +460,7 @@ int main(int argc, char **argv) {
     static long long vol_due_ms = 0;  /* CLOCK_MONOTONIC ms when flush is due */
     enum { VOL_STEP = 5, VOL_FLUSH_MS = 60 };
     for (;;) {
+        if (!XPending(dpy)) arrange_flush(); /* queue drained: one relayout */
         while (!XPending(dpy)) {
             /* 1s tick for clock; shorter sleep while a vol batch is due */
             fd_set rfds; FD_ZERO(&rfds); FD_SET(xfd, &rfds);
@@ -527,7 +528,7 @@ int main(int argc, char **argv) {
                  * manage(), but a remapped helper must not yank focus or
                  * monocle visibility. Hover/pager decides focus. */
                 if (c->ws == curws && LAYOUT == L_TILE) XMapWindow(dpy, e->window);
-                arrange();
+                arrange_later();
                 ewmh_active();
             } else manage(e->window);
             hover_lock_arm();
@@ -648,7 +649,7 @@ int main(int argc, char **argv) {
                 wc.border_width = 0;
                 XConfigureWindow(dpy, e->window, (unsigned int)e->value_mask, &wc);
                 update_dock_strut(e->window);
-                arrange();
+                arrange_later();
                 break;
             }
             Client *c = find(e->window);
@@ -687,7 +688,7 @@ int main(int argc, char **argv) {
                     XSendEvent(dpy, e->window, False, StructureNotifyMask, &cn);
                 }
             }
-            if (c) arrange();
+            if (c) arrange_later();
             break;
         }
         case EnterNotify: {
