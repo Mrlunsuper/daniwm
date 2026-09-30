@@ -1,10 +1,14 @@
 #include "sysmon.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "state.h"
 
@@ -64,9 +68,11 @@ int sys_bat(char *chg, size_t n) { /* capacity %, chg="+"/"-"/" " */
     }
     return -1;
 }
-/* Volume: cached string, never blocks. The blocking sample runs only
- * from the 1s tick via sys_vol_update(); drawbar() just reads the cache.
- * First second after startup shows no volume until the first tick fills it.
+/* Volume: cached string, never blocks. Sampling runs as an async child
+ * job (pipe+fork, audit-0930 #6): sys_vol_update() starts it from the 1s
+ * tick, the main loop select()s on sys_vol_fd() and calls sys_vol_read()
+ * to collect output; a job older than VOL_JOB_TIMEOUT is SIGKILLed so a
+ * hung backend can never stall the event loop. drawbar() reads the cache.
  * Backend: amixer → wpctl (PipeWire) → pactl (Pulse), first success sticks
  * (vol_backend) so later ticks probe only one tool; total failure backs
  * off 30s. vol_set_cmd() picks the matching setter for keys/bar clicks. */
@@ -74,72 +80,126 @@ static int vol_backend = 0; /* 0=unknown, 1=amixer, 2=wpctl, 3=pactl */
 const char *sys_vol(void) { /* "40%" / "MUTE" / "" */
     return vol_cache[0] ? vol_cache : "";
 }
-static int vol_try_amixer(void) {
-    /* single amixer invocation: scan "amixer get Master" output in C
-     * instead of a 4-process pipeline (grep | head per 2s tick) */
-    FILE *p = popen("amixer get Master 2>/dev/null", "r");
+static int vol_parse_amixer(const char *buf) {
+    /* scan "amixer get Master" output in C instead of a grep pipeline */
     char pct[16] = "", st[16] = "";
-    char line[256];
-    if (!p) return 0;
-    while (fgets(line, sizeof(line), p)) {
-        /* percent: first "[NN%]" token on the line */
-        char *lb = strchr(line, '[');
-        while (lb) {
-            char *pc = strchr(lb, '%');
-            if (pc && pc == lb + 1 + strspn(lb + 1, "0123456789")) {
-                size_t nd = (size_t)(pc - (lb + 1));
-                if (nd > 0 && nd < sizeof(pct) - 1 && !pct[0]) {
-                    memcpy(pct, lb + 1, nd);
-                    pct[nd] = '%'; pct[nd + 1] = 0;
-                }
+    for (const char *lb = strchr(buf, '['); lb; lb = strchr(lb + 1, '[')) {
+        /* percent: first "[NN%]" token */
+        const char *pc = strchr(lb, '%');
+        if (pc && pc == lb + 1 + strspn(lb + 1, "0123456789")) {
+            size_t nd = (size_t)(pc - (lb + 1));
+            if (nd > 0 && nd < sizeof(pct) - 1 && !pct[0]) {
+                memcpy(pct, lb + 1, nd);
+                pct[nd] = '%'; pct[nd + 1] = 0;
             }
-            /* mute state: "[on]" / "[off]" token */
-            if (!strncmp(lb, "[on]", 4)) snprintf(st, sizeof(st), "on");
-            else if (!strncmp(lb, "[off]", 5)) snprintf(st, sizeof(st), "off");
-            lb = strchr(lb + 1, '[');
         }
+        /* mute state: "[on]" / "[off]" token */
+        if (!strncmp(lb, "[on]", 4)) snprintf(st, sizeof(st), "on");
+        else if (!strncmp(lb, "[off]", 5)) snprintf(st, sizeof(st), "off");
     }
-    pclose(p);
     if (!pct[0]) return 0;
-    char *e = strchr(pct, '%');
-    if (e) e[1] = 0;
-    if ((st[0] == 'o' && !strstr(st, "on")) || strstr(st, "off"))
-        snprintf(vol_cache, sizeof(vol_cache), "MUTE");
+    if (!strcmp(st, "off")) snprintf(vol_cache, sizeof(vol_cache), "MUTE");
     else snprintf(vol_cache, sizeof(vol_cache), "%.10s", pct);
     return 1;
 }
-static int vol_try_wpctl(void) {
+static int vol_parse_wpctl(const char *buf) {
     /* "Volume: 0.75" or "Volume: 0.75 [MUTED]" */
-    FILE *p = popen("wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null", "r");
-    char line[64];
-    if (!p) return 0;
-    if (!fgets(line, sizeof(line), p)) { pclose(p); return 0; }
-    pclose(p);
     float v = -1;
-    if (sscanf(line, "Volume: %f", &v) != 1 || v < 0) return 0;
-    if (strstr(line, "MUTED")) snprintf(vol_cache, sizeof(vol_cache), "MUTE");
+    if (sscanf(buf, "Volume: %f", &v) != 1 || v < 0) return 0;
+    if (strstr(buf, "MUTED")) snprintf(vol_cache, sizeof(vol_cache), "MUTE");
     else snprintf(vol_cache, sizeof(vol_cache), "%d%%", (int)(v * 100 + 0.5f));
     return 1;
 }
-static int vol_try_pactl(void) {
-    FILE *p = popen("pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null", "r");
-    char line[256];
-    int pct = -1;
-    if (!p) return 0;
-    while (fgets(line, sizeof(line), p)) {
-        char *pc = strchr(line, '%');
-        if (pc) { char *q = pc; while (q > line && isdigit((unsigned char)q[-1])) q--; pct = atoi(q); break; }
-    }
-    pclose(p);
-    if (pct < 0) return 0;
-    p = popen("pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null", "r");
-    if (p) {
-        if (fgets(line, sizeof(line), p) && strstr(line, "yes")) pct = -2;
-        pclose(p);
-    }
-    if (pct == -2) snprintf(vol_cache, sizeof(vol_cache), "MUTE");
-    else snprintf(vol_cache, sizeof(vol_cache), "%d%%", pct);
+static int vol_parse_pactl(const char *buf) {
+    /* get-sink-volume output, then get-sink-mute's "Mute: yes|no" */
+    const char *pc = strchr(buf, '%');
+    if (!pc) return 0;
+    const char *q = pc;
+    while (q > buf && isdigit((unsigned char)q[-1])) q--;
+    if (q == pc) return 0;
+    const char *m = strstr(buf, "Mute:");
+    if (m && strstr(m, "yes")) snprintf(vol_cache, sizeof(vol_cache), "MUTE");
+    else snprintf(vol_cache, sizeof(vol_cache), "%d%%", atoi(q));
     return 1;
+}
+static const char *const vol_cmds[4] = { NULL,
+    "exec amixer get Master 2>/dev/null",
+    "exec wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null",
+    "pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null; "
+    "pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null",
+};
+enum { VOL_JOB_TIMEOUT = 2 };
+static int vol_fd = -1;
+static pid_t vol_pid = -1;
+static time_t vol_started;
+static int vol_order[3], vol_try; /* candidate backends, index in progress */
+static char vol_buf[2048];
+static size_t vol_len;
+
+int sys_vol_fd(void) { return vol_fd; }
+
+static void vol_job_close(int killit) {
+    if (killit && vol_pid > 0) kill(-vol_pid, SIGKILL); /* whole group */
+    if (vol_fd >= 0) close(vol_fd);
+    vol_fd = -1;
+    vol_pid = -1; /* SIGCHLD = SIG_IGN: the kernel reaps it */
+}
+/* start the job for vol_order[vol_try]; 0 = could not spawn */
+static int vol_job_start(void) {
+    int pfd[2];
+    if (pipe(pfd) != 0) return 0;
+    pid_t pid = fork();
+    if (pid == -1) { close(pfd[0]); close(pfd[1]); return 0; }
+    if (pid == 0) {
+        if (dpy) close(ConnectionNumber(dpy));
+        setpgid(0, 0); /* timeout kill reaches grandchildren too */
+        signal(SIGCHLD, SIG_DFL);
+        close(pfd[0]);
+        dup2(pfd[1], STDOUT_FILENO);
+        if (pfd[1] != STDOUT_FILENO) close(pfd[1]);
+        execl("/bin/sh", "sh", "-c", vol_cmds[vol_order[vol_try]], (char *)NULL);
+        _exit(127);
+    }
+    setpgid(pid, pid); /* also here: no race with an early timeout kill */
+    close(pfd[1]);
+    fcntl(pfd[0], F_SETFD, FD_CLOEXEC);
+    fcntl(pfd[0], F_SETFL, O_NONBLOCK);
+    vol_fd = pfd[0];
+    vol_pid = pid;
+    vol_started = time(NULL);
+    vol_len = 0;
+    return 1;
+}
+/* current candidate failed: try the next one, or back off 30s */
+static void vol_job_next(void) {
+    while (++vol_try < 3)
+        if (vol_job_start()) return;
+    vol_cache[0] = 0; vol_backend = 0; vol_ts = time(NULL) + 30;
+}
+void sys_vol_read(void) {
+    if (vol_fd < 0) return;
+    for (;;) {
+        char tmp[512];
+        ssize_t r = read(vol_fd, tmp, sizeof(tmp));
+        if (r > 0) {
+            size_t room = sizeof(vol_buf) - 1 - vol_len;
+            size_t k = (size_t)r < room ? (size_t)r : room; /* drop overflow */
+            memcpy(vol_buf + vol_len, tmp, k);
+            vol_len += k;
+            continue;
+        }
+        if (r < 0 && errno == EINTR) continue;
+        if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        break; /* EOF or hard error: job done */
+    }
+    vol_job_close(0);
+    vol_buf[vol_len] = 0;
+    int b = vol_order[vol_try], ok;
+    ok = b == 1 ? vol_parse_amixer(vol_buf)
+       : b == 2 ? vol_parse_wpctl(vol_buf)
+       : vol_parse_pactl(vol_buf);
+    if (ok) { vol_backend = b; vol_ts = time(NULL) + 2; }
+    else vol_job_next();
 }
 /* Optimistic display: shift the cached % by delta so the bar tracks the
  * wheel in real time. Never blocks, never spawns; the next 1s tick
@@ -156,19 +216,19 @@ void sys_vol_adjust(int delta) {
 }
 void sys_vol_update(void) {
     time_t now = time(NULL);
-    int ok = 0;
+    if (vol_fd >= 0) {
+        if (now - vol_started < VOL_JOB_TIMEOUT) return;
+        vol_job_close(1); /* hung backend */
+        vol_job_next();
+        return;
+    }
     if (now < vol_ts) return;
     /* preferred backend first, then the rest */
-    if (vol_backend == 2) ok = vol_try_wpctl() ? 2 : 0;
-    else if (vol_backend == 3) ok = vol_try_pactl() ? 3 : 0;
-    else if (vol_backend == 1) ok = vol_try_amixer() ? 1 : 0;
-    if (!ok) {
-        if (vol_backend != 1 && vol_try_amixer()) ok = 1;
-        else if (vol_backend != 2 && vol_try_wpctl()) ok = 2;
-        else if (vol_backend != 3 && vol_try_pactl()) ok = 3;
-    }
-    if (ok) { vol_backend = ok; vol_ts = now + 2; }
-    else { vol_cache[0] = 0; vol_backend = 0; vol_ts = now + 30; }
+    int n = 0;
+    if (vol_backend) vol_order[n++] = vol_backend;
+    for (int b = 1; b <= 3; b++) if (b != vol_backend) vol_order[n++] = b;
+    vol_try = 0;
+    if (!vol_job_start()) vol_job_next();
 }
 char **vol_set_cmd(char **am, char **wp, char **pa) {
     return vol_backend == 2 ? wp : vol_backend == 3 ? pa : am;

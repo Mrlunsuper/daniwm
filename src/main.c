@@ -465,6 +465,8 @@ int main(int argc, char **argv) {
             fd_set rfds; FD_ZERO(&rfds); FD_SET(xfd, &rfds);
             int nfds = xfd + 1;
             if (rfd >= 0) { FD_SET(rfd, &rfds); if (rfd + 1 > nfds) nfds = rfd + 1; }
+            int vfd = sys_vol_fd();
+            if (vfd >= 0) { FD_SET(vfd, &rfds); if (vfd + 1 > nfds) nfds = vfd + 1; }
             struct timeval tv;
             if (vol_pend) {
                 long long rem = vol_due_ms - ms_now();
@@ -493,7 +495,11 @@ int main(int argc, char **argv) {
             }
             else {
                 if (rfd >= 0 && FD_ISSET(rfd, &rfds)) rename_poll();
-                if (!XPending(dpy)) continue; /* rename-only wakeup, no X events */
+                if (vfd >= 0 && FD_ISSET(vfd, &rfds)) {
+                    sys_vol_read();
+                    if (sys_vol_fd() < 0) drawbar(); /* fresh sample */
+                }
+                if (!XPending(dpy)) continue; /* pipe-only wakeup, no X events */
                 break;
             }
         }
