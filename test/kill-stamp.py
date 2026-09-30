@@ -119,6 +119,12 @@ def main():
     print("STAMP_OK=%d" % (1 if stamp != 0 else 0))
     sys.stdout.flush()
 
+    # audit-0930 #11: _NET_CLOSE_WINDOW forwards its timestamp
+    cs = close_stamp(d, root, w)
+    print("CLOSE_STAMP=%d" % cs)
+    print("CLOSE_OK=%d" % (1 if cs == 12345 else 0))
+    sys.stdout.flush()
+
     try:
         w.destroy()
     except Exception:
@@ -129,5 +135,30 @@ def main():
     return 0
 
 
+# appended for audit-0930 #11: _NET_CLOSE_WINDOW must forward its
+# timestamp (data.l[0]) into the WM_DELETE notification (data.l[1]).
+def close_stamp(d, root, w):
+    import select, time
+    from Xlib import X
+    from Xlib.protocol import event
+    close_atom = d.intern_atom("_NET_CLOSE_WINDOW")
+    protos = d.intern_atom("WM_PROTOCOLS")
+    want = 12345
+    fd = d.fileno()
+    ev = event.ClientMessage(window=w, client_type=close_atom,
+                             data=(32, [want, 0, 0, 0, 0]))
+    root.send_event(ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+    d.flush()
+    end = time.time() + 5
+    while time.time() < end:
+        while d.pending_events():
+            e = d.next_event()
+            if e.type == X.ClientMessage and e.client_type == protos \
+               and e.data[1][0] == d.intern_atom("WM_DELETE_WINDOW"):
+                return int(e.data[1][1])
+        r_, _, _ = select.select([fd], [], [], 0.05)
+    return 0
+
 if __name__ == "__main__":
     sys.exit(main())
+

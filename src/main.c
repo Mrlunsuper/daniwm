@@ -598,7 +598,10 @@ int main(int argc, char **argv) {
                     arrange();
                 }
             } else if (e->message_type == A_NET_CLOSE_WINDOW) {
-                if (c) kill_client(c);
+                /* EWMH: data.l[0] is the request timestamp, 0 = CurrentTime;
+                 * forward it so the client's WM_DELETE carries a real time
+                 * (audit-0930 #11). */
+                if (c) kill_client_ex(c, (Time)e->data.l[0]);
             } else if (e->message_type == A_NET_CURRENT_DESKTOP) {
                 long n = e->data.l[0];
                 if (n >= 0 && n < NWS) view((int)n);

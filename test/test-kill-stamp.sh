@@ -33,6 +33,8 @@ OK=$(echo "$OUT" | sed -n 's/^STAMP_OK=//p' | tail -n1)
 [ -n "${OK:-}" ] || { echo "FAIL: no STAMP_OK"; exit 1; }
 echo "stamp=$STAMP"
 assert "event-driven kill carries non-zero timestamp" "$OK" -eq 1
+COK=$(echo "$OUT" | sed -n 's/^CLOSE_OK=//p' | tail -n1)
+assert "_NET_CLOSE_WINDOW forwards its timestamp" "${COK:-0}" -eq 1
 
 [ $fail -eq 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL"
 exit $fail
