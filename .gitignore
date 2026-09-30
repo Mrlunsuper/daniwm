@@ -10,6 +10,7 @@ test/click-helper
 test/menu-helper
 test/dialog-helper
 test/float-click-helper
+test/*.d
 dev/xdiag
 dev/include/
 dev/lib/
