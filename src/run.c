@@ -25,6 +25,7 @@
  *   cell_gap = 6        (gap between grid cells, both axes)
  *   cell_gap_x / cell_gap_y = N         (per-axis override of cell_gap)
  *   margin = 12         (left/right margin of the selection pill)
+ *   text_pad = 14       (inner gap between drun text and the pill border)
  *   drun_icons = 1      (0/1: real icon-theme PNG icon next to each .desktop app)
  *   icon_theme =        (optional: icon theme name; default = GTK theme)
  *   app = <icon>;<name>;<cmd>      (split only on the first 2 ';', cmd keeps spaces)
@@ -120,13 +121,15 @@ static int footer_h = 26;
  *   pad_t/pad_r/pad_b/pad_l = inner window margin per side
  *   row_gap   = vertical gap between drun rows
  *   cell_gap_x/cell_gap_y = horizontal/vertical gap between grid cells
- *   margin    = left/right margin of the selection pill (drun) */
+ *   margin    = left/right margin of the selection pill (drun)
+ *   text_pad  = inner gap between drun text and the pill border */
 static int opt_pad_t = 0, opt_pad_r = 0, opt_pad_b = 0, opt_pad_l = 0;
 /* per-mode padding overrides (default -1 = fall back to opt_pad_*):
  * drun_padding* applies to MODE_DRUN, grid_padding* to MODE_FAV/MODE_POWER. */
 static int drun_pad_t = -1, drun_pad_r = -1, drun_pad_b = -1, drun_pad_l = -1;
 static int grid_pad_t = -1, grid_pad_r = -1, grid_pad_b = -1, grid_pad_l = -1;
 static int opt_row_gap = 6, opt_cell_gap_x = 0, opt_cell_gap_y = 6, opt_margin = 12;
+static int opt_text_pad = 14; /* drun text inset inside the pill (both sides) */
 
 /* ---- state ---- */
 static Mode mode = MODE_DRUN;
@@ -418,6 +421,9 @@ static void load_run_config(void) {
         } else if (!strcmp(k, "margin")) {
             v = strtol(vv, NULL, 10);
             if (v >= 0 && v <= 64) opt_margin = (int)v;
+        } else if (!strcmp(k, "text_pad")) {
+            v = strtol(vv, NULL, 10);
+            if (v >= 0 && v <= 64) opt_text_pad = (int)v;
         } else if (!strcmp(k, "input_h")) {
             v = strtol(vv, NULL, 10);
             if (v >= 24 && v <= 96) input_h = (int)v;
@@ -1505,6 +1511,8 @@ static void draw(void) {
 
     if (mode == MODE_DRUN) {
         int icol = opt_drun_icons ? 40 : 0;   /* icon column width */
+        int tx = opt_margin + opt_pad_l + opt_text_pad + icol; /* text origin */
+        int maxw = WW - 2 * opt_margin - opt_pad_l - opt_pad_r - icol - 2 * opt_text_pad;
         for (int r = 0; r < list_rows; r++) {
             int idx = scroll + r;
             int y = input_h + opt_pad_t + r * row_h;
@@ -1523,8 +1531,8 @@ static void draw(void) {
                 if (icol > 0 && icon_path_cached(vec[filt[idx]].icon, ipath, sizeof(ipath)))
                     isf = icon_surface(ipath);
 #endif
-                if (runs_w(NULL, vec[filt[idx]].name) > WW - 48 - icol) {
-                    ellipsize(vec[filt[idx]].name, WW - 48 - icol, label, sizeof(label));
+                if (runs_w(NULL, vec[filt[idx]].name) > maxw) {
+                    ellipsize(vec[filt[idx]].name, maxw, label, sizeof(label));
                 } else {
                     snprintf(label, sizeof(label), "%s", vec[filt[idx]].name);
                 }
@@ -1548,12 +1556,12 @@ static void draw(void) {
                         runs_draw(f_main, idx == sel ? &c_fg : &c_acc, 30 + (icol - iw) / 2, ty, ic);
                     }
                 }
-                draw_match_text(&c_fg, &c_acc, 26 + icol, ty, label, npos ? pos : NULL, npos);
+                draw_match_text(&c_fg, &c_acc, tx, ty, label, npos ? pos : NULL, npos);
             }
         }
         if (!nfilt) {
             const char *msg = qlen ? "\xe2\x86\xb5 run as command" : "no apps found";
-            runs_draw(NULL, &c_dim, 26,
+            runs_draw(NULL, &c_dim, tx - icol,
                 input_h + opt_pad_t + row_h / 2 + (f_main ? (f_main->ascent - f_main->descent) / 2 : 5), msg);
         }
     } else if (mode == MODE_CALC) {
