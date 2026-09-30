@@ -80,7 +80,7 @@ assert "scratchpad parked" "$(ns)" -eq 0
 
 do_restart "restart happened (heartbeat swapped)"
 
-wait_vis 1 60 || { echo "FAIL: ws1 window never reappeared after restart"; exit 1; }
+wait_vis 1 60 || { echo "FAIL: ws1 window never reappeared after restart (vis=$(nvis) all=$(nall) ns=$(ns))"; xdotool search --onlyvisible --class xterm getwindowname %@; exit 1; }
 assert "all windows survived restart (2 terms + parked scratch)" "$(nall)" -eq 3
 assert "client list intact after restart" "$(client_count)" -eq 2
 assert "still on ws1 (1 visible)" "$(nvis)" -eq 1
@@ -95,6 +95,9 @@ assert "ws1 window still on ws1 (1 visible)" "$(nvis)" -eq 1
 # The parked scratchpad unparks after restart.
 xdotool key super+s; settle
 assert "parked scratchpad reshown after restart" "$(ns)" -ge 1
+# audit-0930 #3: the parked scratch must be re-adopted (sticky hint read
+# correctly), not left orphaned while Super+s spawns a second one.
+assert "single scratchpad after restart" "$(xdotool search --classname scratchpad 2>/dev/null | wc -l)" -eq 1
 
 # The new instance serves keys: spawn works post-restart.
 xdotool key super+Return; sleep 1

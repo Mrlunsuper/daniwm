@@ -223,7 +223,9 @@ static int is_sticky(Window w) {
     if (A_NET_WM_DESKTOP == None) return 0;
     if (XGetWindowProperty(dpy, w, A_NET_WM_DESKTOP, 0, 1, False, XA_CARDINAL,
         &rt, &rf, &n, &extra, &data) == Success && data) {
-        if (rf == 32 && n == 1 && *(unsigned long *)data == 0xFFFFFFFFUL) sticky = 1;
+        /* Xlib sign-extends format-32 data into long: mask to 32 bits (#3) */
+        if (rf == 32 && n == 1 &&
+            ((*(unsigned long *)data) & 0xFFFFFFFFUL) == 0xFFFFFFFFUL) sticky = 1;
         XFree(data);
     }
     return sticky;
@@ -354,15 +356,19 @@ int main(int argc, char **argv) {
             /* Hidden window carrying our desktop hint was managed before the
              * restart (lives on another workspace): adopt it back. Windows
              * without the hint are foreign/withdrawn helpers — leave them. */
-            if (ewmh_read_desktop(kids[i]) < 0 && !is_sticky(kids[i])) continue;
+            /* read before manage(): it rewrites _NET_WM_DESKTOP to curws */
+            int sticky = is_sticky(kids[i]);
+            if (ewmh_read_desktop(kids[i]) < 0 && !sticky) continue;
             manage(kids[i]);
             /* hidden window with the sticky (0xFFFFFFFF) desktop hint is the
              * parked scratchpad from a pre-restart life: park it again
              * instead of mapping it onto this workspace. */
-            if (is_sticky(kids[i])) {
+            if (sticky) {
                 Client *c = find(kids[i]);
                 if (c) {
                     c->ws = NWS;
+                    if (sel == c) sel = NULL; /* manage() focused it */
+                    if (ws_sel[curws] == c) ws_sel[curws] = NULL;
                     XUnmapWindow(dpy, c->win);
                     ewmh_set_wm_desktop(c); /* back to sticky */
                     ewmh_client_list();
