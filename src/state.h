@@ -12,7 +12,10 @@
 extern Display *dpy;
 extern Window root, bar, checkwin;
 extern int screen, sw, sh;
-/* last user-event timestamp (Key/Button/Crossing); 0 = none yet.
+/* timestamp of the event being dispatched right now (Key/Button/Crossing,
+ * XI2 raw press, pager _NET_ACTIVE_WINDOW); reset to 0 at the start of every
+ * dispatch, so it never outlives the event that set it (a stale time makes
+ * the server silently drop XSetInputFocus, audit-0930 #1).
  * wm_time() prefers it over CurrentTime for focus/kill requests
  * (ICCCM 4.1.7); falls back to CurrentTime with no event to blame. */
 extern Time last_evtime;

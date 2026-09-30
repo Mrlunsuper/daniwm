@@ -472,6 +472,7 @@ int main(int argc, char **argv) {
         }
         XEvent ev;
         XNextEvent(dpy, &ev);
+        last_evtime = 0; /* timestamp only lives for one dispatch (audit-0930 #1) */
         if (rr_present && (ev.type == rr_event_base + RRScreenChangeNotify ||
                             ev.type == rr_event_base + RRNotify)) {
             XRRUpdateConfiguration(&ev);
@@ -541,6 +542,7 @@ int main(int argc, char **argv) {
             if (tray_handle_opcode(e)) break;
             Client *c = find(e->window);
             if (e->message_type == A_NET_ACTIVE_WINDOW) {
+                if (e->data.l[1]) last_evtime = (Time)e->data.l[1]; /* pager's user time */
                 if (c) {
                     /* Parked scratchpad (ws == NWS sentinel) is unmapped:
                      * focusing it would set input to an invisible window.
