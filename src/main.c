@@ -666,10 +666,11 @@ int main(int argc, char **argv) {
                 }
                 XConfigureWindow(dpy, e->window, (unsigned int)e->value_mask, &wc);
             } else {
-                XConfigureWindow(dpy, e->window, (e->value_mask & (CWSibling | CWStackMode)), &wc);
-                /* ICCCM §4.1.5: tiled windows reject the client's requested
-                 * geometry, so send a synthetic ConfigureNotify with the
-                 * actual geometry to keep the client in sync. */
+                /* Tiled clients do not own their stacking (audit-0930 #10):
+                 * honoring CWStackMode here let a tiled window slip under or
+                 * over its twins, and briefly above a floating client until
+                 * the next arrange. Geometry is rejected too (ICCCM §4.1.5),
+                 * so the client only gets a synthetic ConfigureNotify. */
                 XWindowAttributes ca;
                 if (XGetWindowAttributes(dpy, e->window, &ca)) {
                     XEvent cn;
