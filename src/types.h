@@ -8,7 +8,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xft/Xft.h>
 
-typedef struct { char *cls; char *title; int floating; int ws; } Rule;
+typedef struct { char *cls; char *title; int floating; int ws; int layout; } Rule;
 
 typedef struct Client Client;
 struct Client {

@@ -600,7 +600,8 @@ void drawbar(void) {
             ntotal++;
             if (nt < MAXTASKHIT) tasks[nt++] = c;
         }
-        int tx0 = mode_end + S(12);
+        int gap = S(BAR_WS_TASK_GAP); /* dead zone after ws/layout: no hitbox */
+        int tx0 = mode_end + gap;
         int avail = (barw - right_w - trayw - pad_r) - tx0 - S(8);
         /* bar_task_w > 0: fixed px per button, left-aligned, empty space
          * stays inert; 0: auto equal-share across the whole area. */
@@ -623,6 +624,16 @@ void drawbar(void) {
             }
             int bw = fixed ? fixed : avail / slots;
             int tpad = S(BAR_TASK_PAD);
+            /* zone marker in the middle of the dead gap: same chrome as
+             * the tray divider, so the ws/task boundary reads at a glance */
+            if (gap >= 8) {
+                int xd = tx0 - gap / 2;
+                int y1 = 6, y2 = bar_h - 7;
+                if (y2 > y1 && xd > 0) {
+                    XSetForeground(dpy, bargc, c_sep);
+                    XDrawLine(dpy, barpm, bargc, xd, y1, xd, y2);
+                }
+            }
             for (int i = 0; i < slots; i++) {
                 int bx = tx0 + i * bw;
                 int last = (i == slots - 1);
@@ -700,7 +711,7 @@ void drawbar(void) {
     } else if (sel && BAR_SHOW_TITLE) {
         char t[128];
         if (get_title(sel->win, t, sizeof(t) - 16) > 0) {
-            int tx = mode_end + S(12);
+            int tx = mode_end + S(BAR_WS_TASK_GAP);
             int avail = (barw - right_w - trayw - pad_r) - tx - S(8);
             if (avail > 0) {
                 XSetForeground(dpy, bargc, c_title);

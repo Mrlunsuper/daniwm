@@ -40,7 +40,7 @@ static void strip_comment(char *v) {
     char *h = strchr(p, '#');
     if (h) { *h = 0; trim(v); }
 }
-static void push_rule(char *cls, char *title, int floating, int ws) {
+static void push_rule(char *cls, char *title, int floating, int ws, int layout) {
     if (nrules == caprules) {
         unsigned nc = caprules ? caprules * 2 : 8;
         Rule *nr = realloc(rules, nc * sizeof(*nr));
@@ -48,7 +48,8 @@ static void push_rule(char *cls, char *title, int floating, int ws) {
         rules = nr; caprules = nc;
     }
     rules[nrules].cls = cls; rules[nrules].title = title;
-    rules[nrules].floating = floating; rules[nrules].ws = ws; nrules++;
+    rules[nrules].floating = floating; rules[nrules].ws = ws;
+    rules[nrules].layout = layout; nrules++;
 }
 static void free_argv(char **argv) {
     if (!argv) return;
@@ -243,7 +244,7 @@ void config_defaults(void) {
     free(CLOCK_FMT); CLOCK_FMT = xstrdup("%d/%m %H:%M");
     free(BAR_SEP_STR); BAR_SEP_STR = xstrdup("\u00B7");
     BAR_SHOW_TITLE = 1; BAR_SHOW_LAYOUT = 1; BAR_SHOW_TASKS = 1; BAR_TASK_W = 0;
-    BAR_TASK_PAD = 6;
+    BAR_TASK_PAD = 6; BAR_WS_TASK_GAP = 12;
     free(ico_cpu); ico_cpu = xstrdup("\U000F06E0");
     free(ico_mem); ico_mem = xstrdup("\U000F035B");
     free(ico_bat); ico_bat = xstrdup("\U000F0079");
@@ -260,9 +261,9 @@ void config_defaults(void) {
     set_cmd(&termcmd, "xterm");
     set_cmd(&menucmd, "dmenu_run");
     set_cmd(&scratchcmd, "xterm -name scratchpad");
-    push_rule(xstrdup("scratchpad"), NULL, 1, -1);
-    push_rule(xstrdup("Gimp"), NULL, 1, -1);
-    push_rule(xstrdup("mpv"), NULL, 1, -1);
+    push_rule(xstrdup("scratchpad"), NULL, 1, -1, -1);
+    push_rule(xstrdup("Gimp"), NULL, 1, -1, -1);
+    push_rule(xstrdup("mpv"), NULL, 1, -1, -1);
     add_default_keys();
 }
 static const char *config_path(char *buf, size_t n) {
@@ -352,6 +353,11 @@ static void parse_scalar(char *key, char *val) {
         v = strtol(val, NULL, 10);
         if (v >= 0 && v <= 32) BAR_TASK_PAD = (int)v;
         else fprintf(stderr, "daniwm: bad bar_task_pad '%s' (want 0..32)\n", val);
+    } else if (!strcmp(key, "bar_ws_task_gap") || !strcmp(key, "ws_task_gap") ||
+               !strcmp(key, "bar_task_gap")) {
+        v = strtol(val, NULL, 10);
+        if (v >= 0 && v <= 64) BAR_WS_TASK_GAP = (int)v;
+        else fprintf(stderr, "daniwm: bad bar_ws_task_gap '%s' (want 0..64)\n", val);
     } else if (!strcmp(key, "bar_gap")) {
         v = strtol(val, NULL, 10); if (v >= 0 && v <= 8) BAR_GAP = (int)v;
         else fprintf(stderr, "daniwm: bad bar_gap '%s' (want 0..8)\n", val);
@@ -443,13 +449,16 @@ static void parse_rule(const char *val, int lineno, const char *path) {
     char *p1 = strchr(s, ':');
     char *p2 = p1 ? strchr(p1 + 1, ':') : NULL;
     char *p3 = p2 ? strchr(p2 + 1, ':') : NULL;
+    char *p4 = p3 ? strchr(p3 + 1, ':') : NULL;
     if (!p1 || !p2 || !p3) {
-        fprintf(stderr, "daniwm: %s:%d: bad rule '%s' (want class:title:float:ws)\n", path, lineno, val);
+        fprintf(stderr, "daniwm: %s:%d: bad rule '%s' (want class:title:float:ws[:layout])\n", path, lineno, val);
         free(s); return;
     }
     *p1 = 0; *p2 = 0; *p3 = 0;
+    if (p4) *p4 = 0;
     char *cls = trim(s), *title = trim(p1 + 1);
     char *fs = trim(p2 + 1), *ws = trim(p3 + 1);
+    char *ls = p4 ? trim(p4 + 1) : NULL;
     int floating;
     if (!strcasecmp(fs, "float") || !strcmp(fs, "1")) floating = 1;
     else if (!strcasecmp(fs, "tile") || !strcasecmp(fs, "tiled") || !strcmp(fs, "0")) floating = 0;
@@ -466,9 +475,18 @@ static void parse_rule(const char *val, int lineno, const char *path) {
         }
         w = (int)n - 1;
     }
+    int layout = -1;
+    if (ls && *ls && strcmp(ls, "*") && strcasecmp(ls, "default")) {
+        if (!strcasecmp(ls, "tile") || !strcasecmp(ls, "tiled")) layout = L_TILE;
+        else if (!strcasecmp(ls, "monocle")) layout = L_MONOCLE;
+        else {
+            fprintf(stderr, "daniwm: %s:%d: bad rule layout '%s'\n", path, lineno, ls);
+            free(s); return;
+        }
+    }
     char *c = (strcmp(cls, "*") && *cls) ? xstrdup(cls) : NULL;
     char *t = (strcmp(title, "*") && *title) ? xstrdup(title) : NULL;
-    push_rule(c, t, floating, w);
+    push_rule(c, t, floating, w, layout);
     free(s);
 }
 static void parse_bind(const char *val, int lineno, const char *path) {
@@ -703,6 +721,8 @@ void load_config(const char *path) {
             strcmp(k, "bar_show_tasks") && strcmp(k, "show_tasks") &&
             strcmp(k, "bar_task_w") && strcmp(k, "task_w") &&
             strcmp(k, "bar_task_pad") && strcmp(k, "task_pad") &&
+            strcmp(k, "bar_ws_task_gap") && strcmp(k, "ws_task_gap") &&
+            strcmp(k, "bar_task_gap") &&
             strcmp(k, "bar_h") && strcmp(k, "bar_gap") && strcmp(k, "ico_cpu") &&
             strcmp(k, "ico_mem") && strcmp(k, "ico_bat") && strcmp(k, "ico_vol") &&
             strcmp(k, "ico_mute") && strcmp(k, "ico_clk") && strcmp(k, "bar_pad_l") &&

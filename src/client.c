@@ -458,7 +458,7 @@ void restart(void) {
 }
 
 /* ---- rules + scratchpad ---- */
-static void matchrules(Window w, int *floating, int *ws) {
+static void matchrules(Window w, int *floating, int *ws, int *layout) {
     XClassHint ch = { 0 };
     char *name = NULL;
     int gotclass = XGetClassHint(dpy, w, &ch);
@@ -471,6 +471,7 @@ static void matchrules(Window w, int *floating, int *ws) {
         if (cm && tm) {
             *floating = rules[i].floating;
             if (rules[i].ws >= 0 && rules[i].ws < NWS) *ws = rules[i].ws;
+            if (rules[i].layout >= 0) *layout = rules[i].layout;
         }
     }
     if (ch.res_class) XFree(ch.res_class);
@@ -515,8 +516,8 @@ void manage(Window w) {
     if (!c) return; /* OOM: leave the window unmanaged, WM keeps running */
     c->win = w;
     c->mon = mon_by_pointer();
-    int rulefloat = 0, rulews = curws;
-    matchrules(w, &rulefloat, &rulews);
+    int rulefloat = 0, rulews = curws, rulelayout = -1;
+    matchrules(w, &rulefloat, &rulews, &rulelayout);
     { int d = ewmh_read_desktop(w); if (d >= 0 && d < NWS) rulews = d; }
     Window trans = None;
     c->fx = a.x; c->fy = a.y; c->fw = a.width; c->fh = a.height;
@@ -557,6 +558,8 @@ void manage(Window w) {
     attach(c);
     ewmh_set_wm_state(c, NormalState);
     c->ws = rulews;
+    if (rulelayout >= 0 && rulelayout <= L_MONOCLE)
+        ws_layout[c->ws] = (Layout)rulelayout;
     ewmh_client_list();
     ewmh_set_wm_desktop(c);
     if (c->ws == curws) {

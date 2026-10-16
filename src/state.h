@@ -93,6 +93,7 @@ extern int BAR_SHOW_LAYOUT;/* 1/0 */
 extern int BAR_SHOW_TASKS; /* 1/0: Awesome-style clickable task buttons */
 extern int BAR_TASK_W; /* px per task button, 0 = auto equal-share */
 extern int BAR_TASK_PAD; /* px text inset inside each task button (0..32) */
+extern int BAR_WS_TASK_GAP; /* dead px between ws/layout block and tasklist (0..64) */
 /* tasklist hitboxes (bar-relative x), refreshed every drawbar() */
 extern int task_nhit;
 extern int task_hit_x0[MAXTASKHIT];

@@ -148,6 +148,9 @@ replaces the lone title when on; overflow collapses into a `+N` chip),
 `bar_task_w` (0–512, default 0 = auto equal-share; e.g. `160` = fixed 160px
 buttons, left-aligned, clicks past them are no-ops),
 `bar_task_pad` (0–32, default 6 — text inset inside each task button),
+`bar_ws_task_gap` (0–64, default 12 — dead px between the ws/layout block and
+the tasklist, with a thin divider drawn in the middle when tasks show;
+clicks there are no-ops, so a wider value stops ws/task mis-clicks),
 `bar_task_style` (`follow` default = theo `bar_ws_style` | `pill` | `underline` | `block` | `none` = chỉ màu chữ),
 `bar_task_active` (nền task đang focus — pill/block/underline; bỏ trống = theo ws active / pill mờ),
 `bar_task_active_text` (chữ task đang focus), `bar_task_text` (alias `bar_task_normal` — chữ task thường; urgent vẫn dùng `bar_urgent`),
@@ -185,7 +188,7 @@ rule = Gimp:*:float:*
 bind = mod+3:ws3
 ```
 
-`rule = class:title:float:ws` (`*` = any, float = `float`|`tile`, ws 1-based, ≤ `workspaces`).
+`rule = class:title:float:ws[:layout]` (`*` = any, float = `float`|`tile`, ws 1-based, ≤ `workspaces`; optional layout = `tile`|`monocle`).
 `bind = mod+key:action` (modifiers `mod/super/alt/ctrl/shift` + X keysym;
 actions: `focus_next/prev`, `zoom`, `ws_toggle`, `kill`, `tile/monocle/toggle`, `spawn_term/menu`,
 `mfact_dec/inc` (0.025 steps), `nmaster_dec/inc`, `gap/gap_dec/gap_inc`, `bar`,

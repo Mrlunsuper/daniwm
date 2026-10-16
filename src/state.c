@@ -27,6 +27,7 @@ int BAR_SHOW_LAYOUT = 1;
 int BAR_SHOW_TASKS = 1;
 int BAR_TASK_W = 0;
 int BAR_TASK_PAD = 6;
+int BAR_WS_TASK_GAP = 12;
 int task_nhit = 0;
 int task_hit_x0[MAXTASKHIT];
 int task_hit_x1[MAXTASKHIT];
