@@ -3,6 +3,10 @@
 # Xft.dpi=144 trong ~/.Xresources không bao giờ apply -> Thunar/Telegram bé tí.
 xrdb -merge "$HOME/.Xresources" 2>/dev/null
 
+# Đưa DISPLAY vào systemd để gnome-terminal-server mở được display.
+systemctl --user import-environment DISPLAY XAUTHORITY 2>/dev/null
+dbus-update-activation-environment --systemd DISPLAY XAUTHORITY 2>/dev/null
+
 # HiDPI 4K 27" ~1.5x (khớp Xft.dpi=144). Đừng để GDK_DPI_SCALE=1.
 export GDK_SCALE=1
 export GDK_DPI_SCALE=1.5
