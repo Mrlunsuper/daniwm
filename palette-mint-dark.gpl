@@ -1,0 +1,20 @@
+GIMP Palette
+Name: Mint-Y-Dark (daniwm)
+Columns: 3
+#
+# Mint-Y-Dark (linuxmint/mint-themes) — đang dùng cho daniwm bar.
+# Import được trong GIMP, Inkscape, Krita, LibreOffice (qua GIMP palette).
+# daniwm: bar_bg=panel, bar_fg=panel_fg, bar_acc=accent,
+# bar_dim=wm_title_unfocused, border_normal=base, urgent=destructive.
+# purple/cyan: Mint gốc không có 2 màu này, pha bằng code
+# (purple = mix link+red, cyan = mix link+green).
+#
+ 34  34  38	222226 panel bg
+225 225 225	e1e1e1 panel fg text
+ 53 168  84	35A854 mint accent active
+167 167 171	A7A7AB muted empty title
+ 51  51  57	333339 base border
+240  74  80	F04A50 destructive urgent
+ 82 148 226	5294E2 link blue
+153 115 160	9973A0 purple derived
+ 68 158 155	449E9B cyan derived

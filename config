@@ -34,8 +34,8 @@ ws_icon_7 = 
 mfact = 0.50                        # master chiếm 0.1..0.9 chiều ngang
 nmaster = 1                          # số cửa sổ master
 border = 2
-border_focus = c4a7e7                # Rosé Pine iris (focused)
-border_normal = 26233a               # Rosé Pine surface (unfocused)
+border_focus = 8CCF7E                # Everblush green (focused)
+border_normal = 232A2D               # gần như nền (unfocused)
 gaps_on = 1
 gap_outer = 4
 gap_inner = 8
@@ -53,19 +53,19 @@ ws_w = 36
 bar_pad_l = 8
 bar_pad_r = 16
 # màu bar: hex 6 số, có thể có #. Áp ngay khi reload.
-# 4 màu nền tảng Rosé Pine Main (đồng bộ bspwm/polybar):
-bar_bg = 191724
-bar_fg = e0def4
-bar_acc = c4a7e7
-bar_dim = 6e6a86
+# Everblush:
+bar_bg = 141B1E
+bar_fg = DADADA
+bar_acc = 8CCF7E
+bar_dim = A8AFB2
 # style active ws: pill (default, gọn) | underline | block (khối fill kiểu cũ)
 bar_ws_style       = pill
-bar_ws_active      = c4a7e7   # pill / underline / block của ws đang xem (iris)
-bar_ws_active_text = e0def4   # chữ ws đang xem
-bar_ws_occ         = e0def4   # chữ workspace có cửa sổ
-bar_ws_empty       = 6e6a86   # chữ workspace trống (muted)
-bar_urgent         = eb6f92   # ws urgent + pin yếu + MUTE (rose)
-bar_sep            = 6e6a86   # separator + bottom border (default = bar_dim)
+bar_ws_active      = 232A2D   # pill / underline / block của ws đang xem
+bar_ws_active_text = DADADA   # chữ ws đang xem (sáng, nổi trên pill tối)
+bar_ws_occ         = DADADA   # chữ workspace có cửa sổ
+bar_ws_empty       = A8AFB2   # chữ workspace trống (muted)
+bar_urgent         = E57474   # ws urgent + pin yếu + MUTE (đỏ trầm)
+bar_sep            = 2C3333   # separator + bottom border (mảnh, tối)
 bar_gap            = 1        # spaces quanh separator giữa các module phải (0..8)
 bar_sep_str        = |       # separator phải (vd: · | / • : — để trống = chỉ cách spaces)
 bar_modules        = cpu mem vol clock  # thứ tự + ẩn/hiện (xóa tên là ẩn, default đủ: "cpu mem bat vol clock"; máy bàn không pin thì `bat` tự ẩn)
@@ -74,11 +74,12 @@ bar_show_title     = 0       # tiêu đề cửa sổ trái (1/0)
 bar_show_tasks     = 1        # nút task Awesome: click-trái focus, click-giữa đóng (1/0)
 bar_task_w         = 360     # rộng mỗi nút task (px, 0 = auto chia đều; vd 160)
 bar_task_pad       = 12        # padding chữ trong nút task (px, 0..32)
+bar_ws_task_gap    = 32        # vùng chết giữa ws và tasklist + vạch chia (px, 0..64; click vào đây = no-op)
 # style task list: đồng bộ với ws (pill + iris) | đổi pill->underline/block/none nếu thích
 bar_task_style        = pill
-bar_task_active       = c4a7e7   # nền task đang focus (= bar_ws_active iris)
-bar_task_active_text  = e0def4   # chữ task đang focus (= bar_ws_active_text)
-bar_task_text         = e0def4   # chữ task thường (= bar_ws_occ; urgent vẫn dùng bar_urgent)
+bar_task_active       = 232A2D   # nền task đang focus (= bar_ws_active)
+bar_task_active_text  = DADADA   # chữ task đang focus (sáng trên nền xám đặc)
+bar_task_text         = DADADA   # chữ task thường (= bar_ws_occ; urgent vẫn dùng bar_urgent)
 bar_show_layout    = 0        # icon tile/monocle + số cửa sổ (1/0)
 # icon cụm phải: mặc định là icon Nerd Font (đẹp nhất với font Nerd bên dưới),
 # tự rớt về C/M/B/V nếu máy thiếu font. Muốn chữ thường thì mở 3 dòng này:
@@ -86,15 +87,15 @@ bar_show_layout    = 0        # icon tile/monocle + số cửa sổ (1/0)
 # ico_vol = VOL
 # ico_mem = MEM
 
-bar_mode           = e0def4   # số cửa sổ (icon tile/monocle dùng bar_acc)
-bar_title          = 6e6a86   # tiêu đề cửa sổ trái, chìm để nhường sysmon (cũ: e0def4)
-bar_sys            = e0def4   # giá trị sysmon sáng dễ đọc (icon dùng bar_acc)
+bar_mode           = DADADA   # số cửa sổ (icon tile/monocle dùng bar_acc)
+bar_title          = A8AFB2   # tiêu đề cửa sổ trái, chìm để nhường sysmon
+bar_sys            = DADADA   # giá trị sysmon sáng dễ đọc (icon dùng bar_acc)
 # font bar: fontconfig pattern. bar_h=36 hợp với size=11.
 font = SpaceMono Nerd Font:size=9
 # Không có Nerd Font vẫn đẹp (tự rớt về chữ C/M/B/V).
 
 # ---------- rules ----------
-# class:title:float:ws   (* = bất kỳ; float|tile; ws 1-based, ≤ workspaces)
+# class:title:float:ws[:layout]   (* = bất kỳ; float|tile; ws 1-based, ≤ workspaces; layout = tile|monocle)
 rule = scratchpad:*:float:*
 rule = Gimp:*:float:*
 rule = mpv:*:float:*
@@ -115,6 +116,23 @@ rule = WWPP:*:tile:2
 rule = WWQ:*:tile:2
 rule = WPAY:*:tile:2
 rule = WWOF:*:tile:2
+rule = WSED:*:tile:2
+rule = WSLC:*:tile:2
+rule = BB:*:tile:2
+rule = BBP:*:tile:2
+rule = CHP:*:tile:2
+rule = RU:*:tile:2
+rule = SaveToPro:*:tile:2
+rule = SAI:*:tile:2
+rule = WCVM:*:tile:2
+rule = WCVPAY:*:tile:2
+rule = WCSA:*:tile:2
+rule = WCVT:*:tile:2
+rule = WCVBOOK:*:tile:2
+rule = WCVSUB:*:tile:2
+rule = WST:*:tile:2
+rule = WAD:*:tile:2
+
 bind+ = mod+c:exec dani-run --calc
 # ---------- bảng phím ----------
 # focus & cửa sổ
@@ -175,8 +193,9 @@ bind = mod+ctrl+e:quit               # thoát WM (kết thúc session X)
 rule = flameshot:*:float:*
 rule = telegram:*:float:*
 rule = local:*:float:7
-rule = terminal64:*:float:*
-rule = wine:*:float:*
-rule = mt5setup:*:float:*
-rule = *:MetaTrader:float:*
-rule = *:Wine Desktop:float:*
+#rule = terminal64:*:float:*
+#rule = wine:*:float:*
+#rule = mt5setup:*:float:*
+#rule = *:MetaTrader:float:*
+#rule = *:Wine Desktop:float:*
+rule = explorer.exe:*:tile:* # mở Explorer mặc định ở monocle

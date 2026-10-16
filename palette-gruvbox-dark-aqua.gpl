@@ -1,0 +1,15 @@
+GIMP Palette
+Name: Gruvbox Dark Aqua (daniwm)
+Columns: 3
+#
+# Gruvbox Dark medium (morhetz) + aqua accent — đang dùng cho daniwm bar.
+# Import được trong GIMP, Inkscape, Krita, LibreOffice (qua GIMP palette).
+# daniwm: bar_bg=bg, bar_fg/text=fg, bar_acc/active=aqua,
+# bar_dim/empty/title=gray, border_normal=bg1, urgent=red.
+#
+ 40  40  40	282828 bg
+235 219 178	ebdbb2 fg text
+142 192 124	8ec07c aqua accent active
+146 131 116	928374 gray dim empty
+ 60  56  54	3c3836 bg1 border-normal
+251  73  52	fb4934 red urgent
