@@ -884,6 +884,10 @@ int main(int argc, char **argv) {
             Client *c = find(e->window);
             if (!c || c->ws != curws || c->ws < 0 || c->ws >= NWS) break;
             if (c == sel) { ewmh_active(); break; }
+            /* NoInput windows (e.g. Wine Desktop) never take sel: they
+             * force X focus themselves despite InputHint, fighting the
+             * Input window that reclaims it (floating/tiling flicker). */
+            if (!client_wants_input(c->win)) break;
             sel = c;
             ws_sel[curws] = c;
             if (c->urgent) set_urgent(c, 0);
