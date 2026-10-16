@@ -14,3 +14,5 @@ test/*.d
 dev/xdiag
 dev/include/
 dev/lib/
+__pycache__/
+*.pyc

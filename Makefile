@@ -104,6 +104,7 @@ install: daniwm dani-comp dani-run install-examples
 	install -Dm755 daniwm $(DESTDIR)$(BINDIR)/daniwm
 	install -Dm755 dani-comp $(DESTDIR)$(BINDIR)/dani-comp
 	install -Dm755 dani-run $(DESTDIR)$(BINDIR)/dani-run
+	install -Dm755 dani-ai $(DESTDIR)$(BINDIR)/dani-ai
 	sed -e 's|^Exec=.*|Exec=$(BINDIR)/daniwm|' -e 's|^TryExec=.*|TryExec=$(BINDIR)/daniwm|' \
 		daniwm.desktop | install -Dm644 /dev/stdin $(DESTDIR)$(SESSIONDIR)/daniwm.desktop
 	@if [ -z "$(DESTDIR)" ]; then $(MAKE) install-user; \
@@ -114,6 +115,7 @@ install-examples:
 	install -Dm644 config $(DESTDIR)$(EXAMPLEDIR)/config.example
 	install -Dm644 run.config $(DESTDIR)$(EXAMPLEDIR)/run.config.example
 	install -Dm755 autostart.sh $(DESTDIR)$(EXAMPLEDIR)/autostart.sh.example
+	install -Dm644 ai.system.example $(DESTDIR)$(EXAMPLEDIR)/ai.system.example
 
 # User config: copies repo config + autostart.sh into
 # $${XDG_CONFIG_HOME:-$$HOME/.config}/daniwm/ (honours SUDO_USER under sudo).
@@ -131,13 +133,16 @@ install-user:
 	if [ ! -e "$$confdir/autostart.sh" ]; then install -m755 autostart.sh "$$confdir/autostart.sh"; echo "installed $$confdir/autostart.sh"; \
 	else echo "keep existing $$confdir/autostart.sh"; fi; \
 	if [ ! -e "$$confdir/run.config" ]; then install -m644 run.config "$$confdir/run.config"; echo "installed $$confdir/run.config"; \
-	else echo "keep existing $$confdir/run.config"; fi
+	else echo "keep existing $$confdir/run.config"; fi; \
+	if [ ! -e "$$confdir/ai.system" ]; then install -m644 ai.system.example "$$confdir/ai.system"; echo "installed $$confdir/ai.system"; \
+	else echo "keep existing $$confdir/ai.system"; fi
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/daniwm $(DESTDIR)$(BINDIR)/dani-comp $(DESTDIR)$(BINDIR)/dani-run $(DESTDIR)$(SESSIONDIR)/daniwm.desktop
-	rm -f $(DESTDIR)$(EXAMPLEDIR)/config.example $(DESTDIR)$(EXAMPLEDIR)/run.config.example $(DESTDIR)$(EXAMPLEDIR)/autostart.sh.example
+	rm -f $(DESTDIR)$(BINDIR)/daniwm $(DESTDIR)$(BINDIR)/dani-comp $(DESTDIR)$(BINDIR)/dani-run $(DESTDIR)$(BINDIR)/dani-ai $(DESTDIR)$(SESSIONDIR)/daniwm.desktop
+	rm -f $(DESTDIR)$(EXAMPLEDIR)/config.example $(DESTDIR)$(EXAMPLEDIR)/run.config.example $(DESTDIR)$(EXAMPLEDIR)/autostart.sh.example $(DESTDIR)$(EXAMPLEDIR)/ai.system.example
 
 clean:
 	rm -f daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper test/menu-helper test/dialog-helper test/float-click-helper src/*.o src/*.d
+	rm -rf __pycache__
 
 .PHONY: all clean check install install-examples install-user uninstall

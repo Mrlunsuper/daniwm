@@ -207,6 +207,22 @@ combo is already taken by one of your binds.
 Reload keeps live per-workspace `mfact`/`nmaster` (config values are startup
 defaults); shrinking `workspaces` folds extra workspaces into the last one.
 
+## AI chat (`dani-ai`, BYOK, Python stdlib)
+
+```sh
+dani-ai "cau hoi"        # hoi nhanh (stream mac dinh)
+dani-ai chat             # REPL: /reset /system /model /base /stream /color /quit
+dani-ai chat --continue [ten]  # mo lai chat cu (tu dong luu last.json)
+dani-ai models           # list model tu API (/model de chon so trong chat)
+dani-ai history          # list chat da luu (/save [ten] trong chat)
+```
+
+Key: `--api-key` > `DANI_AI_API_KEY` > `OPENAI_API_KEY` > `DEEPSEEK_API_KEY` >
+`~/.config/daniwm/ai.key` (3 dong: key, base, model). System: `--system` >
+`--system-file` > `~/.config/daniwm/ai.system`. Markdown render mau khi chay
+trong terminal, giu text tho khi pipe (`--no-color` de tat). Phim tat:
+`Super+Shift+a`. Test: `./test/test-ai.sh`.
+
 ## Verify (headless, works from Wayland)
 
 Needs `xorg-x11-server-Xvfb` (or unpack its rpm userspace-side if no sudo).

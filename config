@@ -15,6 +15,9 @@ scratch = alacritty --class scratchpad   # giữ chữ "scratchpad" để toggle
 # `bind =` thay TOÀN BỘ phím mặc định; `bind+` = thêm vào, giữ nguyên.
 bind+ = mod+a:exec dani-run --fav
 bind+ = mod+Shift+p:exec dani-run --power
+# AI chat (dani-ai, BYOK): mo terminal tro chuyen. Key dani-ai doc tu
+# ~/.config/daniwm/ai.system, API key qua DANI_AI_API_KEY.
+bind+ = mod+Shift+a:exec alacritty -e dani-ai chat
 # mod+d (menu) đã có ở list bên dưới, không cần thêm.
 
 # ---------- general ----------
