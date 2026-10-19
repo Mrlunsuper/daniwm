@@ -21,6 +21,18 @@ import re
 import shutil
 import sys
 import time
+import threading
+from pathlib import Path
+import fnmatch
+import stat
+import subprocess
+import selectors
+import signal
+import tempfile
+import http.client
+import math
+import unicodedata
+import urllib.parse
 import urllib.error
 import urllib.request
 
@@ -54,12 +66,38 @@ def history_dir():
     return os.path.join(xdg, "daniwm", "ai-history")
 
 
-def save_session(path, model, messages):
+class AIError(Exception):
+    """Expected configuration, transport, or protocol failure."""
+
+
+def private_dir(path):
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    os.chmod(path, 0o700)
+
+
+def atomic_private_write(path, writer):
+    directory = os.path.dirname(os.path.abspath(path))
+    private_dir(directory)
+    fd, temporary = tempfile.mkstemp(prefix=".dani-ai-", dir=directory)
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        os.close(fd)
+        writer(temporary)
+        os.chmod(temporary, 0o600)
+        with open(temporary, "rb") as f:
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def save_session(path, model, messages):
+    def write(temporary):
+        with open(temporary, "w", encoding="utf-8") as f:
             json.dump({"model": model, "messages": messages}, f,
                       ensure_ascii=False)
+    try:
+        atomic_private_write(path, write)
         return True
     except OSError as e:
         print("dani-ai: cannot save: %s" % e, file=sys.stderr)
@@ -70,8 +108,33 @@ def load_session(path):
     try:
         with open(path, encoding="utf-8") as f:
             obj = json.load(f)
-        return obj.get("model", ""), obj.get("messages", [])
-    except (OSError, ValueError) as e:
+        if not isinstance(obj, dict) or not isinstance(obj.get("model", ""), str):
+            raise ValueError("session must contain an object and a string model")
+        messages = obj.get("messages")
+        if not isinstance(messages, list):
+            raise ValueError("session messages must be a list")
+        pending = set()
+        for message in messages:
+            if not isinstance(message, dict):
+                raise ValueError("invalid message")
+            role = message.get("role")
+            if role == "tool":
+                cid = message.get("tool_call_id")
+                if not isinstance(cid, str) or cid not in pending or not isinstance(message.get("content"), str):
+                    raise ValueError("invalid tool result")
+                pending.remove(cid)
+            else:
+                if pending:
+                    raise ValueError("missing tool results")
+                if role == "assistant":
+                    validated = validate_assistant(message)
+                    pending = {c["id"] for c in validated.get("tool_calls", [])}
+                elif role not in ("system", "user") or not isinstance(message.get("content"), str):
+                    raise ValueError("invalid message role/content")
+        if pending:
+            raise ValueError("missing tool results")
+        return obj.get("model", ""), messages
+    except (OSError, ValueError, AIError) as e:
         print("dani-ai: cannot load %s: %s" % (path, e), file=sys.stderr)
         return None, None
 
@@ -183,8 +246,42 @@ def build_parser():
     p.add_argument("--continue", dest="cont", nargs="?", const="last",
                    metavar="NAME", help="resume saved chat (default: last)")
     p.add_argument("--show-config", action="store_true", help="print resolved config, exit")
+    p.add_argument("--no-tools", action="store_true", help="disable all tools")
+    p.add_argument("--tool-root", default=".", help="read-only tools root (default: cwd)")
+    p.add_argument("--block-tool", action="append", default=[], metavar="NAME",
+                   help="block tool name or glob; repeatable")
+    p.add_argument("--tool-blocklist", help="blocklist file (one name/glob per line)")
     p.add_argument("--version", action="store_true")
     return p
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        def origin(url):
+            p = urllib.parse.urlsplit(url)
+            return p.scheme.lower(), p.hostname, p.port or (443 if p.scheme == "https" else 80)
+        target = urllib.parse.urlsplit(newurl)
+        if target.username or target.password or origin(req.full_url) != origin(newurl):
+            raise AIError("refusing cross-origin redirect (API key protection)")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def open_request(req, timeout):
+    try:
+        p = urllib.parse.urlsplit(req.full_url)
+        if p.scheme not in ("http", "https") or not p.hostname or p.username or p.password:
+            raise AIError("API base must be an HTTP(S) URL without credentials")
+        return urllib.request.build_opener(SafeRedirectHandler()).open(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(500).decode("utf-8", "replace")
+        except (OSError, http.client.HTTPException):
+            body = "(cannot read error body)"
+        finally:
+            e.close()
+        raise AIError("HTTP %s %s" % (e.code, safe_terminal(body))) from e
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise AIError("connection error: %s" % e) from e
 
 
 def post_json(url, payload, api_key, timeout):
@@ -198,22 +295,244 @@ def post_json(url, payload, api_key, timeout):
         },
         method="POST",
     )
-    try:
-        return urllib.request.urlopen(req, timeout=timeout)
-    except urllib.error.HTTPError as e:
+    return open_request(req, timeout)
+
+
+TOOL_NAMES = ("list_files", "read_file", "search_text", "run_command")
+
+
+def validate_assistant(message):
+    if not isinstance(message, dict) or message.get("content") is not None and not isinstance(message.get("content"), str):
+        raise AIError("invalid assistant message")
+    calls = message.get("tool_calls", [])
+    if not isinstance(calls, list) or len(calls) > 16:
+        raise AIError("invalid tool calls")
+    ids = set()
+    for call in calls:
+        if not isinstance(call, dict) or call.get("type") != "function":
+            raise AIError("invalid tool call")
+        function = call.get("function")
+        cid = call.get("id")
+        if not isinstance(cid, str) or not cid or cid in ids or not isinstance(function, dict):
+            raise AIError("invalid tool call id/function")
+        ids.add(cid)
+        if not isinstance(function.get("name"), str) or not isinstance(function.get("arguments"), str):
+            raise AIError("invalid tool function")
+        if len(function["arguments"]) > 65536:
+            raise AIError("tool arguments too large")
+    if not calls and not isinstance(message.get("content"), str):
+        raise AIError("missing assistant content")
+    result = {"role": "assistant", "content": message.get("content")}
+    if calls:
+        result["tool_calls"] = calls
+    return result
+
+
+class ToolRunner:
+    """File tools plus bounded shell execution; shell is NOT sandboxed."""
+    def __init__(self, root, blocked=(), blocklist=None):
+        self.root = Path(root).resolve(strict=True)
+        if not self.root.is_dir():
+            raise AIError("tool root must be a directory")
+        default = Path(default_system_file()).with_name("ai.tools.blocklist")
+        path = Path(blocklist) if blocklist else default
+        self.blocked = list(blocked)
+        if blocklist or path.exists():
+            self.blocked += [line.split("#", 1)[0].strip()
+                             for line in path.read_text(encoding="utf-8").splitlines()
+                             if line.split("#", 1)[0].strip()]
+        self.schemas = []
+        for name in TOOL_NAMES:
+            if self.is_blocked(name):
+                continue
+            properties = {"path": {"type": "string", "description": "Relative path within tool root"}}
+            required = ["path"]
+            if name == "search_text":
+                properties["query"] = {"type": "string", "description": "Literal text to find in this file"}
+                required.append("query")
+            if name == "run_command":
+                properties = {"command": {"type": "string", "description": "Linux shell command, executed using /bin/sh"}}
+                required = ["command"]
+            self.schemas.append({"type": "function", "function": {
+                "name": name, "description": {
+                    "list_files": "List a directory (nonrecursive, maximum 200 entries).",
+                    "read_file": "Read a UTF-8 text file (maximum 64 KiB).",
+                    "search_text": "Find literal text in one UTF-8 file (maximum 100 matching lines).",
+                    "run_command": "Run a Linux shell command in tool root with user privileges. NOT sandboxed: can write files, access network and paths outside root. 30s timeout, 64 KiB combined output limit. Avoid destructive commands unless explicitly requested."
+                }[name], "parameters": {"type": "object", "properties": properties,
+                                        "required": required, "additionalProperties": False}}})
+
+    def is_blocked(self, name):
+        return any(fnmatch.fnmatchcase(name, pattern) for pattern in self.blocked)
+
+    @staticmethod
+    def allowed(name):
+        lower = name.lower()
+        return not (name.startswith(".") or lower in {"ai.key", "ai.system", "id_rsa", "id_ed25519"}
+                    or any(word in lower for word in ("secret", "credential", "password", "token"))
+                    or lower.endswith((".key", ".pem", ".p12", ".pfx")))
+
+    def open_path(self, path):
+        if not isinstance(path, str) or len(path) > 4096:
+            raise ValueError("invalid path")
+        parts = Path(path).parts
+        if Path(path).is_absolute() or any(p == ".." or not self.allowed(p) for p in parts):
+            raise ValueError("path is outside root or sensitive")
+        fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            body = e.read().decode("utf-8", "replace")[:500]
-        except Exception:
-            body = ""
-        print("dani-ai: HTTP %s %s" % (e.code, body), file=sys.stderr)
-        sys.exit(1)
-    except urllib.error.URLError as e:
-        print("dani-ai: connection error: %s" % e, file=sys.stderr)
-        sys.exit(1)
+            for i, part in enumerate(parts):
+                flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                if i < len(parts) - 1:
+                    flags |= os.O_DIRECTORY
+                new = os.open(part, flags, dir_fd=fd)
+                os.close(fd)
+                fd = new
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def run_command(self, command, timeout=30, output_limit=65536):
+        if not isinstance(command, str) or not 0 < len(command) <= 16000 or "\x00" in command:
+            raise ValueError("command must be 1..16000 characters without NUL")
+        # Do not hand API credentials inherited from the CLI to child processes.
+        # This is defense in depth, not isolation: the shell still has user rights.
+        env = {k: v for k, v in os.environ.items()
+               if k not in KEY_ENVS and not any(word in k.upper()
+                   for word in ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"))}
+        process = subprocess.Popen(["/bin/sh", "-c", command], cwd=self.root,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, env=env, start_new_session=True)
+        output = bytearray()
+        reason = None
+        deadline = time.monotonic() + timeout
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        reason = "timeout"
+                        break
+                    for key, _ in selector.select(min(remaining, 0.1)):
+                        chunk = os.read(key.fileobj.fileno(), min(8192, output_limit + 1 - len(output)))
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        output.extend(chunk)
+                        if len(output) > output_limit:
+                            reason = "output_limit"
+                            break
+                    if reason:
+                        break
+                if not reason:
+                    try:
+                        process.wait(timeout=max(0.001, deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        reason = "timeout"
+        finally:
+            # Also clean up background children that retained pipes or outlived sh.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            process.stdout.close()
+        return json.dumps({"output": bytes(output[:output_limit]).decode("utf-8", "replace"),
+                           "exit_code": process.returncode, "stopped": reason,
+                           "untrusted": True}, ensure_ascii=False)
+
+    def execute(self, name, arguments):
+        try:
+            if name not in TOOL_NAMES or self.is_blocked(name):
+                raise ValueError("tool unknown or blocked")
+            args = json.loads(arguments)
+            required = ({"command"} if name == "run_command" else
+                        {"path", "query"} if name == "search_text" else {"path"})
+            if not isinstance(args, dict) or set(args) != required:
+                raise ValueError("invalid tool arguments")
+            if name == "run_command":
+                return self.run_command(args["command"])
+            if name == "search_text" and (not isinstance(args["query"], str) or not 0 < len(args["query"]) <= 1000):
+                raise ValueError("query must be 1..1000 characters")
+            fd = self.open_path(args["path"])
+            try:
+                info = os.fstat(fd)
+                if name == "list_files":
+                    if not stat.S_ISDIR(info.st_mode):
+                        raise ValueError("not a directory")
+                    entries = []
+                    with os.scandir(fd) as it:
+                        for scanned, entry in enumerate(it):
+                            if scanned >= 2000 or len(entries) >= 200:
+                                entries.append("[truncated]")
+                                break
+                            if self.allowed(entry.name) and not entry.is_symlink():
+                                entries.append(entry.name + ("/" if entry.is_dir(follow_symlinks=False) else ""))
+                    result = "\n".join(sorted(entries))
+                else:
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink > 1:
+                        raise ValueError("only regular, non-hardlinked files are allowed")
+                    data = os.read(fd, 65537)
+                    if len(data) > 65536 or b"\x00" in data:
+                        raise ValueError("file too large or binary")
+                    result = data.decode("utf-8")
+                    if name == "search_text":
+                        result = "\n".join(("%d: %s" % (i, line)) for i, line in
+                                             enumerate(result.splitlines(), 1) if args["query"] in line)
+                        result = "\n".join(result.splitlines()[:100])
+                return json.dumps({"result": result[:16000], "untrusted": True}, ensure_ascii=False)
+            finally:
+                os.close(fd)
+        except (OSError, ValueError, TypeError) as e:
+            return json.dumps({"error": str(e)})
 
 
-def request_once(base, api_key, model, messages, timeout, temp, max_tok):
+def tool_complete(base, api_key, model, messages, timeout, temp, max_tok,
+                  stream, out, render, runner):
+    work = list(messages)
+    for turn in range(9):
+        if stream:
+            fw = _FrameWriter(out, "🤖 · %s" % safe_terminal(model)) if render else out
+            try:
+                reply = waiting_stream(base, api_key, model, work, timeout, temp,
+                                       max_tok, fw, _MdLive() if render else None, runner.schemas)
+            finally:
+                if render:
+                    fw.end()
+        else:
+            with _Waiting(out):
+                reply = request_once(base, api_key, model, work, timeout, temp, max_tok, runner.schemas)
+            if reply.get("content"):
+                text = reply["content"]
+                if render:
+                    text = frame_answer(render_markdown(safe_terminal(text)), "🤖 · %s" % safe_terminal(model))
+                elif out_is_tty(out):
+                    text = safe_terminal(text)
+                out.write(text + "\n")
+                out.flush()
+        calls = reply.get("tool_calls", [])
+        if not calls:
+            messages.extend(work[len(messages):])
+            return reply["content"]
+        if turn == 8:
+            raise AIError("tool round limit reached (8)")
+        work.append(reply)
+        for call in calls:
+            function = call["function"]
+            if out_is_tty(out):
+                out.write("⚙ %s…\n" % safe_terminal(function["name"]))
+                out.flush()
+            result = runner.execute(function["name"], function["arguments"])
+            work.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+    raise AIError("tool round limit reached")
+
+
+def request_once(base, api_key, model, messages, timeout, temp, max_tok, tools=None):
     payload = {"model": model, "messages": messages, "stream": False}
+    if tools is not None:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     if temp is not None:
         payload["temperature"] = temp
     if max_tok is not None:
@@ -222,13 +541,17 @@ def request_once(base, api_key, model, messages, timeout, temp, max_tok):
         try:
             obj = json.loads(r.read().decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as e:
-            print("dani-ai: bad JSON response: %s" % e, file=sys.stderr)
-            sys.exit(1)
+            raise AIError("bad JSON response: %s" % e) from e
     try:
-        return obj["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError):
-        print("dani-ai: unexpected response: %s" % json.dumps(obj)[:500], file=sys.stderr)
-        sys.exit(1)
+        message = obj["choices"][0]["message"]
+        if tools is not None:
+            return validate_assistant(message)
+        content = message["content"]
+        if not isinstance(content, str):
+            raise TypeError("message content is not text")
+        return content
+    except (KeyError, IndexError, TypeError) as e:
+        raise AIError("unexpected chat response") from e
 
 
 def list_models(base, api_key, timeout):
@@ -239,86 +562,240 @@ def list_models(base, api_key, timeout):
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with open_request(req, timeout) as r:
             obj = json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        print("dani-ai: models HTTP %s" % e.code, file=sys.stderr)
-        return None
-    except urllib.error.URLError as e:
-        print("dani-ai: models connection error: %s" % e, file=sys.stderr)
-        return None
-    except ValueError:
-        print("dani-ai: models bad JSON response", file=sys.stderr)
+    except (AIError, ValueError, OSError, http.client.HTTPException) as e:
+        print("dani-ai: models: %s" % safe_terminal(str(e)), file=sys.stderr)
         return None
     try:
-        return sorted(m["id"] for m in obj["data"])
+        ids = [m["id"] for m in obj["data"]]
+        if not all(isinstance(mid, str) for mid in ids):
+            raise TypeError("model ids must be strings")
+        return sorted(ids)
     except (KeyError, TypeError):
         print("dani-ai: models unexpected response", file=sys.stderr)
         return None
 
 
 def request_stream(base, api_key, model, messages, timeout, temp, max_tok, out,
-                   live=None):
+                   live=None, tools=None):
     payload = {"model": model, "messages": messages, "stream": True}
+    if tools is not None:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     if temp is not None:
         payload["temperature"] = temp
     if max_tok is not None:
         payload["max_tokens"] = max_tok
     full = []
-    pending = ""
+    calls = {}
+    done = False
+    sanitizer = TerminalSanitizer() if live is not None or out_is_tty(out) else None
     with post_json(base + "/chat/completions", payload, api_key, timeout) as r:
-        while True:
-            raw = r.readline()
-            if not raw:
-                break
+        for raw in r:
             text = raw.decode("utf-8", "replace").strip()
-            if not text.startswith("data:"):
+            if not text or text.startswith(":") or text.startswith(("event:", "id:", "retry:")):
                 continue
+            if not text.startswith("data:"):
+                raise AIError("unexpected stream event")
             data = text[5:].strip()
             if data == "[DONE]":
+                done = True
                 break
             try:
                 obj = json.loads(data)
-                delta = obj["choices"][0].get("delta", {}).get("content", "")
-            except (ValueError, KeyError, IndexError, TypeError):
-                continue
+                if not isinstance(obj, dict) or "error" in obj:
+                    raise ValueError("API stream error")
+                choices = obj["choices"]
+                if not isinstance(choices, list):
+                    raise ValueError("invalid choices")
+                if not choices:  # optional usage-only event
+                    continue
+                chunk = choices[0].get("delta", {})
+                if tools is not None:
+                    for call in chunk.get("tool_calls", []):
+                        index = call["index"]
+                        if not isinstance(index, int) or not 0 <= index < 16:
+                            raise ValueError("invalid tool index")
+                        target = calls.setdefault(index, {"id": "", "type": "function",
+                                                         "function": {"name": "", "arguments": ""}})
+                        if "id" in call:
+                            target["id"] += call["id"]
+                        for key in ("name", "arguments"):
+                            target["function"][key] += call.get("function", {}).get(key, "")
+                        if len(target["function"]["arguments"]) > 65536:
+                            raise ValueError("tool arguments too large")
+                delta = chunk.get("content", "")
+                if delta is None:
+                    delta = ""
+                if not isinstance(delta, str):
+                    raise ValueError("non-text delta")
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
+                raise AIError("invalid or error stream event") from e
             if delta:
                 full.append(delta)
-                if live is None:
-                    out.write(delta)
-                    out.flush()
-                else:
-                    pending += delta
-                    while "\n" in pending:
-                        ln, pending = pending.split("\n", 1)
-                        out.write(live.render(ln) + "\n")
-                        out.flush()
-    if live is not None and pending:
-        out.write(live.render(pending))
-        out.flush()
+                visible = sanitizer.feed(delta) if sanitizer else delta
+                # Render fragments immediately: never wait for a newline to show tokens.
+                out.write(render_inline(visible) if live is not None else visible)
+                out.flush()
+    if not done:
+        raise AIError("stream interrupted before [DONE]; partial answer not saved")
     out.write("\n")
     out.flush()
+    if tools is not None:
+        message = {"role": "assistant", "content": "".join(full) or None}
+        if calls:
+            message["tool_calls"] = [calls[i] for i in sorted(calls)]
+        return validate_assistant(message)
     return "".join(full)
 
 
+def out_is_tty(out):
+    return bool(getattr(out, "isatty", lambda: False)())
+
+
+class TerminalSanitizer:
+    """Strip terminal controls, retaining state across streamed chunks."""
+    def __init__(self):
+        self.state = "text"
+
+    def feed(self, text):
+        result = []
+        for c in text:
+            if self.state == "esc":
+                if c == "[":
+                    self.state = "csi"
+                elif c in "]PX^_":
+                    self.state = "string"
+                elif " " <= c <= "/":
+                    self.state = "escape-intermediate"
+                else:
+                    self.state = "text"
+            elif self.state == "escape-intermediate":
+                if "0" <= c <= "~":
+                    self.state = "text"
+            elif self.state == "csi":
+                if "@" <= c <= "~":
+                    self.state = "text"
+            elif self.state == "string":
+                if c in ("\x07", "\x9c"):
+                    self.state = "text"
+                elif c == "\x1b":
+                    self.state = "string-esc"
+            elif self.state == "string-esc":
+                self.state = "text" if c == "\\" else "string"
+            elif c == "\x1b":
+                self.state = "esc"
+            elif c == "\x9b":
+                self.state = "csi"
+            elif c in ("\x90", "\x9d", "\x98", "\x9e", "\x9f"):
+                self.state = "string"
+            elif c in "\n\t" or unicodedata.category(c) not in ("Cc", "Cf", "Cs"):
+                result.append(c)
+        return "".join(result)
+
+
+def safe_terminal(text):
+    return TerminalSanitizer().feed(text)
+
+
+class _Waiting:
+    """TTY-only progress indicator; stop and join before writing response text."""
+
+    def __init__(self, out):
+        self.out = out
+        self.enabled = out_is_tty(out)
+        self.stopped = threading.Event()
+        self.thread = None
+
+    def __enter__(self):
+        if self.enabled:
+            self.out.write("\r⠋ Đang chờ phản hồi…")
+            self.out.flush()
+            self.thread = threading.Thread(target=self._animate, daemon=True)
+            self.thread.start()
+        return self
+
+    def _animate(self):
+        frames = "⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋"
+        i = 0
+        while not self.stopped.wait(0.1):
+            try:
+                self.out.write("\r%s Đang chờ phản hồi…" % frames[i % len(frames)])
+                self.out.flush()
+            except OSError:
+                return
+            i += 1
+
+    def stop(self):
+        if self.stopped.is_set():
+            return
+        self.stopped.set()
+        if self.thread is not None:
+            self.thread.join()
+        if self.enabled:
+            self.out.write("\r" + " " * 28 + "\r")
+            self.out.flush()
+
+    def __exit__(self, *exc):
+        self.stop()
+
+    def isatty(self):
+        return self.enabled
+
+    def write(self, text):
+        if text:
+            self.stop()
+        return self.out.write(text)
+
+    def flush(self):
+        self.out.flush()
+
+
+def waiting_stream(base, api_key, model, messages, timeout, temp, max_tok, out,
+                   live=None, tools=None):
+    # Animate on the underlying terminal, not through the frame line writer.
+    terminal = out.out if isinstance(out, _FrameWriter) else out
+    with _Waiting(terminal) as waiting:
+        class Writer:
+            def isatty(self):
+                return out_is_tty(out)
+
+            def write(self, text):
+                if text:
+                    waiting.stop()
+                return out.write(text)
+
+            def flush(self):
+                out.flush()
+        return request_stream(base, api_key, model, messages, timeout, temp,
+                              max_tok, Writer(), live, tools)
+
+
 def complete(base, api_key, model, messages, timeout, temp, max_tok, stream, out,
-               render=False):
+               render=False, runner=None):
+    if runner is not None and runner.schemas:
+        return tool_complete(base, api_key, model, messages, timeout, temp,
+                             max_tok, stream, out, render, runner)
     if render:
-        title = "AI · %s" % model
+        title = "🤖 · %s" % model
         if stream:
             fw = _FrameWriter(out, title)
-            raw = request_stream(base, api_key, model, messages, timeout, temp,
-                                 max_tok, fw, _MdLive())
-            fw.end()
-            return raw
-        raw = request_once(base, api_key, model, messages, timeout, temp, max_tok)
-        out.write(frame_answer(render_markdown(raw), title) + "\n")
+            try:
+                return waiting_stream(base, api_key, model, messages, timeout, temp,
+                                      max_tok, fw, _MdLive())
+            finally:
+                fw.end()
+        with _Waiting(out):
+            raw = request_once(base, api_key, model, messages, timeout, temp, max_tok)
+        out.write(frame_answer(render_markdown(safe_terminal(raw)), safe_terminal(title)) + "\n")
         out.flush()
         return raw
     if stream:
-        return request_stream(base, api_key, model, messages, timeout, temp, max_tok, out)
-    text = request_once(base, api_key, model, messages, timeout, temp, max_tok)
-    out.write(text)
+        return waiting_stream(base, api_key, model, messages, timeout, temp, max_tok, out)
+    with _Waiting(out):
+        text = request_once(base, api_key, model, messages, timeout, temp, max_tok)
+    out.write(safe_terminal(text) if out_is_tty(out) else text)
     if not text.endswith("\n"):
         out.write("\n")
     out.flush()
@@ -396,7 +873,7 @@ def render_markdown(text):
 def color_enabled(cli_color):
     if not cli_color:
         return False
-    if os.environ.get("NO_COLOR"):
+    if "NO_COLOR" in os.environ:
         return False
     return sys.stdout.isatty()
 
@@ -437,36 +914,40 @@ class _FrameWriter:
 
     def __init__(self, out, title, width=None):
         self.out = out
-        self.buf = ""
+        self.at_line_start = True
         w = width or term_width()
-        out.write(_frame_head(title, w) + "\n")
+        out.write(_frame_head(safe_terminal(title), w) + "\n")
         out.flush()
         self.foot = _frame_foot(w)
 
+    def isatty(self):
+        return out_is_tty(self.out)
+
     def write(self, s):
-        self.buf += s
-        while "\n" in self.buf:
-            ln, self.buf = self.buf.split("\n", 1)
-            self.out.write(_frame_line(ln) + "\n")
-            self.out.flush()
+        for part in s.splitlines(keepends=True):
+            if self.at_line_start:
+                self.out.write(_A_DIM + "│" + _A_RST)
+                self.out.write(" ")
+            self.out.write(part)
+            self.at_line_start = part.endswith("\n")
+        self.out.flush()
 
     def flush(self):
         self.out.flush()
 
     def end(self):
-        if self.buf:
-            self.out.write(_frame_line(self.buf) + "\n")
-            self.buf = ""
+        if not self.at_line_start:
+            self.out.write("\n")
         self.out.write(self.foot + "\n")
         self.out.flush()
 
 
-def input_boxed():
-    if not sys.stdout.isatty():
+def input_boxed(color=True):
+    if not color or not sys.stdout.isatty():
         return input("> ")
     w = term_width()
-    print(_A_DIM + ("┌─ Bạn ".ljust(w, "─")) + _A_RST)
-    return input(_A_B + _A_GREEN + "└─❯ " + _A_RST)
+    print(_A_DIM + ("┌─ 👤 ".ljust(w, "─")) + _A_RST)
+    return input("\001" + _A_B + _A_GREEN + "\002└─❯ " + "\001" + _A_RST + "\002")
 
 
 # ---- REPL slash-command completion + hints (readline, stdlib) ----
@@ -519,6 +1000,8 @@ def setup_readline(hist_dir):
                 hist_dir, _rl.get_line_buffer(), text, state))
         _rl.parse_and_bind("tab: complete")
         _rl.set_history_length(200)
+        if hasattr(_rl, "set_auto_history"):
+            _rl.set_auto_history(True)
         hf = os.path.join(hist_dir, ".repl_history")
         try:
             _rl.read_history_file(hf)
@@ -540,139 +1023,157 @@ def read_piped_stdin():
 
 
 def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
-         hist_dir, initial=None):
+         hist_dir, initial=None, runner=None):
     if initial is not None:
         model, messages = initial
+        messages = list(messages)
+        if system:
+            messages = [m for m in messages if m["role"] != "system"]
+            messages.insert(0, {"role": "system", "content": system})
+        else:
+            system = next((m["content"] for m in messages if m["role"] == "system"), "")
         n = len([m for m in messages if m["role"] != "system"])
-        print("(resumed %d messages, model=%s)" % (n, model))
+        print("(resumed %d messages, model=%s)" % (n, safe_terminal(model)))
     else:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
     print("dani-ai chat (%s). /help for commands, Tab completes, Ctrl-D to quit."
-          % model)
+          % safe_terminal(model))
     histfile = setup_readline(hist_dir)
-    while True:
-        try:
-            line = input_boxed()
-        except EOFError:
-            print("")
-            break
-        except KeyboardInterrupt:
-            print("")
-            break
-        s = line.strip()
-        if not s:
-            continue
-        if _rl is not None:
+    try:
+        while True:
             try:
-                _rl.add_history(line)
+                line = input_boxed(color)
+            except EOFError:
+                print("")
+                break
+            except KeyboardInterrupt:
+                print("")
+                break
+            s = line.strip()
+            if not s:
+                continue
+            if s in ("/quit", "/exit", "/q"):
+                break
+            if s in ("/reset", "/clear", "/new"):
+                messages = [{"role": "system", "content": system}] if system else []
+                print("(history cleared)")
+                continue
+            if s in ("/help", "/h", "/?"):
+                print("/reset xoa lich su  /system <t> doi system  /model (chon so)  /base <u>")
+                print("/save [ten]  /stream on|off  /color on|off  /quit")
+                print("Commands: /reset /system /model /base /save /stream /color /quit")
+                continue
+            if s == "/save" or s.startswith("/save "):
+                name = s[len("/save"):].strip() or time.strftime("%Y%m%d-%H%M%S")
+                safe = re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-") or "chat"
+                if save_session(os.path.join(hist_dir, safe + ".json"), model,
+                                messages):
+                    print("(saved %s)" % safe)
+                continue
+            if s == "/system" or s.startswith("/system "):
+                messages = [m for m in messages if m["role"] != "system"]
+                new_sys = s[len("/system"):].strip()
+                if new_sys:
+                    system = new_sys
+                    messages.insert(0, {"role": "system", "content": system})
+                    print("(system updated)")
+                else:
+                    system = ""
+                    print("(system cleared)")
+                continue
+            if s == "/model":
+                ids = list_models(base, api_key, timeout)
+                if not ids:
+                    continue
+                for i, mid in enumerate(ids, 1):
+                    print("%d. %s" % (i, safe_terminal(mid)))
+                try:
+                    pick = input("model # or name (Enter = keep %s): " % safe_terminal(model)).strip()
+                except (EOFError, KeyboardInterrupt):
+                    print("")
+                    continue
+                if not pick:
+                    print("model = %s" % safe_terminal(model))
+                elif pick.isdigit() and 1 <= int(pick) <= len(ids):
+                    model = ids[int(pick) - 1]
+                    print("(model = %s)" % safe_terminal(model))
+                else:
+                    model = pick
+                    print("(model = %s)" % safe_terminal(model))
+                continue
+            if s.startswith("/model "):
+                model = s[len("/model"):].strip()
+                print("(model = %s)" % safe_terminal(model))
+                continue
+            if s == "/base" or s.startswith("/base "):
+                url = s[len("/base"):].strip()
+                if url:
+                    base = url.rstrip("/")
+                    print("(base = %s)" % base)
+                else:
+                    print("base = %s" % base)
+                continue
+            if s == "/stream" or s.startswith("/stream "):
+                arg = s[len("/stream"):].strip().lower()
+                if arg in ("on", "1", "true"):
+                    stream = True
+                elif arg in ("off", "0", "false"):
+                    stream = False
+                print("(stream %s)" % ("on" if stream else "off"))
+                continue
+            if s == "/color" or s.startswith("/color "):
+                arg = s[len("/color"):].strip().lower()
+                if arg in ("on", "1", "true"):
+                    color = True
+                elif arg in ("off", "0", "false"):
+                    color = False
+                print("(color %s)" % ("on" if color else "off"))
+                continue
+            if s.startswith("/"):
+                hint = suggest_command(s)
+                print(hint or "unknown command. /help")
+                continue
+            messages.append({"role": "user", "content": s})
+            try:
+                reply = complete(base, api_key, model, messages, timeout, temp, max_tok,
+                                 stream, sys.stdout, color, runner)
+            except BrokenPipeError:
+                messages.pop()
+                break
+            except (AIError, OSError, ValueError, http.client.HTTPException) as e:
+                messages.pop()  # failed turn must not contaminate future requests
+                print("\ndani-ai: %s" % safe_terminal(str(e)), file=sys.stderr)
+                continue
+            except KeyboardInterrupt:
+                messages.pop()
+                print("\n(request cancelled)", file=sys.stderr)
+                continue
+            messages.append({"role": "assistant", "content": reply})
+    finally:
+        if has_content(messages):
+            try:
+                if save_session(os.path.join(hist_dir, "last.json"), model, messages):
+                    print("(auto-saved, --continue to resume)")
+            except (BrokenPipeError, OSError):
+                pass
+        if histfile and _rl is not None:
+            try:
+                atomic_private_write(histfile, _rl.write_history_file)
             except Exception:
                 pass
-        if s in ("/quit", "/exit", "/q"):
-            break
-        if s in ("/reset", "/clear", "/new"):
-            messages = [{"role": "system", "content": system}] if system else []
-            print("(history cleared)")
-            continue
-        if s in ("/help", "/h", "/?"):
-            print("/reset xoa lich su  /system <t> doi system  /model (chon so)  /base <u>")
-            print("/save [ten]  /stream on|off  /color on|off  /quit")
-            print("Commands: /reset /system /model /base /save /stream /color /quit")
-            continue
-        if s == "/save" or s.startswith("/save "):
-            name = s[len("/save"):].strip() or time.strftime("%Y%m%d-%H%M%S")
-            safe = re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-") or "chat"
-            if save_session(os.path.join(hist_dir, safe + ".json"), model,
-                            messages):
-                print("(saved %s)" % safe)
-            continue
-        if s.startswith("/system"):
-            messages = [m for m in messages if m["role"] != "system"]
-            new_sys = s[len("/system"):].strip()
-            if new_sys:
-                system = new_sys
-                messages.insert(0, {"role": "system", "content": system})
-                print("(system updated)")
-            else:
-                system = ""
-                print("(system cleared)")
-            continue
-        if s == "/model":
-            ids = list_models(base, api_key, timeout)
-            if not ids:
-                continue
-            for i, mid in enumerate(ids, 1):
-                print("%d. %s" % (i, mid))
-            try:
-                pick = input("model # or name (Enter = keep %s): " % model).strip()
-            except (EOFError, KeyboardInterrupt):
-                print("")
-                continue
-            if not pick:
-                print("model = %s" % model)
-            elif pick.isdigit() and 1 <= int(pick) <= len(ids):
-                model = ids[int(pick) - 1]
-                print("(model = %s)" % model)
-            else:
-                model = pick
-                print("(model = %s)" % model)
-            continue
-        if s.startswith("/model "):
-            model = s[len("/model"):].strip()
-            print("(model = %s)" % model)
-            continue
-        if s.startswith("/base"):
-            url = s[len("/base"):].strip()
-            if url:
-                base = url.rstrip("/")
-                print("(base = %s)" % base)
-            else:
-                print("base = %s" % base)
-            continue
-        if s.startswith("/stream"):
-            arg = s[len("/stream"):].strip().lower()
-            if arg in ("on", "1", "true"):
-                stream = True
-            elif arg in ("off", "0", "false"):
-                stream = False
-            print("(stream %s)" % ("on" if stream else "off"))
-            continue
-        if s.startswith("/color"):
-            arg = s[len("/color"):].strip().lower()
-            if arg in ("on", "1", "true"):
-                color = True
-            elif arg in ("off", "0", "false"):
-                color = False
-            print("(color %s)" % ("on" if color else "off"))
-            continue
-        if s.startswith("/"):
-            hint = suggest_command(s)
-            print(hint or "unknown command. /help")
-            continue
-        messages.append({"role": "user", "content": s})
-        try:
-            reply = complete(base, api_key, model, messages, timeout, temp, max_tok,
-                             stream, sys.stdout, color)
-        except BrokenPipeError:
-            break
-        messages.append({"role": "assistant", "content": reply})
-    if has_content(messages):
-        try:
-            if save_session(os.path.join(hist_dir, "last.json"), model, messages):
-                print("(auto-saved, --continue to resume)")
-        except (BrokenPipeError, OSError):
-            pass
-    if histfile and _rl is not None:
-        try:
-            os.makedirs(hist_dir, exist_ok=True)
-            _rl.write_history_file(histfile)
-        except Exception:
-            pass
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.timeout <= 0 or not math.isfinite(args.timeout):
+        parser.error("--timeout must be finite and positive")
+    if args.max_tokens is not None and args.max_tokens <= 0:
+        parser.error("--max-tokens must be positive")
+    if args.temperature is not None and not math.isfinite(args.temperature):
+        parser.error("--temperature must be finite")
     if args.version:
         print("dani-ai " + VERSION)
         return 0
@@ -683,6 +1184,8 @@ def main(argv=None):
     base, base_source = resolve_base(args.api_base, key_source, file_base)
     system, system_source = resolve_system(args.system, args.system_file)
     hist = history_dir()
+    runner = None if args.no_tools else ToolRunner(args.tool_root, args.block_tool,
+                                                  args.tool_blocklist)
     saved_model, saved_msgs = "", None
     if args.cont is not None:
         name = args.cont if args.cont.endswith(".json") else args.cont + ".json"
@@ -705,6 +1208,11 @@ def main(argv=None):
         print("api_base = %s  (%s)" % (base, base_source))
         print("model = %s  (%s)" % (model, model_source))
         print("key = %s  (%s)" % (masked, key_source or "missing"))
+        print("tools = %s" % (", ".join(s["function"]["name"] for s in runner.schemas)
+                                if runner and runner.schemas else "(disabled)"))
+        if runner:
+            print("tool_root = %s" % runner.root)
+            print("blocked_tools = %s" % (", ".join(runner.blocked) or "(none)"))
         print("system = %s" % (system_source or "(none)"))
         if system:
             print("--- system preview ---")
@@ -727,7 +1235,7 @@ def main(argv=None):
         if ids is None:
             return 1
         for mid in ids:
-            print(mid)
+            print(safe_terminal(mid) if sys.stdout.isatty() else mid)
         return 0
     if len(words) == 1 and words[0] == "history":
         try:
@@ -747,7 +1255,7 @@ def main(argv=None):
                           if m.get("role") == "user"), "")
             first = first.replace("\n", " ")[:60]
             n = len([m for m in msgs if m.get("role") != "system"])
-            print("%s  %s  %d msgs  %s" % (f[:-5], sm or "-", n, first))
+            print(safe_terminal("%s  %s  %d msgs  %s" % (f[:-5], sm or "-", n, first)))
         return 0
     initial = None
     if saved_msgs is not None:
@@ -755,13 +1263,13 @@ def main(argv=None):
     if want_chat:
         repl(base, api_key, model, system, args.timeout,
              args.temperature, args.max_tokens, args.stream, render, hist,
-             initial)
+             initial, runner)
         return 0
     piped = read_piped_stdin()
     if not words and not piped:
         repl(base, api_key, model, system, args.timeout,
              args.temperature, args.max_tokens, args.stream, render, hist,
-             initial)
+             initial, runner)
         return 0
     prompt = " ".join(words).strip()
     if piped:
@@ -769,14 +1277,23 @@ def main(argv=None):
     if not prompt:
         print("dani-ai: empty prompt.", file=sys.stderr)
         return 1
-    messages = []
+    messages = list(saved_msgs) if saved_msgs is not None else []
     if system:
-        messages.append({"role": "system", "content": system})
+        messages = [m for m in messages if m["role"] != "system"]
+        messages.insert(0, {"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
     complete(base, api_key, model, messages, args.timeout,
-             args.temperature, args.max_tokens, args.stream, sys.stdout, render)
+             args.temperature, args.max_tokens, args.stream, sys.stdout, render, runner)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except (AIError, OSError, ValueError, http.client.HTTPException) as e:
+        print("dani-ai: %s" % safe_terminal(str(e)), file=sys.stderr)
+        sys.exit(1)

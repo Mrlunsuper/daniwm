@@ -5,7 +5,6 @@ set -u
 TDIR=$(dirname "$0")
 ROOT=$(cd "$TDIR/.." && pwd)
 AI="$ROOT/dani-ai"
-PORT=18091
 TMP=$(mktemp -d)
 MOCK_LAST="$TMP/last-body.json"
 export MOCK_LAST
@@ -20,7 +19,7 @@ EMPTY_CFG="$TMP/cfg"
 mkdir -p "$EMPTY_CFG/daniwm"
 clear_keys() {
     unset DANI_AI_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY FREELLMAPI_API_KEY VILAO_API_KEY
-    unset DANI_AI_API_BASE OPENAI_API_BASE DANI_AI_MODEL DANI_AI_SYSTEM_FILE
+    unset DANI_AI_API_BASE OPENAI_API_BASE DANI_AI_MODEL DANI_AI_SYSTEM_FILE DANI_AI_KEY_FILE
     export XDG_CONFIG_HOME="$EMPTY_CFG"
 }
 
@@ -70,18 +69,26 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-HTTPServer(("127.0.0.1", 18091), H).serve_forever()
+server = HTTPServer(("127.0.0.1", 0), H)
+with open(os.path.join(os.path.dirname(LAST), "port"), "w") as f:
+    f.write(str(server.server_port))
+server.serve_forever()
 PYEOF
 
 python3 "$TMP/mock.py" &
 SRV=$!
 trap 'kill $SRV 2>/dev/null; rm -rf "$TMP"' EXIT INT TERM
 for _ in $(seq 1 50); do
-    if python3 -c "import socket;socket.create_connection(('127.0.0.1',$PORT),timeout=1).close()" 2>/dev/null; then
+    if [ -s "$TMP/port" ]; then
         break
     fi
     sleep 0.1
 done
+if [ ! -s "$TMP/port" ]; then
+    echo "FAIL: mock server did not start" >&2
+    exit 1
+fi
+PORT=$(cat "$TMP/port")
 BASE="http://127.0.0.1:$PORT/v1"
 
 # 1. missing key -> exit 2
@@ -215,9 +222,9 @@ out = buf.getvalue()
 assert raw == "**bold** and `code`", "raw=%r" % raw
 assert "\x1b[" in out, "no ANSI in %r" % out
 assert "**" not in out, "raw md leaked in %r" % out
-assert "│" in out and "┌─ AI" in out, "no frame in %r" % out
-fr = m.frame_answer("hi", "AI · mm", width=40)
-assert "AI · mm" in fr and fr.count("│") >= 1 and "└" in fr, "frame %r" % fr
+assert "│" in out and "┌─ 🤖" in out, "no frame in %r" % out
+fr = m.frame_answer("hi", "🤖 · mm", width=40)
+assert "🤖 · mm" in fr and fr.count("│") >= 1 and "└" in fr, "frame %r" % fr
 fw = m._FrameWriter(io.StringIO(), "T", width=20)
 fw.write("ab"); fw.write("cd\nef"); fw.end()
 got = fw.out.getvalue()
@@ -304,6 +311,12 @@ PYEOF
     ok "completer unit"
 else
     bad "completer unit" "see above"
+fi
+
+if python3 "$TDIR/test-ai-regression.py"; then
+    ok "security and failure-path regressions"
+else
+    bad "security and failure-path regressions" "see above"
 fi
 
 echo "---"

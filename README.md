@@ -221,7 +221,77 @@ Key: `--api-key` > `DANI_AI_API_KEY` > `OPENAI_API_KEY` > `DEEPSEEK_API_KEY` >
 `~/.config/daniwm/ai.key` (3 dong: key, base, model). System: `--system` >
 `--system-file` > `~/.config/daniwm/ai.system`. Markdown render mau khi chay
 trong terminal, giu text tho khi pipe (`--no-color` de tat). Phim tat:
-`Super+Shift+a`. Test: `./test/test-ai.sh`.
+`Super+Shift+a`. Test: `./test/test-ai.sh` (bao gom regression bao mat/loi,
+khong can API key that).
+
+### Tool use (bat mac dinh)
+
+Tool mac dinh: `list_files`, `read_file`, `search_text`, **`run_command`**.
+Model tu quyet dinh khi nao goi tool; provider/model can ho tro OpenAI function calling.
+
+**Canh bao:** `run_command` chay `/bin/sh -c` voi quyen user hien tai, khong
+hoi xac nhan. Co the ghi/xoa file, truy cap mang va doc duong dan ngoai root.
+`--tool-root` chi la working directory cua shell, KHONG phai sandbox.
+Chi su dung voi model/provider va noi dung ban tin tuong. Chan `run_command`
+neu muon chi doc file. Blocklist theo ten tool khong phai bo loc lenh shell.
+
+```sh
+dani-ai chat --tool-root ~/project
+dani-ai "Doc README.md va tom tat"
+dani-ai chat --block-tool read_file --block-tool search_text
+dani-ai chat --tool-blocklist ./blocked-tools.txt
+dani-ai chat --no-tools            # provider khong ho tro / tat toan bo
+dani-ai --show-config              # xem tools dang bat va root
+```
+
+Blocklist mac dinh: `~/.config/daniwm/ai.tools.blocklist`
+(ton trong `XDG_CONFIG_HOME`). Moi dong mot ten/glob; dong trong va `#` bo qua:
+
+```text
+# Tat shell truoc khi gioi han truy cap file
+run_command
+read_file
+search_*
+# Dung * de chan tat ca
+```
+
+`--block-tool` co the lap lai, cong don voi file blocklist. Tool bi chan khong
+xuat hien trong request; neu model van goi thi executor tu choi.
+Blocklist duoc doc khi khoi dong, can mo lai CLI sau khi thay doi.
+
+`run_command` co timeout 30 giay, gioi han 64 KiB output stdout+stderr;
+tra exit code va ly do dung. CLI don process group khi ket thuc/Ctrl-C.
+API key va bien moi truong co ten secret/token/password khong duoc truyen
+cho shell, nhung shell van co the doc file user: day khong phai cach ly bao mat.
+Vi du: `dani-ai "Chay uname -a va df -h, tom tat ket qua"`.
+
+Root mac dinh la cwd. Cac tool file (khong bao gom shell) khong cho duong dan tuyet doi, `..`, symlink,
+file an, mot so ten secret/key pho bien; khong doc hardlink hay device/FIFO.
+Doc toi da 64 KiB/file, tra toi da 16.000 ky tu/tool; toi da 8 vong tool.
+`search_text` tim chuoi literal trong mot file, khong de quy.
+Ket qua file duoc gui den API provider: chi dung root chua du lieu ban muon
+chia se. Bo loc ten secret khong the nhan dien moi du lieu nhay cam.
+Neu can cam doc noi dung, chan `run_command`, `read_file` va `search_text`.
+
+### Do tin cay va bao mat
+
+- `--continue last "cau hoi tiep"` gui ca context da luu trong single-shot.
+  Single-shot khong tu ghi de session; REPL tu luu khi thoat.
+- Terminal hien spinner `Đang chờ phản hồi…` cho den khi co noi dung tra loi
+  (ca stream va non-stream); tu don dep khi loi/Ctrl-C. Pipe khong co spinner.
+- Loi API/timeout hoac Ctrl-C khi dang request khong dong REPL. Luot loi bi
+  loai khoi context; co the nhap lai. Cac luot thanh cong van duoc autosave.
+- Stream phai ket thuc bang `[DONE]`. JSON loi, error event hoac stream bi cat
+  duoc bao loi; phan text da hien thi khong duoc luu nhu cau tra loi hoan chinh.
+  Token duoc hien thi ngay, khong doi newline; mau inline duoc render theo chunk.
+- History va readline history duoc ghi atomic: thu muc `0700`, file `0600`.
+  Day van la plaintext, khong phai ma hoa. File session cu chi duoc thay doi
+  quyen khi ghi lai.
+- Redirect khac origin (scheme/host/port), ke ca HTTPS sang HTTP, bi chan de
+  tranh gui API key sang endpoint khac. HTTP van duoc ho tro cho local server;
+  hay dung HTTPS cho endpoint remote.
+- Control sequence tu API bi loc khi hien thi TTY; pipe giu raw text.
+  `--no-color`/`NO_COLOR` tat mau do ung dung them, khong tat bo loc TTY.
 
 ## Verify (headless, works from Wayland)
 
