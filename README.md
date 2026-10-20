@@ -240,10 +240,18 @@ Nhan **Ctrl+V** de doc clipboard truc tiep (khong can sua terminal):
 
 ### Tool use (bat mac dinh)
 
-Tool builtin mac dinh: `list_files`, `read_file`, `search_text`, `write_file`, `edit_file`.
+Tool builtin mac dinh: `list_files`, `read_file`, `search_text`, `write_file`, `edit_file`, `git_status`.
 Chi can chay `dani-ai chat` trong thu muc project de yeu cau tao/sua file,
 khong can flag shell hay xac nhan moi lan.
 
+- `git_status()`: xem branch va thay doi cua repo chua tool root, khong can shell,
+  khong ghi index/commit, bo qua submodule. Tool root mac dinh la thu muc luc
+  khoi chay, KHONG mac dinh la thu muc cau hinh. Mo terminal tai project hoac
+  dung `--tool-root ~/project` neu muon chon repo khac. Trong chat, go
+  `/root ~/.config` hoac `/root ~/project` de doi root ngay, khong can shell;
+  `/root` hien root hien tai. Duong dan tuong doi tinh tu root hien tai.
+  Doi root se xoa hoi thoai de tranh dung noi dung file cu cho project moi;
+  blocklist va quyen shell giu nguyen. Lenh nay do user go, model khong tu doi root.
 - `write_file(path, content)`: tao file moi, khong ghi de; thu muc cha phai co san.
 - `edit_file(path, old_text, new_text)`: thay doan text khop chinh xac **mot lan**;
   model can doc file truoc. Khong khop/khop nhieu lan -> tu choi.
@@ -293,6 +301,11 @@ API key va bien moi truong co ten secret/token/password khong duoc truyen
 cho shell, nhung shell van co the doc file user: day khong phai cach ly bao mat.
 Vi du: `dani-ai --allow-shell "Chay uname -a va df -h, tom tat ket qua"`.
 `--yes-tools` khong bat shell; blocklist van uu tien hon `--allow-shell`.
+Trong chat co the go `/shell on` de bat shell cho phien hien tai (vi du de
+yeu cau Git commit/push), `/shell off` de tat; `/shell` xem trang thai.
+Day la quyen shell DAY DU, khong chi Git; model co the ghi file, dung mang,
+truy cap ngoai tool root. Chi bat khi tin tuong model va noi dung hoi thoai.
+Blocklist van duoc ton trong; lua chon khong tu luu sang phien moi.
 
 Root mac dinh la cwd. Cac tool file (khong bao gom shell) khong cho duong dan tuyet doi, `..`, symlink,
 file an, mot so ten secret/key pho bien; khong doc hardlink hay device/FIFO.
@@ -325,7 +338,7 @@ Intervals: `1m`, `5m`, `15m`, `30m`, `1h`, `1d`, `1wk`, `1mo`;
 
 ### Custom tools (tu dinh nghia)
 
-Ngoai 6 tool builtin, dani-ai nap them manifest JSON trong
+Ngoai 7 tool builtin, dani-ai nap them manifest JSON trong
 `~/.config/daniwm/ai.tools/` (`$XDG_CONFIG_HOME` duoc ton trong).
 Moi tool = 1 file `<ten>.json` + 1 script/lenh bat ky (sh, python, binary...).
 Khong can sua dani-ai khi them tool moi.

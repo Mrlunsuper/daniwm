@@ -364,7 +364,7 @@ def post_json(url, payload, api_key, timeout):
     return open_request(req, timeout)
 
 
-TOOL_NAMES = ("list_files", "read_file", "search_text", "write_file", "edit_file", "run_command")
+TOOL_NAMES = ("list_files", "read_file", "search_text", "write_file", "edit_file", "git_status", "run_command")
 CUSTOM_TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
 CUSTOM_TOOL_MAX = 32
 CUSTOM_TOOL_TIMEOUT = 120
@@ -639,9 +639,8 @@ class ToolRunner:
             raise AIError("tool root must be a directory")
         default = Path(default_system_file()).with_name("ai.tools.blocklist")
         path = Path(blocklist) if blocklist else default
+        self.allow_shell = allow_shell
         self.blocked = list(blocked)
-        if not allow_shell:
-            self.blocked.append("run_command")
         if blocklist or path.exists():
             self.blocked += [line.split("#", 1)[0].strip()
                              for line in path.read_text(encoding="utf-8").splitlines()
@@ -665,6 +664,9 @@ class ToolRunner:
             if name == "search_text":
                 properties["query"] = {"type": "string", "description": "Literal text to find in this file"}
                 required.append("query")
+            if name == "git_status":
+                properties = {}
+                required = []
             if name == "write_file":
                 properties["content"] = {"type": "string", "description": "Complete UTF-8 content for a NEW file (max 64 KiB). Parent directory must exist."}
                 required.append("content")
@@ -678,6 +680,7 @@ class ToolRunner:
             self.schemas.append({"type": "function", "function": {
                 "name": name, "description": {
                     "list_files": "List a directory (nonrecursive, maximum 200 entries).",
+                    "git_status": "Read Git status and branch for the repository containing tool root. No arguments, no shell, no commits or file changes. Returns tool root so the user can verify the selected project.",
                     "read_file": "Read a UTF-8 text file (maximum 64 KiB).",
                     "write_file": "Create a NEW UTF-8 file inside tool root without confirmation. Never overwrites existing files. Parent must exist. Max 64 KiB.",
                     "edit_file": "Edit an existing UTF-8 file inside tool root without confirmation using one unique exact-text replacement. Read first. Max 64 KiB. No symlinks or sensitive paths.",
@@ -711,7 +714,19 @@ class ToolRunner:
             self.custom[tool.name] = tool
 
     def is_blocked(self, name):
-        return any(fnmatch.fnmatchcase(name, pattern) for pattern in self.blocked)
+        return (name == "run_command" and not self.allow_shell) or any(
+            fnmatch.fnmatchcase(name, pattern) for pattern in self.blocked)
+
+    def set_shell(self, enabled):
+        self.allow_shell = enabled
+        self.schemas = [s for s in self.schemas if s["function"]["name"] != "run_command"]
+        if not self.is_blocked("run_command"):
+            self.schemas.append({"type": "function", "function": {
+                "name": "run_command",
+                "description": "Run /bin/sh in tool root with user privileges. NOT sandboxed; can write files, use network and access outside root. 30s timeout, 64 KiB output limit.",
+                "parameters": {"type": "object", "properties": {
+                    "command": {"type": "string"}}, "required": ["command"],
+                    "additionalProperties": False}}})
 
     @staticmethod
     def allowed(name):
@@ -817,6 +832,30 @@ class ToolRunner:
             finally:
                 os.close(parent)
 
+    def git_status(self):
+        # Do not inherit GIT_DIR/GIT_WORK_TREE/config injection from the caller.
+        # Disable optional index writes, fsmonitor hooks and background maintenance.
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("GIT_") and k not in KEY_ENVS and not any(
+                   word in k.upper() for word in
+                   ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"))}
+        env.update({"GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",
+                    "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                    "LC_ALL": "C"})
+        output, errors, stopped, code = _run_tool_process(
+            ["git", "--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false",
+             "-c", "maintenance.auto=false", "status", "--porcelain=v1", "--branch",
+             "--untracked-files=normal", "--ignore-submodules=all"],
+            self.root, env, b"", 10, 65536)
+        result = {"tool_root": str(self.root), "untrusted": True}
+        if stopped or code != 0:
+            result["error"] = "git status failed: %s" % (stopped or "exit %s" % code)
+            result["stderr"] = errors.decode("utf-8", "replace")
+        else:
+            result["output"] = output.decode("utf-8", "replace")
+            result["format"] = "git status --porcelain=v1 --branch (submodules ignored)"
+        return json.dumps(result, ensure_ascii=False)
+
     def run_command(self, command, timeout=30, output_limit=65536):
         if not isinstance(command, str) or not 0 < len(command) <= 16000 or "\x00" in command:
             raise ValueError("command must be 1..16000 characters without NUL")
@@ -889,12 +928,15 @@ class ToolRunner:
             if name not in TOOL_NAMES or self.is_blocked(name):
                 raise ValueError("tool unknown or blocked")
             args = json.loads(arguments)
-            required = ({"command"} if name == "run_command" else
+            required = (set() if name == "git_status" else
+                        {"command"} if name == "run_command" else
                         {"path", "content"} if name == "write_file" else
                         {"path", "old_text", "new_text"} if name == "edit_file" else
                         {"path", "query"} if name == "search_text" else {"path"})
             if not isinstance(args, dict) or set(args) != required:
                 raise ValueError("invalid tool arguments")
+            if name == "git_status":
+                return self.git_status()
             if name in ("write_file", "edit_file"):
                 return self.change_file(name, args)
             if name == "run_command":
@@ -1632,7 +1674,7 @@ def input_boxed(color=True):
 
 COMMANDS = [
     "/base", "/clear", "/color", "/exit", "/help", "/model",
-    "/new", "/q", "/quit", "/reset", "/resume", "/save", "/stream", "/system",
+    "/new", "/q", "/quit", "/reset", "/resume", "/root", "/save", "/shell", "/stream", "/system",
 ]
 
 
@@ -1747,7 +1789,9 @@ def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
                 print("/clear clear terminal + new session  /new new session")
                 print("/save [name] (no name = AI title)  /resume [name] (no name = picker)")
                 print("/stream on|off  /color on|off  /quit")
-                print("Commands: /reset /system /model /base /save /resume /stream /color /quit")
+                print("/root [directory] show/change tool root (supports ~; no shell needed)")
+                print("/shell on|off enable/disable UNSANDBOXED shell for this session (allows Git commit/push)")
+                print("Commands: /reset /system /model /base /root /save /resume /stream /color /quit")
                 continue
             if s == "/save" or s.startswith("/save "):
                 name = s[len("/save"):].strip()
@@ -1837,6 +1881,45 @@ def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
             if s.startswith("/model "):
                 model = s[len("/model"):].strip()
                 print("(model = %s)" % safe_terminal(model))
+                continue
+            if s == "/shell" or s.startswith("/shell "):
+                if runner is None:
+                    print("(tools disabled; restart without --no-tools)")
+                    continue
+                arg = s[len("/shell"):].strip().lower()
+                if arg not in ("", "on", "off"):
+                    print("usage: /shell on|off")
+                    continue
+                if arg:
+                    runner.set_shell(arg == "on")
+                enabled = not runner.is_blocked("run_command")
+                print("(shell %s)" % ("on: UNSANDBOXED user privileges, network and paths outside root" if enabled else "off; blocklist still applies"))
+                continue
+            if s == "/root" or s.startswith("/root "):
+                if runner is None:
+                    print("(tools disabled; restart without --no-tools)")
+                    continue
+                directory = s[len("/root"):].strip()
+                if directory:
+                    try:
+                        candidate = Path(directory).expanduser()
+                        if not candidate.is_absolute():
+                            candidate = runner.root / candidate
+                        candidate = candidate.resolve(strict=True)
+                        if not candidate.is_dir():
+                            raise ValueError("tool root must be a directory")
+                        previous = runner.root
+                        runner.root = candidate
+                        if candidate != previous:
+                            # Tool outputs in the previous conversation describe
+                            # another filesystem context. Do not let the model
+                            # edit the new project based on stale file contents.
+                            messages = [{"role": "system", "content": system}] if system else []
+                            print("(tool root changed; conversation cleared to avoid stale file context)")
+                    except (OSError, ValueError, RuntimeError) as e:
+                        print("(cannot change root: %s)" % safe_terminal(str(e)))
+                        continue
+                print("tool_root = %s" % safe_terminal(str(runner.root)))
                 continue
             if s == "/base" or s.startswith("/base "):
                 url = s[len("/base"):].strip()

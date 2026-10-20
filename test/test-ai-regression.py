@@ -375,14 +375,14 @@ class Tests(unittest.TestCase):
             (root / 'ai.key').write_text('secret')
             (root / 'link').symlink_to(root / 'readme.txt')
             runner = m.ToolRunner(str(root))
-            self.assertEqual(len(runner.schemas), 5)
+            self.assertEqual(len(runner.schemas), 6)
             self.assertEqual(json.loads(runner.execute('read_file', '{"path":"readme.txt"}'))['result'], 'hello\nworld')
             self.assertIn('2: world', runner.execute('search_text', '{"path":"readme.txt","query":"world"}'))
             for path in ('../outside', '/etc/passwd', '.env', 'ai.key', 'link'):
                 self.assertIn('error', json.loads(runner.execute('read_file', json.dumps({'path': path}))))
             blocked = root / 'blocklist'
             blocked.write_text('# comment\nread_*\nsearch_text\n')
-            runner = m.ToolRunner(str(root), ['list_files', 'run_command', 'write_file', 'edit_file'], str(blocked))
+            runner = m.ToolRunner(str(root), ['list_files', 'run_command', 'write_file', 'edit_file', 'git_status'], str(blocked))
             self.assertEqual(runner.schemas, [])
             self.assertIn('error', json.loads(runner.execute('read_file', '{"path":"readme.txt"}')))
             self.assertIn('error', json.loads(runner.execute('shell', '{}')))
@@ -429,6 +429,76 @@ class Tests(unittest.TestCase):
                                ('edit_file', {'path': 'hello.txt', 'old_text': 'hello', 'new_text': 'x'})):
                 self.assertIn('error', json.loads(blocked.execute(name, json.dumps(args))))
             self.assertFalse(list(root.glob('.dani-ai-write-*')))
+
+    def test_session_shell_toggle(self):
+        with tempfile.TemporaryDirectory() as d:
+            runner = m.ToolRunner(d)
+            self.assertTrue(runner.is_blocked('run_command'))
+            out = io.StringIO()
+            with patch.object(m, 'setup_readline', return_value=''), \
+                 patch.object(m, 'input_boxed', side_effect=['/shell on', '/shell', '/shell off', '/q']), \
+                 contextlib.redirect_stdout(out):
+                m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d, runner=runner)
+            self.assertIn('UNSANDBOXED', out.getvalue())
+            self.assertTrue(runner.is_blocked('run_command'))
+            runner.set_shell(True)
+            runner.set_shell(True)
+            self.assertEqual(sum(s['function']['name'] == 'run_command' for s in runner.schemas), 1)
+            self.assertEqual(json.loads(runner.execute('run_command', '{"command":"printf enabled"}'))['output'], 'enabled')
+            blocked = m.ToolRunner(d, ['run_*'])
+            blocked.set_shell(True)
+            self.assertTrue(blocked.is_blocked('run_command'))
+            self.assertNotIn('run_command', [s['function']['name'] for s in blocked.schemas])
+
+    def test_repl_root_switch(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            hidden = root / '.config'
+            hidden.mkdir()
+            child = hidden / 'project'
+            child.mkdir()
+            runner = m.ToolRunner(d, ['write_file'])
+            seen = []
+            def complete(*args):
+                seen.append((runner.root, list(args[3])))
+                return 'ok'
+            inputs = ['old question', '/root .config', '/root project',
+                      '/root missing', '/root', 'new question', '/q']
+            out = io.StringIO()
+            with patch.object(m, 'setup_readline', return_value=''), \
+                 patch.object(m, 'input_boxed', side_effect=inputs), \
+                 patch.object(m, 'complete', side_effect=complete), \
+                 contextlib.redirect_stdout(out):
+                m.repl('x', 'fake', 'model', 'system', 1, None, None,
+                       False, False, str(root / 'history'), runner=runner)
+            self.assertEqual(runner.root, child)
+            self.assertEqual(seen[0][0], root)
+            self.assertEqual(seen[1][0], child)
+            self.assertEqual(seen[1][1], [{'role': 'system', 'content': 'system'},
+                                         {'role': 'user', 'content': 'new question'}])
+            self.assertTrue(runner.is_blocked('write_file'))
+            self.assertTrue(runner.is_blocked('run_command'))
+            self.assertIn('cannot change root', out.getvalue())
+            self.assertIn(str(child), out.getvalue())
+
+    def test_git_status_without_shell(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(['git', 'init', '-q', d], check=True)
+            (Path(d) / 'new.txt').write_text('new')
+            runner = m.ToolRunner(d)
+            with patch.dict(os.environ, {'GIT_DIR': '/nonexistent',
+                                         'GIT_WORK_TREE': '/nonexistent'}):
+                result = json.loads(runner.execute('git_status', '{}'))
+            self.assertNotIn('error', result)
+            self.assertIn('?? new.txt', result['output'])
+            self.assertEqual(result['tool_root'], d)
+            self.assertIn('error', json.loads(runner.execute('git_status', '{"command":"rm -rf ."}')))
+            blocked = m.ToolRunner(d, ['git_status'])
+            self.assertIn('error', json.loads(blocked.execute('git_status', '{}')))
+            self.assertIn('error', json.loads(runner.execute('run_command', '{"command":"true"}')))
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIn('error', json.loads(m.ToolRunner(d).execute('git_status', '{}')))
 
     def test_linux_commands(self):
         with tempfile.TemporaryDirectory() as d:
@@ -642,7 +712,7 @@ class Tests(unittest.TestCase):
             self.assertIn('blocked', json.loads(blocked.execute('needs_ok', '{}'))['error'])
             missing = m.ToolRunner(str(root), custom_dir=str(Path(d) / 'absent'))
             self.assertEqual(missing.custom, {})
-            self.assertEqual(len(missing.schemas), 5)
+            self.assertEqual(len(missing.schemas), 6)
 
     def test_custom_tool_argument_schema_validation(self):
         schema = {'type': 'object', 'properties': {
