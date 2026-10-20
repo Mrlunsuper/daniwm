@@ -50,6 +50,25 @@ class H(BaseHTTPRequestHandler):
         except ValueError:
             obj = {}
         md = "MDTEST" in body
+        if obj.get("stream") and "CALLTOOL" in body and "CUSTOM-OK" not in body:
+            # First round: ask the model to call the custom tool.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            call = {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",
+                    "type": "function", "function": {"name": "clock_probe",
+                    "arguments": "{\"tag\":\"t1\"}"}}]}}]}
+            self.wfile.write(("data: %s\n\n" % json.dumps(call)).encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+            return
+        if obj.get("stream") and "CUSTOM-OK" in body:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(("data: %s\n\n" % json.dumps(
+                {"choices": [{"delta": {"content": "tool-answer"}}]})).encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+            return
         if obj.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -222,13 +241,13 @@ out = buf.getvalue()
 assert raw == "**bold** and `code`", "raw=%r" % raw
 assert "\x1b[" in out, "no ANSI in %r" % out
 assert "**" not in out, "raw md leaked in %r" % out
-assert "│" in out and "┌─ 🤖" in out, "no frame in %r" % out
+assert "│" not in out and "┌─ 🤖" in out, "copy-safe frame missing in %r" % out
 fr = m.frame_answer("hi", "🤖 · mm", width=40)
-assert "🤖 · mm" in fr and fr.count("│") >= 1 and "└" in fr, "frame %r" % fr
+assert "🤖 · mm" in fr and "│" not in fr and "\nhi\n" in fr and "└" in fr, "frame %r" % fr
 fw = m._FrameWriter(io.StringIO(), "T", width=20)
 fw.write("ab"); fw.write("cd\nef"); fw.end()
 got = fw.out.getvalue()
-assert got.count("│") == 2, "framewriter %r" % got
+assert "│" not in got and "\nabcd\nef\n" in got, "framewriter %r" % got
 PYEOF
     ok "stream render live"
 else
@@ -312,6 +331,65 @@ PYEOF
 else
     bad "completer unit" "see above"
 fi
+
+# 23. custom tool manifest is advertised and executed via the real CLI
+clear_keys
+mkdir -p "$EMPTY_CFG/daniwm/ai.tools"
+cat > "$EMPTY_CFG/daniwm/ai.tools/clock_probe.json" <<'JSONEOF'
+{"name": "clock_probe", "description": "Return a fixed marker",
+ "command": ["python3", "-c", "import json,sys; a=json.load(sys.stdin); print(json.dumps({'marker': 'CUSTOM-OK', 'echo': a.get('tag')}))"],
+ "parameters": {"type": "object", "properties": {"tag": {"type": "string"}}, "additionalProperties": false}}
+JSONEOF
+out=$(DANI_AI_API_KEY=t "$AI" --api-base "$BASE" --show-config 2>&1)
+echo "$out" | grep -q "clock_probe" && echo "$out" | grep -q "custom_tools = clock_probe" \
+    && ok "custom tool advertised" || bad "custom tool advertised" "$out"
+out=$(DANI_AI_API_KEY=t "$AI" --api-base "$BASE" --no-custom-tools --show-config 2>&1)
+case "$out" in
+    *clock_probe*) bad "--no-custom-tools hides tool" "$out" ;;
+    *) ok "--no-custom-tools hides tool" ;;
+esac
+# invalid manifest is reported but does not break startup
+echo '{"name": "Bad Name", "description": "x", "command": ["true"]}' > "$EMPTY_CFG/daniwm/ai.tools/bad.json"
+out=$(DANI_AI_API_KEY=t "$AI" --api-base "$BASE" --show-config 2>&1); rc=$?
+echo "$out" | grep -q "tool_manifest_error = bad.json" && [ $rc -eq 0 ] \
+    && ok "invalid manifest reported" || bad "invalid manifest reported" "rc=$rc out=$out"
+rm -f "$EMPTY_CFG/daniwm/ai.tools/bad.json"
+
+# 24. BTC market tool ships valid manifest and runs (network optional)
+if python3 - "$AI" "$ROOT/ai.tools" <<'PYEOF'; then
+import json, subprocess, sys, tempfile
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("daniai", sys.argv[1]).load_module()
+tool = m.CustomTool(sys.argv[2] + "/btc_market.json")
+assert tool.name == "btc_market" and tool.confirm is False
+assert tool.command[1].endswith("btc_market.py")
+assert m.validate_json_value({"interval": "4h", "limit": 10}, tool.parameters) is None
+assert m.validate_json_value({"interval": "3h"}, tool.parameters)
+assert m.validate_json_value({"nope": 1}, tool.parameters)
+script = tool.command[1]
+proc = subprocess.run([sys.executable, script], input=b'{"interval":"2h"}',
+                      capture_output=True)
+if proc.returncode == 0:
+    data = json.loads(proc.stdout)
+    assert data.get("symbol") == "BTCUSDT"
+    assert "klines" in data and data["klines"]["interval"] == "2h"
+else:
+    print("btc tool skipped network check (rc=%d)" % proc.returncode)
+proc = subprocess.run([sys.executable, script], input=b'{"symbol":"BTC USDT"}',
+                      capture_output=True)
+assert proc.returncode == 2 and "error" in json.loads(proc.stdout)
+PYEOF
+    ok "btc_market tool"
+else
+    bad "btc_market tool" "see above"
+fi
+
+# 25. full CLI round-trip: model calls a custom tool, result is sent back
+clear_keys
+out=$(DANI_AI_API_KEY=t "$AI" --api-base "$BASE" --tools-dir "$EMPTY_CFG/daniwm/ai.tools" \
+      "CALLTOOL now" 2>&1); rc=$?
+if [ "$out" = "tool-answer" ] && [ $rc -eq 0 ]; then ok "custom tool CLI round-trip"; else bad "custom tool CLI round-trip" "rc=$rc out=$out"; fi
+if grep -q "CUSTOM-OK" "$MOCK_LAST"; then ok "custom tool result sent back"; else bad "custom tool result sent back" "$(cat "$MOCK_LAST")"; fi
 
 if python3 "$TDIR/test-ai-regression.py"; then
     ok "security and failure-path regressions"

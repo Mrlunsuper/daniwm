@@ -224,19 +224,35 @@ trong terminal, giu text tho khi pipe (`--no-color` de tat). Phim tat:
 `Super+Shift+a`. Test: `./test/test-ai.sh` (bao gom regression bao mat/loi,
 khong can API key that).
 
+### Paste anh / text trong chat
+
+Nhan **Ctrl+V** de doc clipboard truc tiep (khong can sua terminal):
+- Anh PNG/JPEG/WebP/GIF: hien `[Ảnh 1]`, co the paste nhieu anh, go cau hoi roi Enter de gui.
+- Text: chen vao vi tri con tro. Xoa marker anh truoc Enter de bo dinh kem.
+- Can GNU readline va `xclip` (X11) hoac `wl-paste` (Wayland); moi anh toi da 10 MiB.
+- Model/API phai ho tro vision va OpenAI-compatible `image_url`.
+- Anh duoc gui toi provider khi Enter va luu trong session (base64, file quyen 0600).
+  Ctrl+Shift+V van la paste text cua terminal, khong phai phim paste anh.
+  GNU readline bat bracketed paste: text nhieu dong (ke ca newline cuoi)
+  duoc chen de xem/sua, khong tu gui; nhan Enter sau khi paste de gui.
+  Can terminal ho tro bracketed paste; terminal khong ho tro van co the
+  coi newline trong clipboard la Enter.
+
 ### Tool use (bat mac dinh)
 
-Tool mac dinh: `list_files`, `read_file`, `search_text`, **`run_command`**.
+Tool builtin mac dinh: `list_files`, `read_file`, `search_text`.
+**`run_command` tat mac dinh**; chi bat bang `--allow-shell`.
 Model tu quyet dinh khi nao goi tool; provider/model can ho tro OpenAI function calling.
 
-**Canh bao:** `run_command` chay `/bin/sh -c` voi quyen user hien tai, khong
-hoi xac nhan. Co the ghi/xoa file, truy cap mang va doc duong dan ngoai root.
+**Canh bao:** sau khi bat `--allow-shell`, `run_command` chay `/bin/sh -c`
+voi quyen user hien tai, khong hoi xac nhan tung lenh. Co the ghi/xoa file, truy cap mang va doc duong dan ngoai root.
 `--tool-root` chi la working directory cua shell, KHONG phai sandbox.
 Chi su dung voi model/provider va noi dung ban tin tuong. Chan `run_command`
 neu muon chi doc file. Blocklist theo ten tool khong phai bo loc lenh shell.
 
 ```sh
 dani-ai chat --tool-root ~/project
+dani-ai chat --allow-shell         # opt-in shell KHONG sandbox
 dani-ai "Doc README.md va tom tat"
 dani-ai chat --block-tool read_file --block-tool search_text
 dani-ai chat --tool-blocklist ./blocked-tools.txt
@@ -263,15 +279,109 @@ Blocklist duoc doc khi khoi dong, can mo lai CLI sau khi thay doi.
 tra exit code va ly do dung. CLI don process group khi ket thuc/Ctrl-C.
 API key va bien moi truong co ten secret/token/password khong duoc truyen
 cho shell, nhung shell van co the doc file user: day khong phai cach ly bao mat.
-Vi du: `dani-ai "Chay uname -a va df -h, tom tat ket qua"`.
+Vi du: `dani-ai --allow-shell "Chay uname -a va df -h, tom tat ket qua"`.
+`--yes-tools` khong bat shell; blocklist van uu tien hon `--allow-shell`.
 
 Root mac dinh la cwd. Cac tool file (khong bao gom shell) khong cho duong dan tuyet doi, `..`, symlink,
 file an, mot so ten secret/key pho bien; khong doc hardlink hay device/FIFO.
-Doc toi da 64 KiB/file, tra toi da 16.000 ky tu/tool; toi da 8 vong tool.
+Doc toi da 64 KiB/file, tra toi da 16.000 ky tu/tool file; toi da 32 vong tool.
+Custom tool giu nguyen output trong gioi han `output_limit` cua manifest.
+Response co `finish_reason: length` hoac `content_filter` duoc bao loi,
+khong luu cau tra loi do dang vao history (stream co the da hien text mot phan).
 `search_text` tim chuoi literal trong mot file, khong de quy.
 Ket qua file duoc gui den API provider: chi dung root chua du lieu ban muon
 chia se. Bo loc ten secret khong the nhan dien moi du lieu nhay cam.
 Neu can cam doc noi dung, chan `run_command`, `read_file` va `search_text`.
+
+### Gold / XAUUSD proxy (khong can key)
+
+Tool `ai.tools/xauusd_market.json` + `ai.tools/xauusd_market.py` lay quote va
+OHLCV tu Yahoo Finance **GC=F (COMEX gold futures)**. Day **KHONG phai
+XAUUSD spot**; gia co the tre, chenh basis va bi anh huong boi futures roll.
+Khong dat lenh, khong co funding/OI. Ket qua ghi timestamp, quote age va
+canh bao; khong dung lam execution feed. Yahoo co the rate-limit/block.
+
+```sh
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/daniwm/ai.tools"
+cp ai.tools/xauusd_market.* "${XDG_CONFIG_HOME:-$HOME/.config}/daniwm/ai.tools/"
+dani-ai "Dung xauusd_market lay 100 nen 1h, nhan xet vang va ghi ro day la futures proxy"
+```
+
+Intervals: `1m`, `5m`, `15m`, `30m`, `1h`, `1d`, `1wk`, `1mo`;
+`limit` 1..200 (mac dinh 60). Nen cuoi co the chua dong; volume la futures.
+
+### Custom tools (tu dinh nghia)
+
+Ngoai 4 tool builtin, dani-ai nap them manifest JSON trong
+`~/.config/daniwm/ai.tools/` (`$XDG_CONFIG_HOME` duoc ton trong).
+Moi tool = 1 file `<ten>.json` + 1 script/lenh bat ky (sh, python, binary...).
+Khong can sua dani-ai khi them tool moi.
+
+```sh
+dani-ai tools                     # liet ke tool builtin + custom
+dani-ai --tools-dir ./ai.tools tools
+dani-ai --no-custom-tools chat    # chi dung builtin
+dani-ai --yes-tools chat          # tu dong dong y tool co confirm
+```
+
+Manifest toi thieu:
+
+```json
+{
+  "name": "btc_market",
+  "description": "Read public Binance USD-M futures data (ticker, klines, funding, OI, long/short). Read-only.",
+  "command": ["python3", "{manifest_dir}/btc_market.py"],
+  "timeout": 30,
+  "output_limit": 131072,
+  "confirm": false,
+  "parameters": {
+    "type": "object",
+    "properties": {"symbol": {"type": "string"}},
+    "required": [],
+    "additionalProperties": false
+  }
+}
+```
+
+Hop dong thuc thi:
+
+- Model goi tool voi JSON arguments; dani-ai **validate theo `parameters`**
+  (JSON Schema con: `type`, `enum`, `properties`, `required`,
+  `additionalProperties`, `items`, `minItems`/`maxItems`, `minLength`/`maxLength`,
+  `minimum`/`maximum`). Sai -> tra loi `error` cho model, khong chay lenh.
+- Arguments duoc gui qua **stdin** (JSON, khong qua shell, khong interpolate).
+  Tool in JSON (hoac text) ra stdout; stderr duoc giu rieng (toi da 4 KiB).
+  Exit code != 0 -> `error` + `stderr`; stdout rong -> `error`.
+- `command` la argv list, chay truc tiep (khong qua `/bin/sh`) voi cwd =
+  tool root. `{manifest_dir}` duoc thay bang thu muc chua manifest.
+- Bien moi truong co ten `*API_KEY*`, `*TOKEN*`, `*SECRET*`, `*PASSWORD*`,
+  `*CREDENTIAL*` **khong duoc truyen** cho tool (giong `run_command`).
+  Them `DANI_TOOL_NAME`, `DANI_TOOL_ROOT`.
+- `timeout` (mac dinh 30s, toi da 120s), `output_limit` (256..262144 bytes,
+  mac dinh 64 KiB). Vuot -> kill process group, tra `error`.
+  JSON hop le duoc giu nguyen cau truc; khong cat ngam o 16.000 ky tu.
+- `confirm: true` -> hoi `y/N` tren TTY truoc khi chay (cho tool co side
+  effect: ghi file, dat lenh, goi API thay doi du lieu). Khong co TTY hoac
+  `--yes-tools` thi quyet dinh tuong ung (tu choi / tu dong dong y).
+- Ten tool phai khop `^[a-z][a-z0-9_]{1,40}$`, khong duoc trung builtin;
+  toi da 32 custom tool. Manifest loi bi bo qua va bao trong
+  `dani-ai --show-config` (`tool_manifest_error = ...`).
+- `--block-tool` / blocklist ap dung cho ca custom tool (glob theo ten).
+
+Tool BTC tra `long_pct`/`short_pct` theo phan tram (0..100).
+Long/short period khac kline interval: `1m` -> `5m`, `8h` -> `6h`,
+`1w` -> `1d`; period thuc te nam trong `long_short.period`.
+
+Tool mau: `ai.tools/btc_market.json` + `ai.tools/btc_market.py` lay du lieu
+cong khai Binance USD-M futures (ticker 24h, klines OHLCV + thong ke cua so,
+funding rate, open interest, long/short ratio) — chi doc, khong can API key,
+khong dat lenh. Copy vao config de dung:
+
+```sh
+mkdir -p ~/.config/daniwm/ai.tools
+cp ~/daniwm/ai.tools/* ~/.config/daniwm/ai.tools/
+dani-ai "Lay du lieu BTC 4h va nhan xet xu huong"   # model tu goi btc_market
+```
 
 ### Do tin cay va bao mat
 

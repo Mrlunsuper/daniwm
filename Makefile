@@ -116,6 +116,10 @@ install-examples:
 	install -Dm644 run.config $(DESTDIR)$(EXAMPLEDIR)/run.config.example
 	install -Dm755 autostart.sh $(DESTDIR)$(EXAMPLEDIR)/autostart.sh.example
 	install -Dm644 ai.system.example $(DESTDIR)$(EXAMPLEDIR)/ai.system.example
+	install -Dm644 ai.tools/btc_market.json $(DESTDIR)$(EXAMPLEDIR)/ai.tools/btc_market.json
+	install -Dm755 ai.tools/btc_market.py $(DESTDIR)$(EXAMPLEDIR)/ai.tools/btc_market.py
+	install -Dm644 ai.tools/xauusd_market.json $(DESTDIR)$(EXAMPLEDIR)/ai.tools/xauusd_market.json
+	install -Dm755 ai.tools/xauusd_market.py $(DESTDIR)$(EXAMPLEDIR)/ai.tools/xauusd_market.py
 
 # User config: copies repo config + autostart.sh into
 # $${XDG_CONFIG_HOME:-$$HOME/.config}/daniwm/ (honours SUDO_USER under sudo).
@@ -135,11 +139,20 @@ install-user:
 	if [ ! -e "$$confdir/run.config" ]; then install -m644 run.config "$$confdir/run.config"; echo "installed $$confdir/run.config"; \
 	else echo "keep existing $$confdir/run.config"; fi; \
 	if [ ! -e "$$confdir/ai.system" ]; then install -m644 ai.system.example "$$confdir/ai.system"; echo "installed $$confdir/ai.system"; \
-	else echo "keep existing $$confdir/ai.system"; fi
+	else echo "keep existing $$confdir/ai.system"; fi; \
+	mkdir -p "$$confdir/ai.tools"; \
+	for tool in ai.tools/*.json ai.tools/*.py; do \
+	  [ -e "$$tool" ] || continue; \
+	  if [ ! -e "$$confdir/ai.tools/$$(basename "$$tool")" ]; then \
+	    install -m644 "$$tool" "$$confdir/ai.tools/"; echo "installed $$confdir/ai.tools/$$(basename "$$tool")"; \
+	  else echo "keep existing $$confdir/ai.tools/$$(basename "$$tool")"; fi; \
+	done
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/daniwm $(DESTDIR)$(BINDIR)/dani-comp $(DESTDIR)$(BINDIR)/dani-run $(DESTDIR)$(BINDIR)/dani-ai $(DESTDIR)$(SESSIONDIR)/daniwm.desktop
 	rm -f $(DESTDIR)$(EXAMPLEDIR)/config.example $(DESTDIR)$(EXAMPLEDIR)/run.config.example $(DESTDIR)$(EXAMPLEDIR)/autostart.sh.example $(DESTDIR)$(EXAMPLEDIR)/ai.system.example
+	rm -f $(DESTDIR)$(EXAMPLEDIR)/ai.tools/btc_market.json $(DESTDIR)$(EXAMPLEDIR)/ai.tools/btc_market.py
+	rm -f $(DESTDIR)$(EXAMPLEDIR)/ai.tools/xauusd_market.json $(DESTDIR)$(EXAMPLEDIR)/ai.tools/xauusd_market.py
 
 clean:
 	rm -f daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper test/menu-helper test/dialog-helper test/float-click-helper src/*.o src/*.d

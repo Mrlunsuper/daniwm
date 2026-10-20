@@ -1,0 +1,26 @@
+{
+  "name": "xauusd_market",
+  "description": "Read gold price and OHLCV candles from Yahoo Finance GC=F (COMEX gold futures proxy). IMPORTANT: NOT XAUUSD spot; always disclose this distinction and possible delayed quotes when answering. No API key; no orders. Reports source, quote timestamp/age, interval and futures volume. No funding or open interest.",
+  "command": ["python3", "{manifest_dir}/xauusd_market.py"],
+  "timeout": 25,
+  "output_limit": 131072,
+  "confirm": false,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "interval": {
+        "type": "string",
+        "enum": ["1m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo"],
+        "description": "Yahoo candle interval; default 1h. Latest candle may be incomplete."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "description": "Maximum usable candles to return; default 60. Market closures or missing bars may reduce count."
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  }
+}

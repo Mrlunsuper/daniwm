@@ -1,0 +1,41 @@
+{
+  "name": "btc_market",
+  "description": "Read public Binance USD-M futures market data (no API key): 24h ticker, klines/OHLCV, funding rate, open interest and long/short ratio for a symbol such as BTCUSDT. Returns JSON with derived window stats (high/low/change) for analysis. Read-only: never places orders.",
+  "command": ["python3", "{manifest_dir}/btc_market.py"],
+  "timeout": 30,
+  "output_limit": 131072,
+  "confirm": false,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "symbol": {
+        "type": "string",
+        "description": "Binance USDT-M futures symbol, e.g. BTCUSDT",
+        "minLength": 3,
+        "maxLength": 24
+      },
+      "interval": {
+        "type": "string",
+        "enum": ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "1w"],
+        "description": "Kline interval; long/short uses 5m for 1m, 6h for 8h, and 1d for 1w, reported as long_short.period. long_pct/short_pct are percentages (0..100)."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Number of klines (1-200)",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "include": {
+        "type": "array",
+        "description": "Sections to fetch",
+        "items": {
+          "type": "string",
+          "enum": ["ticker", "klines", "funding", "open_interest", "long_short"]
+        },
+        "maxItems": 5
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  }
+}

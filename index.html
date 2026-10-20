@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dani-ai — AI chat trong terminal</title>
+<meta name="description" content="dani-ai: chat AI (BYOK, OpenAI-compatible) chạy trong terminal, Python stdlib, không phụ thuộc, có tool use và paste ảnh.">
+<meta name="color-scheme" content="dark">
+<style>
+  :root{
+    --bg:#1d2021; --bg2:#282828; --fg:#ebdbb2; --dim:#a89984;
+    --aqua:#8ec07c; --blue:#83a598; --yellow:#fabd2f; --red:#fb4934;
+    --purple:#d3869b; --border:#3c3836;
+    --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth; scroll-padding-top:60px}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:var(--mono); font-size:15px; line-height:1.6;
+  }
+  a{color:var(--blue); text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:960px; margin:0 auto; padding:0 20px}
+  code,kbd,pre{font-family:var(--mono)}
+  code{background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.1em .35em; font-size:.92em}
+  pre{
+    background:var(--bg2); border:1px solid var(--border); border-radius:6px;
+    padding:14px 16px; overflow-x:auto; font-size:13.5px; line-height:1.55;
+  }
+  pre code{background:none; border:0; padding:0}
+  .c{color:#928374}
+  .g{color:var(--aqua)}
+  .y{color:var(--yellow)}
+  .p{color:var(--purple)}
+
+  .nav{position:sticky; top:0; z-index:10; background:rgba(29,32,33,.94);
+       backdrop-filter:blur(6px); border-bottom:1px solid var(--border); font-size:13px}
+  .nav .wrap{display:flex; align-items:center; gap:14px; height:44px; overflow-x:auto; white-space:nowrap}
+  .nav .brand{color:var(--aqua); font-weight:600}
+  .nav a{color:var(--dim)}
+  .nav a:hover{color:var(--fg); text-decoration:none}
+
+  header{padding:64px 0 40px; border-bottom:1px solid var(--border)}
+  .badge{display:inline-block; font-size:12px; color:var(--aqua); border:1px solid var(--aqua);
+         border-radius:999px; padding:2px 10px; margin-bottom:18px}
+  h1{font-size:clamp(28px,5vw,44px); margin:0 0 12px; letter-spacing:-.5px}
+  h1 .prompt{color:var(--aqua); user-select:none}
+  h1 .cursor{display:inline-block; width:.55ch; background:var(--aqua); animation:blink 1.1s steps(2,start) infinite}
+  @keyframes blink{to{visibility:hidden}}
+  .lead{color:var(--dim); max-width:64ch; margin:0 0 24px}
+  .btns{display:flex; flex-wrap:wrap; gap:10px}
+  .btn{display:inline-block; padding:8px 16px; border-radius:6px; border:1px solid var(--border);
+       color:var(--fg); background:var(--bg2); font-size:14px}
+  .btn:hover{border-color:var(--aqua); text-decoration:none}
+  .btn.primary{background:var(--aqua); color:#1d2021; border-color:var(--aqua); font-weight:600}
+  .btn.primary:hover{filter:brightness(1.08)}
+
+  section{padding:48px 0; border-bottom:1px solid var(--border)}
+  h2{font-size:22px; margin:0 0 8px}
+  h2::before{content:"## "; color:var(--aqua)}
+  h3{font-size:16px; margin:28px 0 8px; color:var(--yellow)}
+  h3::before{content:"### "; color:var(--dim)}
+  h4.t{font-size:14px; margin:22px 0 6px; color:var(--purple)}
+  .sub{color:var(--dim); margin:0 0 22px}
+
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px}
+  .card{background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:16px 18px}
+  .card h4{margin:0 0 6px; font-size:14px; color:var(--yellow)}
+  .card p{margin:0; color:var(--dim); font-size:13.5px}
+
+  table{width:100%; border-collapse:collapse; font-size:13.5px; margin-top:6px}
+  th,td{text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top}
+  th{color:var(--blue); font-weight:600}
+  td code{font-size:.95em; white-space:nowrap}
+  kbd{background:var(--bg2); border:1px solid var(--border); border-bottom-width:2px;
+      border-radius:4px; padding:1px 6px; font-size:12.5px; color:var(--fg)}
+
+  .warn{border-left:3px solid var(--red); background:#2b2323; padding:12px 16px; border-radius:0 6px 6px 0;
+        color:var(--dim); font-size:13.5px; margin:16px 0}
+  .warn strong{color:var(--red)}
+  .note{border-left:3px solid var(--blue); background:#232b2e; padding:12px 16px; border-radius:0 6px 6px 0;
+        color:var(--dim); font-size:13.5px; margin:16px 0}
+  .note strong{color:var(--blue)}
+
+  ul.tight{margin:6px 0 0; padding-left:22px; color:var(--dim); font-size:13.5px}
+  ul.tight li{margin:3px 0}
+  ul.tight code{font-size:.95em}
+
+  @media (max-width:600px){
+    table{font-size:12px}
+    th,td{padding:7px 5px; overflow-wrap:anywhere}
+    td code{white-space:normal; overflow-wrap:anywhere}
+    header{padding-top:40px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto}
+    h1 .cursor{animation:none}
+  }
+
+  footer{padding:32px 0 56px; color:#928374; font-size:13px; text-align:center}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap">
+    <span class="brand">dani-ai</span>
+    <a href="#features">Tính năng</a>
+    <a href="#install">Cài đặt</a>
+    <a href="#config">Cấu hình</a>
+    <a href="#usage">Cách dùng</a>
+    <a href="#repl">REPL</a>
+    <a href="#tools">Tool use</a>
+    <a href="#images">Paste ảnh</a>
+    <a href="#flags">Flags</a>
+    <a href="#safety">Bảo mật</a>
+    <a href="#troubleshoot">Sự cố</a>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <span class="badge">BYOK · Python stdlib · OpenAI-compatible · v0.1.0</span>
+    <h1><span class="prompt">$</span> dani-ai<span class="cursor">&nbsp;</span></h1>
+    <p class="lead">
+      Chat AI ngay trong terminal. Không framework, không dependency, không GUI —
+      một file Python, một API key, và tool use để đọc file / chạy lệnh.
+      Bạn có thể tắt hoặc chặn từng tool khi cần.
+    </p>
+    <div class="btns">
+      <a class="btn primary" href="#install">Bắt đầu</a>
+      <a class="btn" href="#usage">Cách dùng</a>
+      <a class="btn" href="#tools">Tool use</a>
+      <a class="btn" href="#safety">Bảo mật</a>
+    </div>
+  </div>
+</header>
+
+<main>
+<section id="features">
+  <div class="wrap">
+    <h2>Tính năng</h2>
+    <p class="sub">Nhỏ, nhanh, chạy ở đâu có Python 3 là chạy được.</p>
+    <div class="grid">
+      <div class="card"><h4>Stream mặc định</h4><p>Token hiện ngay khi tới, markdown có màu trong TTY, giữ text thô khi pipe.</p></div>
+      <div class="card"><h4>BYOK</h4><p>Mang key của bạn: OpenAI, DeepSeek, Ollama, LM Studio, FreeLLMAPI, Vilao… mọi endpoint OpenAI-compatible.</p></div>
+      <div class="card"><h4>Paste ảnh</h4><p><kbd>Ctrl+V</kbd> đọc clipboard: ảnh PNG/JPEG/WebP/GIF thành <code>[Ảnh 1]</code>, text chèn tại con trỏ.</p></div>
+      <div class="card"><h4>Tool use</h4><p><code>list_files</code>, <code>read_file</code>, <code>search_text</code>, <code>run_command</code> — bật mặc định, chặn theo tên/glob.</p></div>
+      <div class="card"><h4>Session &amp; history</h4><p>Autosave, <code>--continue</code>, <code>/save</code>, ghi atomic với quyền <code>0600</code>.</p></div>
+      <div class="card"><h4>Chế độ pipe</h4><p><code>cat f | dani-ai "tóm tắt"</code> — đọc stdin, không cần file tạm.</p></div>
+      <div class="card"><h4>Tích hợp daniwm</h4><p>Mở bằng <kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>a</kbd> trong bộ WM <code>daniwm</code>.</p></div>
+      <div class="card"><h4>Một file, không cài</h4><p>Chỉ Python 3 stdlib: <code>readline</code>, <code>urllib</code>, <code>json</code>. Không pip, không venv.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Cài đặt</h2>
+    <p class="sub">Chỉ cần Python 3. Muốn paste ảnh thì thêm <code>xclip</code> (X11) hoặc <code>wl-paste</code> (Wayland).</p>
+<pre><code><span class="c"># trong repo daniwm</span>
+chmod +x dani-ai
+mkdir -p ~/.local/bin
+ln -s "$PWD/dani-ai" ~/.local/bin/dani-ai   <span class="c"># hoặc copy thẳng</span>
+
+<span class="c"># key: 3 dòng — key, base URL, model (dòng 2, 3 tuỳ chọn)</span>
+mkdir -p ~/.config/daniwm
+cat &gt; ~/.config/daniwm/ai.key &lt;&lt;'K'
+sk-...
+https://api.deepseek.com/v1
+deepseek-chat
+K
+chmod 600 ~/.config/daniwm/ai.key</code></pre>
+
+    <h3>Kiểm tra nhanh</h3>
+<pre><code><span class="g">$</span> dani-ai --version
+dani-ai 0.1.0
+<span class="g">$</span> dani-ai --show-config          <span class="c"># in ra cấu hình đã resolve</span>
+<span class="g">$</span> dani-ai models                 <span class="c"># danh sách model từ /models</span>
+<span class="g">$</span> dani-ai "xin chao"              <span class="c"># thử request đầu tiên</span></code></pre>
+
+    <p class="sub" style="margin-top:16px">
+      Đặt dani-ai ở đâu cũng được — nó chỉ dùng module chuẩn, không import gì trong repo.
+      Nếu <code>~/.local/bin</code> chưa có trong <code>PATH</code>: <code>export PATH="$HOME/.local/bin:$PATH"</code>.
+    </p>
+  </div>
+</section>
+
+<section id="config">
+  <div class="wrap">
+    <h2>Cấu hình</h2>
+    <p class="sub">Dùng file cấu hình, biến môi trường hoặc flags. Flags có ưu tiên cao nhất.</p>
+    <h3>API key, endpoint và model</h3>
+    <ul class="tight">
+      <li>Key: <code>--api-key</code> → <code>DANI_AI_API_KEY</code> → <code>OPENAI_API_KEY</code> → <code>DEEPSEEK_API_KEY</code> → <code>FREELLMAPI_API_KEY</code> → <code>VILAO_API_KEY</code> → dòng 1 của <code>ai.key</code>.</li>
+      <li>Endpoint: <code>--api-base</code> → <code>DANI_AI_API_BASE</code> → <code>OPENAI_API_BASE</code> → dòng 2 của <code>ai.key</code> → mặc định.</li>
+      <li>Model: <code>--model</code> → <code>DANI_AI_MODEL</code> → dòng 3 của <code>ai.key</code> → mặc định.</li>
+    </ul>
+    <p>Mặc định dùng <code>https://api.openai.com/v1</code> và <code>gpt-4o-mini</code>.
+      Key lấy từ <code>DEEPSEEK_API_KEY</code> tự chọn endpoint DeepSeek nếu chưa đặt endpoint;
+      endpoint DeepSeek mặc định chọn <code>deepseek-chat</code> nếu chưa đặt model.</p>
+<pre><code>export DANI_AI_API_BASE="https://api.deepseek.com/v1"
+export DANI_AI_MODEL="deepseek-chat"
+<span class="c"># Lưu key trong ai.key như phần Cài đặt, tránh ghi key vào lịch sử shell.</span>
+dani-ai --show-config</code></pre>
+    <h3>System prompt</h3>
+    <p>Thứ tự: <code>--system</code> → <code>--system-file</code> → <code>DANI_AI_SYSTEM_FILE</code> → <code>~/.config/daniwm/ai.system</code>.</p>
+<pre><code><span class="c"># Chạy trong repo daniwm</span>
+cp ai.system.example ~/.config/daniwm/ai.system
+dani-ai --system "Trả lời ngắn gọn bằng tiếng Việt." "Giải thích X11"</code></pre>
+    <div class="note"><strong>Đường dẫn:</strong> <code>DANI_AI_KEY_FILE</code> đổi vị trí file key.
+      Các đường dẫn cấu hình mặc định dùng <code>$XDG_CONFIG_HOME/daniwm</code> nếu biến này được đặt, thay cho <code>~/.config/daniwm</code>.</div>
+  </div>
+</section>
+
+<section id="usage">
+  <div class="wrap">
+    <h2>Cách dùng</h2>
+    <p class="sub">Hỏi một lần, chat tương tác hoặc đưa nội dung qua stdin.</p>
+<pre><code><span class="c"># Hỏi một lần</span>
+dani-ai "Giải thích sự khác nhau giữa X11 và Wayland"
+
+<span class="c"># Chat tương tác</span>
+dani-ai chat
+
+<span class="c"># Tóm tắt stdin, không cho model gọi tool</span>
+cat README.md | dani-ai --no-tools "Tóm tắt nội dung này"
+
+<span class="c"># Lưu câu trả lời dạng text, không màu</span>
+dani-ai --no-tools "Viết checklist cài Linux" &gt; checklist.txt
+
+<span class="c"># Danh sách và tiếp tục hội thoại</span>
+dani-ai history
+dani-ai chat --continue
+dani-ai chat --continue ten-phien</code></pre>
+    <div class="note"><strong>daniwm:</strong> dùng <kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>a</kbd> để mở AI theo cấu hình WM. Trong terminal bất kỳ, chạy <code>dani-ai chat</code>.</div>
+  </div>
+</section>
+
+<section id="repl">
+  <div class="wrap">
+    <h2>REPL</h2>
+    <p class="sub">Trong <code>dani-ai chat</code>, dùng lệnh bắt đầu bằng dấu <code>/</code>.</p>
+    <table>
+      <thead><tr><th>Lệnh</th><th>Chức năng</th></tr></thead>
+      <tbody>
+        <tr><td><code>/help</code></td><td>Hiện hướng dẫn lệnh.</td></tr>
+        <tr><td><code>/model [tên]</code></td><td>Đặt model; không có tên thì lấy danh sách để chọn.</td></tr>
+        <tr><td><code>/base [url]</code></td><td>Đổi hoặc xem endpoint hiện tại.</td></tr>
+        <tr><td><code>/system [nội dung]</code></td><td>Đặt system prompt; không có nội dung thì xóa prompt.</td></tr>
+        <tr><td><code>/save [tên]</code></td><td>Lưu phiên; bỏ tên để AI gợi ý tên.</td></tr>
+        <tr><td><code>/resume [tên]</code></td><td>Mở phiên đã lưu; bỏ tên để chọn từ danh sách.</td></tr>
+        <tr><td><code>/reset</code>, <code>/new</code></td><td>Xóa ngữ cảnh hội thoại hiện tại, giữ system prompt.</td></tr>
+        <tr><td><code>/clear</code></td><td>Xóa màn hình và bắt đầu hội thoại mới.</td></tr>
+        <tr><td><code>/stream on|off</code></td><td>Bật/tắt streaming.</td></tr>
+        <tr><td><code>/color on|off</code></td><td>Bật/tắt màu markdown.</td></tr>
+        <tr><td><code>/quit</code>, <code>/exit</code>, <code>/q</code></td><td>Thoát chat.</td></tr>
+      </tbody>
+    </table>
+    <p><kbd>Tab</kbd> hoàn thành lệnh, phím <kbd>↑</kbd> gọi lại dòng đã nhập, <kbd>Ctrl</kbd>+<kbd>D</kbd> thoát khi dòng nhập trống.</p>
+    <p>Phiên được tự lưu; file hội thoại và lịch sử nhập nằm trong <code>~/.config/daniwm/ai-history</code>, ghi atomic với quyền <code>0600</code>.</p>
+  </div>
+</section>
+
+<section id="tools">
+  <div class="wrap">
+    <h2>Tool use</h2>
+    <p class="sub">Bật mặc định. Endpoint và model cần hỗ trợ function calling.</p>
+    <table>
+      <thead><tr><th>Tool</th><th>Chức năng và giới hạn</th></tr></thead>
+      <tbody>
+        <tr><td><code>list_files</code></td><td>Liệt kê thư mục, không đệ quy, tối đa 200 mục.</td></tr>
+        <tr><td><code>read_file</code></td><td>Đọc file UTF-8, tối đa 64 KiB.</td></tr>
+        <tr><td><code>search_text</code></td><td>Tìm chuỗi nguyên văn trong một file, tối đa 100 dòng khớp.</td></tr>
+        <tr><td><code>run_command</code></td><td>Chạy lệnh qua <code>/bin/sh</code>, timeout 30 giây, đầu ra tối đa 64 KiB.</td></tr>
+      </tbody>
+    </table>
+<pre><code><span class="c"># Chỉ đọc project, chặn shell và không nạp custom tools</span>
+dani-ai --tool-root "$PWD" --block-tool run_command --no-custom-tools chat
+
+<span class="c"># Tắt toàn bộ tools</span>
+dani-ai --no-tools "Giải thích tiling WM"
+
+<span class="c"># Chặn theo tên hoặc glob (quote để shell không tự mở rộng)</span>
+dani-ai --block-tool 'btc_*' chat</code></pre>
+    <h3>Blocklist và custom tools</h3>
+    <p>File <code>~/.config/daniwm/ai.tools.blocklist</code> chứa mỗi dòng một tên hoặc glob; dùng <code>#</code> để ghi chú.
+      Chọn file khác bằng <code>--tool-blocklist</code>.</p>
+    <p>Custom tools được nạp từ các manifest <code>*.json</code> trong <code>~/.config/daniwm/ai.tools</code>.
+      Dùng <code>--tools-dir</code> để đổi thư mục hoặc <code>--no-custom-tools</code> để bỏ qua.
+      Tool có <code>confirm: true</code> sẽ hỏi xác nhận qua terminal; <code>--yes-tools</code> bỏ bước hỏi này.</p>
+    <div class="warn"><strong>Không phải sandbox:</strong> <code>--tool-root</code> giới hạn các tool đọc file, nhưng không ngăn <code>run_command</code> hoặc custom tools truy cập ngoài thư mục. Shell chạy bằng quyền của bạn và không hỏi xác nhận cho mỗi lệnh. Chặn <code>run_command</code> hoặc dùng <code>--no-tools</code> khi không tin nội dung đầu vào.</div>
+  </div>
+</section>
+
+<section id="images">
+  <div class="wrap">
+    <h2>Paste ảnh</h2>
+    <p class="sub">Dán ảnh clipboard trực tiếp vào dòng nhập REPL bằng <kbd>Ctrl</kbd>+<kbd>V</kbd>.</p>
+    <ol>
+      <li>Cài <code>xclip</code> trên X11 hoặc công cụ <code>wl-paste</code> (gói <code>wl-clipboard</code>) trên Wayland.</li>
+      <li>Chạy <code>dani-ai chat</code> với model có hỗ trợ ảnh.</li>
+      <li>Copy ảnh, nhấn <kbd>Ctrl</kbd>+<kbd>V</kbd>: dòng nhập hiện placeholder như <code>[Ảnh 1]</code>.</li>
+      <li>Nhập câu hỏi về ảnh rồi nhấn <kbd>Enter</kbd> để gửi.</li>
+    </ol>
+    <p>Hỗ trợ PNG, JPEG, WebP và GIF; giới hạn dữ liệu clipboard 10 MiB. Nếu clipboard là text, nội dung được chèn tại con trỏ.</p>
+    <div class="note"><strong>Lưu ý:</strong> ảnh được gửi đến API và có thể nằm trong phiên đã lưu. Không gửi ảnh chứa thông tin nhạy cảm nếu chưa kiểm tra nhà cung cấp.</div>
+  </div>
+</section>
+
+<section id="flags">
+  <div class="wrap">
+    <h2>Flags</h2>
+    <p class="sub">Tra cứu nhanh; chạy <code>dani-ai --help</code> để xem trợ giúp CLI.</p>
+    <table>
+      <thead><tr><th>Flag</th><th>Ý nghĩa</th></tr></thead>
+      <tbody>
+        <tr><td><code>--chat</code></td><td>Buộc chế độ chat tương tác.</td></tr>
+        <tr><td><code>--api-key KEY</code></td><td>Đặt API key (nên dùng file hoặc biến môi trường để tránh lộ qua lịch sử shell).</td></tr>
+        <tr><td><code>--api-base URL</code></td><td>Endpoint OpenAI-compatible.</td></tr>
+        <tr><td><code>--model NAME</code></td><td>Chọn model.</td></tr>
+        <tr><td><code>--system TEXT</code></td><td>Đặt system prompt trực tiếp.</td></tr>
+        <tr><td><code>--system-file PATH</code></td><td>Đọc system prompt từ file.</td></tr>
+        <tr><td><code>--temperature N</code></td><td>Gửi tham số temperature cho API.</td></tr>
+        <tr><td><code>--max-tokens N</code></td><td>Giới hạn token đầu ra theo API.</td></tr>
+        <tr><td><code>--timeout N</code></td><td>Timeout request tính bằng giây, mặc định 60.</td></tr>
+        <tr><td><code>--stream</code> / <code>--no-stream</code></td><td>Bật (mặc định) hoặc tắt streaming.</td></tr>
+        <tr><td><code>--no-color</code></td><td>Tắt màu; tự tắt khi pipe đầu ra.</td></tr>
+        <tr><td><code>--continue [NAME]</code></td><td>Nạp phiên đã lưu, mặc định phiên <code>last</code>.</td></tr>
+        <tr><td><code>--show-config</code></td><td>In cấu hình đã resolve rồi thoát.</td></tr>
+        <tr><td><code>--no-tools</code></td><td>Tắt mọi tool.</td></tr>
+        <tr><td><code>--tool-root PATH</code></td><td>Gốc cho tool đọc file, mặc định thư mục hiện tại.</td></tr>
+        <tr><td><code>--block-tool NAME</code></td><td>Chặn tên/glob, có thể lặp lại.</td></tr>
+        <tr><td><code>--tool-blocklist PATH</code></td><td>Đọc danh sách chặn từ file.</td></tr>
+        <tr><td><code>--tools-dir PATH</code></td><td>Thư mục manifest custom tools.</td></tr>
+        <tr><td><code>--no-custom-tools</code></td><td>Không nạp custom tools.</td></tr>
+        <tr><td><code>--yes-tools</code></td><td>Tự chấp thuận custom tools yêu cầu xác nhận.</td></tr>
+        <tr><td><code>--version</code></td><td>In phiên bản rồi thoát.</td></tr>
+        <tr><td><code>--help</code></td><td>Hiện hướng dẫn CLI.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="safety">
+  <div class="wrap">
+    <h2>Bảo mật</h2>
+    <p class="sub">Key của bạn, dữ liệu của bạn — kiểm tra quyền truy cập trước khi bật tools.</p>
+    <ul class="tight">
+      <li>Đặt quyền <code>600</code> cho <code>ai.key</code>; không commit key hoặc file lịch sử vào Git.</li>
+      <li>Nội dung chat, ảnh và kết quả tool được gửi đến nhà cung cấp API đang cấu hình. Ưu tiên HTTPS cho endpoint từ xa.</li>
+      <li>Lịch sử lưu cục bộ có quyền <code>0600</code>, nhưng không được mã hóa. Xóa hoặc bảo vệ file nếu chứa dữ liệu nhạy cảm.</li>
+      <li>Nội dung file, trang web hoặc đầu ra lệnh có thể chứa chỉ dẫn độc hại (prompt injection). Không coi chúng là chỉ dẫn đáng tin.</li>
+      <li><code>run_command</code> có thể sửa/xóa file và truy cập mạng. Không chạy dani-ai bằng root; dùng <code>--no-tools</code> khi chỉ cần hỏi đáp.</li>
+      <li>Chỉ cài custom tools đã kiểm tra mã nguồn; tránh <code>--yes-tools</code> với tool chưa tin cậy.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="troubleshoot">
+  <div class="wrap">
+    <h2>Sự cố</h2>
+    <p class="sub">Bắt đầu với <code>dani-ai --show-config</code> để kiểm tra endpoint, model và nguồn cấu hình.</p>
+    <h3>Không tìm thấy lệnh dani-ai</h3>
+    <p>Kiểm tra symlink, quyền thực thi và thêm <code>~/.local/bin</code> vào <code>PATH</code>. Trong repo có thể chạy trực tiếp <code>./dani-ai --version</code>.</p>
+    <h3>Thiếu key hoặc lỗi 401 / 403</h3>
+    <p>Kiểm tra dòng đầu của <code>ai.key</code>, key còn hiệu lực và quyền truy cập model. Biến môi trường hoặc flags có thể đang ghi đè file key.</p>
+    <h3>Lỗi 404 hoặc model không tồn tại</h3>
+    <p>Kiểm tra base URL (thường kết thúc bằng <code>/v1</code>, không thêm <code>/chat/completions</code>). Chạy <code>dani-ai models</code> để lấy tên model nếu provider hỗ trợ.</p>
+    <h3>API không hỗ trợ tools hoặc streaming</h3>
+    <p>Thử <code>dani-ai --no-tools --no-stream "Xin chào"</code>. Không phải mọi endpoint OpenAI-compatible đều hỗ trợ đầy đủ hai tính năng này.</p>
+    <h3>Timeout hoặc lỗi 429</h3>
+    <p>Tăng thời gian bằng <code>--timeout 120</code> nếu API chậm. Với lỗi 429, kiểm tra quota, hạn mức request và thử lại sau.</p>
+    <h3>Không paste được ảnh</h3>
+    <p>Kiểm tra <code>xclip</code> / <code>wl-paste</code>, clipboard đang chứa dữ liệu ảnh và terminal không chặn <kbd>Ctrl</kbd>+<kbd>V</kbd>. Chọn model hỗ trợ ảnh; ảnh quá 10 MiB cần giảm kích thước trước.</p>
+    <h3>Tool không xuất hiện hoặc bị từ chối</h3>
+    <p>Kiểm tra <code>--no-tools</code>, blocklist và thư mục manifest. Custom tool yêu cầu xác nhận sẽ bị từ chối nếu không có terminal để hỏi; chỉ dùng <code>--yes-tools</code> khi đã kiểm tra tool.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">dani-ai · Python stdlib · BYOK · <a href="#">Về đầu trang ↑</a></div>
+</footer>
+</body>
+</html>
