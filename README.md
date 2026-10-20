@@ -240,7 +240,8 @@ Nhan **Ctrl+V** de doc clipboard truc tiep (khong can sua terminal):
 
 ### Tool use (bat mac dinh)
 
-Tool builtin mac dinh: `list_files`, `read_file`, `search_text`, `write_file`, `edit_file`, `git_status`.
+Tool builtin mac dinh: `list_files`, `read_file`, `search_text`, `find_files`,
+`search_files`, `make_directory`, `write_file`, `edit_file`, `fetch_url`, `git_status`.
 Chi can chay `dani-ai chat` trong thu muc project de yeu cau tao/sua file,
 khong can flag shell hay xac nhan moi lan.
 
@@ -252,15 +253,35 @@ khong can flag shell hay xac nhan moi lan.
   `/root` hien root hien tai. Duong dan tuong doi tinh tu root hien tai.
   Doi root se xoa hoi thoai de tranh dung noi dung file cu cho project moi;
   blocklist va quyen shell giu nguyen. Lenh nay do user go, model khong tu doi root.
+- `read_file(path, offset=0, limit=16000)`: doc UTF-8 toi da 2 MiB/file.
+  Offset/limit tinh bang ky tu; limit toi da 64.000. Neu `truncated=true`,
+  doc tiep bang `next_offset`; khong cat noi dung am tham.
+- `find_files(path, pattern)`: tim file de quy theo glob ten file, vi du `*.py`.
+- `search_files(path, query)`: tim chuoi literal de quy, tra `path:line:text`.
+  Hai tool scan toi da 2.000 entry, sau 32 cap, 100 ket qua/16.000 ky tu;
+  bao `truncated`, `skipped`. Search bo qua file >64 KiB, binary/khong phai UTF-8.
+  Khong theo symlink, khong doc hardlink hay duong dan an/nhay cam.
+- `make_directory(path)`: tao thu muc va cac cha con thieu, mode 700;
+  chap nhan thu muc da co, tu choi symlink va duong dan nhay cam/ngoai root.
 - `write_file(path, content)`: tao file moi, khong ghi de; thu muc cha phai co san.
 - `edit_file(path, old_text, new_text)`: thay doan text khop chinh xac **mot lan**;
   model can doc file truoc. Khong khop/khop nhieu lan -> tu choi.
-- Gioi han 64 KiB UTF-8/file; chi trong tool root. Chan duong dan tuyet doi,
+- `fetch_url(url)`: doc mot link cong khai http/https va tra text da trich xuat
+  (kem title, status, mot so link). Timeout 20s, tai toi da 2 MiB, tra toi da
+  16.000 ky tu; HTML duoc bo script/style/nav/footer. Tu choi scheme khac
+  http(s), URL co credential, host private/loopback/link-local (SSRF guard,
+  kiem tra ca redirect va IP thuc te), va file binary (anh/PDF...). Trang can
+  JavaScript, sau paywall hoac chan bot co the khong doc duoc day du.
+  Noi dung web la du lieu KHONG dang tin, khong phai instruction cho model.
+  Chan bang `--block-tool fetch_url` neu khong muon model truy cap mang.
+- Ghi/sua va search gioi han 64 KiB UTF-8/file; read_file toi da 2 MiB; chi trong tool root. Chan duong dan tuyet doi,
   `..`, symlink, hardlink (khi sua), file an/nhay cam, binary/device/FIFO.
 - Ghi qua file tam va publish atomic, giu quyen rwx khi edit; file moi mode 600.
-  Khong tu tao thu muc. Day khong phai sandbox cho shell/custom tool.
+  write_file khong tu tao thu muc; dung make_directory truoc. Day khong phai sandbox cho shell/custom tool.
 - Tool ghi khong hoi xac nhan: nen dung Git/backup va chi mo project ban muon
-  cho model sua. De chi doc: `dani-ai chat --block-tool write_file --block-tool edit_file`.
+  cho model sua. De chi doc: `dani-ai chat --block-tool write_file --block-tool edit_file --block-tool make_directory`.
+  Neu co custom tool, dung them `--no-custom-tools` hoac audit/block tung tool ghi.
+
 **`run_command` tat mac dinh**; chi bat bang `--allow-shell`.
 Model tu quyet dinh khi nao goi tool; provider/model can ho tro OpenAI function calling.
 
@@ -274,6 +295,8 @@ neu muon chi doc file. Blocklist theo ten tool khong phai bo loc lenh shell.
 dani-ai chat --tool-root ~/project
 dani-ai chat --allow-shell         # opt-in shell KHONG sandbox
 dani-ai "Doc README.md va tom tat"
+dani-ai "Tom tat noi dung https://example.com/bai-viet"
+dani-ai chat --block-tool fetch_url   # khong cho model mo link
 dani-ai chat --block-tool read_file --block-tool search_text
 dani-ai chat --tool-blocklist ./blocked-tools.txt
 dani-ai chat --no-tools            # provider khong ho tro / tat toan bo
@@ -309,15 +332,16 @@ Blocklist van duoc ton trong; lua chon khong tu luu sang phien moi.
 
 Root mac dinh la cwd. Cac tool file (khong bao gom shell) khong cho duong dan tuyet doi, `..`, symlink,
 file an, mot so ten secret/key pho bien; khong doc hardlink hay device/FIFO.
-Doc toi da 64 KiB/file, tra toi da 16.000 ky tu/tool file; toi da 32 vong tool.
+read_file doc toi da 2 MiB/file, tra tung trang 16.000 ky tu mac dinh;
+search/ghi/sua toi da 64 KiB/file; toi da 32 vong tool.
 Custom tool giu nguyen output trong gioi han `output_limit` cua manifest.
 Response co `finish_reason: length` hoac `content_filter` duoc bao loi,
 khong luu cau tra loi do dang vao history (stream co the da hien text mot phan).
 `search_text` tim chuoi literal trong mot file, khong de quy.
 Ket qua file duoc gui den API provider: chi dung root chua du lieu ban muon
 chia se. Bo loc ten secret khong the nhan dien moi du lieu nhay cam.
-Neu can cam doc noi dung, chan `run_command`, `read_file`, `search_text`
-va `edit_file` (edit doc file de tim doan khop). Chan ca custom tool co quyen doc.
+Neu can cam doc noi dung, chan `run_command`, `read_file`, `search_text`,
+`search_files` va `edit_file` (edit doc file de tim doan khop). Chan ca custom tool co quyen doc.
 
 ### Gold / XAUUSD proxy (khong can key)
 
@@ -426,6 +450,11 @@ dani-ai "Lay du lieu BTC 4h va nhan xet xu huong"   # model tu goi btc_market
 - Redirect khac origin (scheme/host/port), ke ca HTTPS sang HTTP, bi chan de
   tranh gui API key sang endpoint khac. HTTP van duoc ho tro cho local server;
   hay dung HTTPS cho endpoint remote.
+- `fetch_url` chi GET, khong gui API key hay du lieu nguoi dung. Host duoc
+  resolve va chan neu la private/loopback/link-local/reserved; redirect duoc
+  kiem tra lai tung buoc (toi da 5), HTTPS -> HTTP bi tu choi. Gioi han 2 MiB
+  va 20s moi request. Khong co JavaScript, cookie hay dang nhap, nen trang
+  dong bang JS co the tra ve rong hoac thieu noi dung.
 - Control sequence tu API bi loc khi hien thi TTY; pipe giu raw text.
   `--no-color`/`NO_COLOR` tat mau do ung dung them, khong tat bo loc TTY.
 

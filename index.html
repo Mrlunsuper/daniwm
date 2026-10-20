@@ -202,7 +202,7 @@
       <div class="card"><h4>Stream mặc định</h4><p>Token hiện ngay khi tới, markdown có màu trong TTY, giữ text thô khi pipe.</p></div>
       <div class="card"><h4>BYOK</h4><p>Mang key của bạn: OpenAI, DeepSeek, Ollama, LM Studio, FreeLLMAPI, Vilao… mọi endpoint OpenAI-compatible.</p></div>
       <div class="card"><h4>Paste ảnh</h4><p><kbd>Ctrl+V</kbd> đọc clipboard: ảnh PNG/JPEG/WebP/GIF thành <code>[Ảnh 1]</code>, text chèn tại con trỏ.</p></div>
-      <div class="card"><h4>Tool use</h4><p><code>list_files</code>, <code>read_file</code>, <code>search_text</code>, <code>run_command</code> — bật mặc định, chặn theo tên/glob.</p></div>
+      <div class="card"><h4>Tool use</h4><p>Tool đọc/tìm/ghi/sửa file, tạo thư mục, đọc URL và Git status bật mặc định; chặn theo tên/glob. <code>run_command</code> cần opt-in.</p></div>
       <div class="card"><h4>Session &amp; history</h4><p>Autosave, <code>--continue</code>, <code>/save</code>, ghi atomic với quyền <code>0600</code>.</p></div>
       <div class="card"><h4>Chế độ pipe</h4><p><code>cat f | dani-ai "tóm tắt"</code> — đọc stdin, không cần file tạm.</p></div>
       <div class="card"><h4>Tích hợp daniwm</h4><p>Mở bằng <kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>a</kbd> trong bộ WM <code>daniwm</code>.</p></div>
@@ -327,9 +327,14 @@ dani-ai chat --continue ten-phien</code></pre>
       <thead><tr><th>Tool</th><th>Chức năng và giới hạn</th></tr></thead>
       <tbody>
         <tr><td><code>list_files</code></td><td>Liệt kê thư mục, không đệ quy, tối đa 200 mục.</td></tr>
-        <tr><td><code>read_file</code></td><td>Đọc file UTF-8, tối đa 64 KiB.</td></tr>
+        <tr><td><code>read_file</code></td><td>Đọc file UTF-8 tối đa 2 MiB; phân trang bằng offset/limit, báo truncated và next_offset.</td></tr>
+        <tr><td><code>find_files</code>, <code>search_files</code></td><td>Tìm tên file theo glob hoặc nội dung nguyên văn đệ quy; giới hạn scan, báo truncated/skipped.</td></tr>
+        <tr><td><code>make_directory</code></td><td>Tạo thư mục và các thư mục cha còn thiếu bên trong tool root.</td></tr>
+        <tr><td><code>write_file</code>, <code>edit_file</code></td><td>Tạo file mới hoặc sửa một đoạn khớp chính xác; tối đa 64 KiB.</td></tr>
+        <tr><td><code>git_status</code></td><td>Đọc branch và trạng thái Git, không cần shell.</td></tr>
         <tr><td><code>search_text</code></td><td>Tìm chuỗi nguyên văn trong một file, tối đa 100 dòng khớp.</td></tr>
-        <tr><td><code>run_command</code></td><td>Chạy lệnh qua <code>/bin/sh</code>, timeout 30 giây, đầu ra tối đa 64 KiB.</td></tr>
+        <tr><td><code>fetch_url</code></td><td>Đọc link công khai http(s), trả text + title (20 giây, 2 MiB, 16.000 ký tự); chặn host private/loopback và file binary.</td></tr>
+        <tr><td><code>run_command</code></td><td>Tắt mặc định; bật bằng <code>--allow-shell</code> hoặc <code>/shell on</code>. Shell toàn quyền user, không sandbox; timeout 30 giây, đầu ra tối đa 64 KiB.</td></tr>
       </tbody>
     </table>
 <pre class="cmds"><code><span class="c"># Chỉ đọc project, chặn shell và không nạp custom tools</span>

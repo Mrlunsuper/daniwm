@@ -375,17 +375,85 @@ class Tests(unittest.TestCase):
             (root / 'ai.key').write_text('secret')
             (root / 'link').symlink_to(root / 'readme.txt')
             runner = m.ToolRunner(str(root))
-            self.assertEqual(len(runner.schemas), 6)
+            self.assertEqual(len(runner.schemas), 10)
             self.assertEqual(json.loads(runner.execute('read_file', '{"path":"readme.txt"}'))['result'], 'hello\nworld')
             self.assertIn('2: world', runner.execute('search_text', '{"path":"readme.txt","query":"world"}'))
             for path in ('../outside', '/etc/passwd', '.env', 'ai.key', 'link'):
                 self.assertIn('error', json.loads(runner.execute('read_file', json.dumps({'path': path}))))
             blocked = root / 'blocklist'
             blocked.write_text('# comment\nread_*\nsearch_text\n')
-            runner = m.ToolRunner(str(root), ['list_files', 'run_command', 'write_file', 'edit_file', 'git_status'], str(blocked))
+            runner = m.ToolRunner(str(root), ['list_files', 'run_command', 'write_file',
+                                              'edit_file', 'git_status', 'fetch_url', 'find_files',
+                                              'search_files', 'make_directory'], str(blocked))
             self.assertEqual(runner.schemas, [])
             self.assertIn('error', json.loads(runner.execute('read_file', '{"path":"readme.txt"}')))
             self.assertIn('error', json.loads(runner.execute('shell', '{}')))
+
+    def test_basic_tools_default_permissions_and_scan(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as outside:
+            root = Path(d)
+            runner = m.ToolRunner(d, confirm=lambda *a: self.fail('basic tool prompted'))
+            def execute(name, **args):
+                return json.loads(runner.execute(name, json.dumps(args)))
+            names = {s['function']['name'] for s in runner.schemas}
+            self.assertEqual(names, set(m.TOOL_NAMES) - {'run_command'})
+            self.assertIn('result', execute('make_directory', path='src/nested'))
+            self.assertIn('result', execute('make_directory', path='src/nested'))
+            self.assertEqual(stat.S_IMODE((root / 'src').stat().st_mode), 0o700)
+            (root / 'src/a.py').write_text('hello\nneedle\n')
+            (root / 'src/nested/b.py').write_text('needle\n')
+            (root / '.env').write_text('needle')
+            (root / 'secret.txt').write_text('needle')
+            (root / 'binary').write_bytes(b'\x00needle')
+            (root / 'big').write_text('x' * 65537)
+            (root / 'link').symlink_to(outside, target_is_directory=True)
+            os.link(root / 'src/a.py', root / 'hardlink')
+            found = execute('find_files', path='.', pattern='*.py')
+            # Hardlinked content is excluded, including the original name.
+            self.assertEqual(found['result'], 'src/nested/b.py')
+            self.assertFalse(found['truncated'])
+            found = execute('search_files', path='.', query='needle')
+            self.assertEqual(found['result'], 'src/nested/b.py:1: needle')
+            self.assertEqual(found['skipped'], 2)
+            for path in ('../escape', '/tmp/escape', '.env', 'secret-dir', 'link/new', 'src/a.py/new'):
+                self.assertIn('error', execute('make_directory', path=path))
+            self.assertFalse((Path(outside) / 'new').exists())
+            for name, extra in (('find_files', {'pattern': '*'}), ('search_files', {'query': 'x'})):
+                for path in ('../escape', 'link', '.env'):
+                    self.assertIn('error', execute(name, path=path, **extra))
+                self.assertIn('error', execute(name, path='.', **{k: '' for k in extra}))
+            for name, args in (('make_directory', {'path': 'blocked'}),
+                               ('find_files', {'path': '.', 'pattern': '*'}),
+                               ('search_files', {'path': '.', 'query': 'needle'})):
+                blocked = m.ToolRunner(d, [name])
+                self.assertNotIn(name, [s['function']['name'] for s in blocked.schemas])
+                self.assertIn('error', json.loads(blocked.execute(name, json.dumps(args))))
+            (root / 'many.txt').write_text('needle\n' * 101)
+            self.assertTrue(execute('search_files', path='.', query='needle')['truncated'])
+
+    def test_read_file_pagination(self):
+        with tempfile.TemporaryDirectory() as d:
+            text = 'Tiếng Việt\n' * 8000
+            (Path(d) / 'large.txt').write_text(text)
+            runner = m.ToolRunner(d)
+            def read(**args):
+                return json.loads(runner.execute('read_file', json.dumps({'path': 'large.txt', **args})))
+            page = read()
+            self.assertTrue(page['truncated'])
+            self.assertEqual(page['next_offset'], 16000)
+            self.assertEqual(page['total_characters'], len(text))
+            parts = [page['result']]
+            while page['truncated']:
+                page = read(offset=page['next_offset'])
+                parts.append(page['result'])
+            self.assertEqual(''.join(parts), text)
+            self.assertIsNone(page['next_offset'])
+            for args in ({'offset': -1}, {'limit': 0}, {'limit': 64001},
+                         {'offset': True}, {'limit': '5'}, {'extra': 1}):
+                self.assertIn('error', read(**args))
+            self.assertEqual(read(offset=len(text) + 10)['result'], '')
+            (Path(d) / 'large.txt').write_bytes(b'x' * (2 * 1024 * 1024 + 1))
+            self.assertIn('error', read())
 
     def test_file_writes_and_edits(self):
         with tempfile.TemporaryDirectory() as d:
@@ -480,6 +548,94 @@ class Tests(unittest.TestCase):
             self.assertTrue(runner.is_blocked('run_command'))
             self.assertIn('cannot change root', out.getvalue())
             self.assertIn(str(child), out.getvalue())
+
+    def test_fetch_url_extracts_text_and_blocks_private_hosts(self):
+        seen, bodies = [], {
+            '/page': ('text/html; charset=utf-8',
+                      '<!doctype html><title>T &amp; x</title><body><h1>Hello</h1>'
+                      '<script>bad()</script><a href="/rel">rel</a>'),
+            '/json': ('application/json', '{"a": 1}'),
+            '/bin': ('image/png', '\x89PNG'),
+        }
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                if self.path in bodies:
+                    ctype, text = bodies[self.path]
+                    body = text.encode()
+                    self.send_response(200)
+                    self.send_header('Content-Type', ctype)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif self.path in ('/redir', '/loop'):
+                    self.send_response(302)
+                    self.send_header('Location', '/page' if self.path == '/redir' else '/loop')
+                    self.end_headers()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                runner = m.ToolRunner(d)
+                base = 'http://127.0.0.1:%d' % server.server_port
+
+                def fetch(url):
+                    return json.loads(runner.execute('fetch_url', json.dumps({'url': url})))
+
+                self.assertNotIn('fetch_url', [s['function']['name'] for s in
+                                               m.ToolRunner(d, ['fetch_*']).schemas])
+                # Loopback and private targets are refused before any request.
+                self.assertIn('refusing private', fetch(base + '/page')['error'])
+                self.assertEqual(seen, [])
+                with patch.object(m, 'web_check_address', lambda address: None):
+                    page = fetch(base + '/page')
+                    self.assertEqual(page['title'], 'T & x')
+                    self.assertIn('Hello', page['text'])
+                    self.assertNotIn('bad()', page['text'])
+                    self.assertEqual(page['links'], [base + '/rel'])
+                    self.assertTrue(page['untrusted'])
+                    self.assertEqual(fetch(base + '/json')['text'], '{"a": 1}')
+                    self.assertEqual(fetch(base + '/redir')['url'], base + '/page')
+                    self.assertIn('redirects', fetch(base + '/loop')['error'])
+                    self.assertIn('unsupported content type', fetch(base + '/bin')['error'])
+                for bad in ('file:///etc/passwd', 'ftp://x.test/', 'http://u:p@x.test/',
+                            'not a url', ''):
+                    self.assertIn('error', fetch(bad))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_fetch_url_bounds_and_decoding(self):
+        self.assertEqual(m.web_charset('text/plain; charset=latin-1', b''), 'latin-1')
+        self.assertEqual(m.web_charset('text/plain; charset=bogus', b''), 'utf-8')
+        self.assertEqual(m.web_charset('text/html', b'<meta charset="windows-1252">'),
+                         'windows-1252')
+        self.assertFalse(m.web_is_text('image/png'))
+        self.assertTrue(m.web_is_text(''))
+        self.assertTrue(m.web_is_text('text/plain; charset=utf-8'))
+        title, text = m.html_to_text('<title>T</title><style>x</style><p>a<b>b</b></p>')
+        self.assertEqual(title, 'T')
+        self.assertNotIn('x', text)
+        self.assertEqual(text, 'ab')
+        for address in ('127.0.0.1', '10.0.0.1', '192.168.1.1', '::1', '169.254.1.1',
+                        '0.0.0.0', 'fd00::1', '100.64.0.1'):
+            with self.assertRaises(m.AIError):
+                m.web_check_address(address)
+        m.web_check_address('93.184.216.34')
+        with patch.object(m.socket, 'getaddrinfo', return_value=[
+                (m.socket.AF_INET, m.socket.SOCK_STREAM, 6, '', ('127.0.0.1', 80))]):
+            with self.assertRaises(m.AIError):
+                m.web_get('http://example.test/')
 
     def test_git_status_without_shell(self):
         import subprocess
@@ -712,7 +868,7 @@ class Tests(unittest.TestCase):
             self.assertIn('blocked', json.loads(blocked.execute('needs_ok', '{}'))['error'])
             missing = m.ToolRunner(str(root), custom_dir=str(Path(d) / 'absent'))
             self.assertEqual(missing.custom, {})
-            self.assertEqual(len(missing.schemas), 6)
+            self.assertEqual(len(missing.schemas), 10)
 
     def test_custom_tool_argument_schema_validation(self):
         schema = {'type': 'object', 'properties': {
