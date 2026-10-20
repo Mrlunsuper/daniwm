@@ -240,7 +240,19 @@ Nhan **Ctrl+V** de doc clipboard truc tiep (khong can sua terminal):
 
 ### Tool use (bat mac dinh)
 
-Tool builtin mac dinh: `list_files`, `read_file`, `search_text`.
+Tool builtin mac dinh: `list_files`, `read_file`, `search_text`, `write_file`, `edit_file`.
+Chi can chay `dani-ai chat` trong thu muc project de yeu cau tao/sua file,
+khong can flag shell hay xac nhan moi lan.
+
+- `write_file(path, content)`: tao file moi, khong ghi de; thu muc cha phai co san.
+- `edit_file(path, old_text, new_text)`: thay doan text khop chinh xac **mot lan**;
+  model can doc file truoc. Khong khop/khop nhieu lan -> tu choi.
+- Gioi han 64 KiB UTF-8/file; chi trong tool root. Chan duong dan tuyet doi,
+  `..`, symlink, hardlink (khi sua), file an/nhay cam, binary/device/FIFO.
+- Ghi qua file tam va publish atomic, giu quyen rwx khi edit; file moi mode 600.
+  Khong tu tao thu muc. Day khong phai sandbox cho shell/custom tool.
+- Tool ghi khong hoi xac nhan: nen dung Git/backup va chi mo project ban muon
+  cho model sua. De chi doc: `dani-ai chat --block-tool write_file --block-tool edit_file`.
 **`run_command` tat mac dinh**; chi bat bang `--allow-shell`.
 Model tu quyet dinh khi nao goi tool; provider/model can ho tro OpenAI function calling.
 
@@ -291,7 +303,8 @@ khong luu cau tra loi do dang vao history (stream co the da hien text mot phan).
 `search_text` tim chuoi literal trong mot file, khong de quy.
 Ket qua file duoc gui den API provider: chi dung root chua du lieu ban muon
 chia se. Bo loc ten secret khong the nhan dien moi du lieu nhay cam.
-Neu can cam doc noi dung, chan `run_command`, `read_file` va `search_text`.
+Neu can cam doc noi dung, chan `run_command`, `read_file`, `search_text`
+va `edit_file` (edit doc file de tim doan khop). Chan ca custom tool co quyen doc.
 
 ### Gold / XAUUSD proxy (khong can key)
 
@@ -312,7 +325,7 @@ Intervals: `1m`, `5m`, `15m`, `30m`, `1h`, `1d`, `1wk`, `1mo`;
 
 ### Custom tools (tu dinh nghia)
 
-Ngoai 4 tool builtin, dani-ai nap them manifest JSON trong
+Ngoai 6 tool builtin, dani-ai nap them manifest JSON trong
 `~/.config/daniwm/ai.tools/` (`$XDG_CONFIG_HOME` duoc ton trong).
 Moi tool = 1 file `<ten>.json` + 1 script/lenh bat ky (sh, python, binary...).
 Khong can sua dani-ai khi them tool moi.

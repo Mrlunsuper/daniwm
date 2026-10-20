@@ -375,17 +375,60 @@ class Tests(unittest.TestCase):
             (root / 'ai.key').write_text('secret')
             (root / 'link').symlink_to(root / 'readme.txt')
             runner = m.ToolRunner(str(root))
-            self.assertEqual(len(runner.schemas), 3)
+            self.assertEqual(len(runner.schemas), 5)
             self.assertEqual(json.loads(runner.execute('read_file', '{"path":"readme.txt"}'))['result'], 'hello\nworld')
             self.assertIn('2: world', runner.execute('search_text', '{"path":"readme.txt","query":"world"}'))
             for path in ('../outside', '/etc/passwd', '.env', 'ai.key', 'link'):
                 self.assertIn('error', json.loads(runner.execute('read_file', json.dumps({'path': path}))))
             blocked = root / 'blocklist'
             blocked.write_text('# comment\nread_*\nsearch_text\n')
-            runner = m.ToolRunner(str(root), ['list_files', 'run_command'], str(blocked))
+            runner = m.ToolRunner(str(root), ['list_files', 'run_command', 'write_file', 'edit_file'], str(blocked))
             self.assertEqual(runner.schemas, [])
             self.assertIn('error', json.loads(runner.execute('read_file', '{"path":"readme.txt"}')))
             self.assertIn('error', json.loads(runner.execute('shell', '{}')))
+
+    def test_file_writes_and_edits(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            runner = m.ToolRunner(d)
+            def execute(name, **args):
+                return json.loads(runner.execute(name, json.dumps(args)))
+            result = execute('write_file', path='hello.txt', content='hello\nworld\n')
+            self.assertEqual(result['result']['action'], 'created')
+            self.assertEqual(stat.S_IMODE((root / 'hello.txt').stat().st_mode), 0o600)
+            self.assertIn('error', execute('write_file', path='hello.txt', content='overwrite'))
+            os.chmod(root / 'hello.txt', 0o755)
+            result = execute('edit_file', path='hello.txt', old_text='world', new_text='Việt Nam')
+            self.assertEqual(result['result']['action'], 'edited')
+            self.assertEqual((root / 'hello.txt').read_text(), 'hello\nViệt Nam\n')
+            self.assertEqual(stat.S_IMODE((root / 'hello.txt').stat().st_mode), 0o755)
+            for old in ('missing', '', 'l'):
+                self.assertIn('error', execute('edit_file', path='hello.txt', old_text=old, new_text='x'))
+            (root / 'sub').mkdir()
+            self.assertIn('result', execute('write_file', path='sub/new.txt', content='nested'))
+            self.assertIn('error', execute('write_file', path='missing/new.txt', content='x'))
+            self.assertIn('error', execute('write_file', path='big.txt', content='é' * 32769))
+            self.assertIn('error', execute('edit_file', path='hello.txt', old_text='hello', new_text='x' * 65536))
+            self.assertIn('error', execute('write_file', path='nul.txt', content='\x00'))
+            for path in ('../escape', '/tmp/escape', '.env', 'ai.key', 'sub/.git/config', '', '.'):
+                self.assertIn('error', execute('write_file', path=path, content='x'))
+                self.assertIn('error', execute('edit_file', path=path, old_text='a', new_text='b'))
+            (root / 'link').symlink_to(root / 'hello.txt')
+            (root / 'dirlink').symlink_to(root / 'sub', target_is_directory=True)
+            for path in ('link', 'dirlink/new.txt'):
+                self.assertIn('error', execute('write_file', path=path, content='x'))
+                self.assertIn('error', execute('edit_file', path=path, old_text='hello', new_text='x'))
+            os.link(root / 'hello.txt', root / 'hardlink')
+            self.assertIn('error', execute('edit_file', path='hardlink', old_text='hello', new_text='x'))
+            os.mkfifo(root / 'fifo')
+            self.assertIn('error', execute('edit_file', path='fifo', old_text='a', new_text='b'))
+            (root / 'binary').write_bytes(b'\x00data')
+            self.assertIn('error', execute('edit_file', path='binary', old_text='data', new_text='x'))
+            blocked = m.ToolRunner(d, ['write_file', 'edit_file'])
+            for name, args in (('write_file', {'path': 'blocked', 'content': 'x'}),
+                               ('edit_file', {'path': 'hello.txt', 'old_text': 'hello', 'new_text': 'x'})):
+                self.assertIn('error', json.loads(blocked.execute(name, json.dumps(args))))
+            self.assertFalse(list(root.glob('.dani-ai-write-*')))
 
     def test_linux_commands(self):
         with tempfile.TemporaryDirectory() as d:
@@ -599,7 +642,7 @@ class Tests(unittest.TestCase):
             self.assertIn('blocked', json.loads(blocked.execute('needs_ok', '{}'))['error'])
             missing = m.ToolRunner(str(root), custom_dir=str(Path(d) / 'absent'))
             self.assertEqual(missing.custom, {})
-            self.assertEqual(len(missing.schemas), 3)
+            self.assertEqual(len(missing.schemas), 5)
 
     def test_custom_tool_argument_schema_validation(self):
         schema = {'type': 'object', 'properties': {

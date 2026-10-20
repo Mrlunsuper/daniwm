@@ -307,7 +307,7 @@ def build_parser():
     p.add_argument("--no-tools", action="store_true", help="disable all tools")
     p.add_argument("--allow-shell", action="store_true",
                    help="enable unsandboxed run_command (disabled by default)")
-    p.add_argument("--tool-root", default=".", help="read-only tools root (default: cwd)")
+    p.add_argument("--tool-root", default=".", help="file tools root (default: cwd)")
     p.add_argument("--block-tool", action="append", default=[], metavar="NAME",
                    help="block tool name or glob; repeatable")
     p.add_argument("--tool-blocklist", help="blocklist file (one name/glob per line)")
@@ -364,7 +364,7 @@ def post_json(url, payload, api_key, timeout):
     return open_request(req, timeout)
 
 
-TOOL_NAMES = ("list_files", "read_file", "search_text", "run_command")
+TOOL_NAMES = ("list_files", "read_file", "search_text", "write_file", "edit_file", "run_command")
 CUSTOM_TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
 CUSTOM_TOOL_MAX = 32
 CUSTOM_TOOL_TIMEOUT = 120
@@ -665,6 +665,13 @@ class ToolRunner:
             if name == "search_text":
                 properties["query"] = {"type": "string", "description": "Literal text to find in this file"}
                 required.append("query")
+            if name == "write_file":
+                properties["content"] = {"type": "string", "description": "Complete UTF-8 content for a NEW file (max 64 KiB). Parent directory must exist."}
+                required.append("content")
+            if name == "edit_file":
+                properties["old_text"] = {"type": "string", "description": "Nonempty exact text that occurs exactly once in the existing file. Read the file first."}
+                properties["new_text"] = {"type": "string", "description": "Replacement text; may be empty to delete the matched text."}
+                required += ["old_text", "new_text"]
             if name == "run_command":
                 properties = {"command": {"type": "string", "description": "Linux shell command, executed using /bin/sh"}}
                 required = ["command"]
@@ -672,6 +679,8 @@ class ToolRunner:
                 "name": name, "description": {
                     "list_files": "List a directory (nonrecursive, maximum 200 entries).",
                     "read_file": "Read a UTF-8 text file (maximum 64 KiB).",
+                    "write_file": "Create a NEW UTF-8 file inside tool root without confirmation. Never overwrites existing files. Parent must exist. Max 64 KiB.",
+                    "edit_file": "Edit an existing UTF-8 file inside tool root without confirmation using one unique exact-text replacement. Read first. Max 64 KiB. No symlinks or sensitive paths.",
                     "search_text": "Find literal text in one UTF-8 file (maximum 100 matching lines).",
                     "run_command": "Run a Linux shell command in tool root with user privileges. NOT sandboxed: can write files, access network and paths outside root. 30s timeout, 64 KiB combined output limit. Avoid destructive commands unless explicitly requested."
                 }[name], "parameters": {"type": "object", "properties": properties,
@@ -730,6 +739,83 @@ class ToolRunner:
         except BaseException:
             os.close(fd)
             raise
+
+    def change_file(self, name, args):
+        path = args["path"]
+        if not isinstance(path, str) or not path or len(path) > 4096 or "\x00" in path:
+            raise ValueError("invalid path")
+        parts = Path(path).parts
+        if (not parts or Path(path).is_absolute() or
+                any(p == ".." or not self.allowed(p) for p in parts)):
+            raise ValueError("path is outside root or sensitive")
+        # Walk directories by descriptor, never following a symlink. Keep the
+        # parent open for all reads, publication and cleanup (no path re-open).
+        parent = self.open_path(str(Path(*parts[:-1])))
+        temporary = None
+        try:
+            if not stat.S_ISDIR(os.fstat(parent).st_mode):
+                raise ValueError("parent must be a directory")
+            leaf = parts[-1]
+            before = None
+            mode = 0o600
+            if name == "edit_file":
+                old, new = args["old_text"], args["new_text"]
+                if not isinstance(old, str) or not old or not isinstance(new, str):
+                    raise ValueError("old_text must be nonempty and new_text must be text")
+                fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                try:
+                    before = os.fstat(fd)
+                    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                        raise ValueError("only regular, non-hardlinked files are allowed")
+                    data = os.read(fd, 65537)
+                    if len(data) > 65536 or b"\x00" in data:
+                        raise ValueError("file too large or binary")
+                    text = data.decode("utf-8")
+                finally:
+                    os.close(fd)
+                if text.count(old) != 1:
+                    raise ValueError("old_text must match exactly once; read the file and retry")
+                content = text.replace(old, new, 1)
+                mode = stat.S_IMODE(before.st_mode) & 0o777
+            else:
+                content = args["content"]
+            if not isinstance(content, str) or "\x00" in content:
+                raise ValueError("content must be UTF-8 text without NUL")
+            data = content.encode("utf-8")
+            if len(data) > 65536:
+                raise ValueError("result exceeds 64 KiB")
+            temporary = ".dani-ai-write-" + os.urandom(16).hex()
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=parent)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fchmod(f.fileno(), mode)
+                os.fsync(f.fileno())
+            if before is None:
+                # Atomic create-only publication: even a dangling symlink or
+                # a file created concurrently must cause EEXIST, not overwrite.
+                os.link(temporary, leaf, src_dir_fd=parent, dst_dir_fd=parent,
+                        follow_symlinks=False)
+            else:
+                current = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+                if (current.st_dev, current.st_ino, current.st_mtime_ns, current.st_ctime_ns,
+                    current.st_size, current.st_nlink) != (
+                        before.st_dev, before.st_ino, before.st_mtime_ns, before.st_ctime_ns,
+                        before.st_size, before.st_nlink):
+                    raise ValueError("file changed during edit; read again and retry")
+                os.replace(temporary, leaf, src_dir_fd=parent, dst_dir_fd=parent)
+                temporary = None
+            os.fsync(parent)
+            return json.dumps({"result": {"path": path, "bytes": len(data),
+                                          "action": "created" if before is None else "edited"},
+                               "untrusted": True}, ensure_ascii=False)
+        finally:
+            try:
+                if temporary is not None:
+                    os.unlink(temporary, dir_fd=parent)
+            finally:
+                os.close(parent)
 
     def run_command(self, command, timeout=30, output_limit=65536):
         if not isinstance(command, str) or not 0 < len(command) <= 16000 or "\x00" in command:
@@ -804,9 +890,13 @@ class ToolRunner:
                 raise ValueError("tool unknown or blocked")
             args = json.loads(arguments)
             required = ({"command"} if name == "run_command" else
+                        {"path", "content"} if name == "write_file" else
+                        {"path", "old_text", "new_text"} if name == "edit_file" else
                         {"path", "query"} if name == "search_text" else {"path"})
             if not isinstance(args, dict) or set(args) != required:
                 raise ValueError("invalid tool arguments")
+            if name in ("write_file", "edit_file"):
+                return self.change_file(name, args)
             if name == "run_command":
                 return self.run_command(args["command"])
             if name == "search_text" and (not isinstance(args["query"], str) or not 0 < len(args["query"]) <= 1000):

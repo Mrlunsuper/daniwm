@@ -8,97 +8,153 @@
 <meta name="color-scheme" content="dark">
 <style>
   :root{
-    --bg:#1d2021; --bg2:#282828; --fg:#ebdbb2; --dim:#a89984;
-    --aqua:#8ec07c; --blue:#83a598; --yellow:#fabd2f; --red:#fb4934;
-    --purple:#d3869b; --border:#3c3836;
+    /* gruvbox dark aqua */
+    --bg:#1d2021; --bg2:#282828; --fg:#ebe5c5; --dim:#b0a99b;
+    --aqua:#a9d17f; --blue:#8fc7bd; --yellow:#e8bd63; --red:#fb7b72;
+    --purple:#e39cb1; --border:#504945; --glow:0 0 0 rgba(0,0,0,0);
     --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
   }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth; scroll-padding-top:60px}
   body{
-    margin:0; background:var(--bg); color:var(--fg);
+    margin:0; background:var(--bg); color:var(--fg); text-shadow:var(--glow);
     font-family:var(--mono); font-size:15px; line-height:1.6;
   }
-  a{color:var(--blue); text-decoration:none}
-  a:hover{text-decoration:underline}
+  /* CRT scanlines + vignette, purely decorative and click-through */
+  body::before{
+    content:""; position:fixed; inset:0; z-index:99; pointer-events:none;
+    background:repeating-linear-gradient(to bottom,
+      rgba(0,0,0,0) 0 2px, rgba(0,0,0,.28) 2px 4px);
+    opacity:.18;
+  }
+  body::after{
+    content:""; position:fixed; inset:0; z-index:98; pointer-events:none;
+    background:radial-gradient(ellipse at center, rgba(0,0,0,0) 65%, rgba(0,0,0,.4) 100%);
+  }
+  ::selection{background:var(--fg); color:#000; text-shadow:none}
+  a{color:var(--fg); text-decoration:none; border-bottom:1px dashed var(--dim)}
+  a:hover{background:var(--fg); color:#000; text-shadow:none; border-bottom-color:transparent}
+  a:hover *{color:#000 !important}
   .wrap{max-width:960px; margin:0 auto; padding:0 20px}
   code,kbd,pre{font-family:var(--mono)}
-  code{background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.1em .35em; font-size:.92em}
+  code{background:var(--bg2); border:1px solid var(--border); border-radius:0; padding:.1em .35em; font-size:.92em; color:var(--aqua)}
   pre{
-    background:var(--bg2); border:1px solid var(--border); border-radius:6px;
-    padding:14px 16px; overflow-x:auto; font-size:13.5px; line-height:1.55;
+    position:relative;
+    background:var(--bg2); border:1px solid var(--border); border-left:3px solid var(--fg);
+    border-radius:0; padding:26px 16px 14px; overflow-x:auto;
+    font-size:13.5px; line-height:1.55; color:var(--fg);
   }
-  pre code{background:none; border:0; padding:0}
-  .c{color:#928374}
+  /* fake title bar: [ █▓▒░ dani-ai@daniwm ] */
+  pre::before{
+    content:"[ \2588\2593\2592\2591 dani-ai@daniwm ]";
+    position:absolute; top:0; left:0; right:0;
+    padding:1px 10px; background:var(--border); color:#000;
+    font-size:11px; letter-spacing:.08em; text-shadow:none;
+  }
+  pre code{background:none; border:0; padding:0; color:var(--fg)}
+  /* terminal command examples get a simulated prompt */
+  pre.cmds code{counter-reset:cmdline}
+  pre.cmds code::before{
+    content:"user@daniwm:~$"; display:inline-block; margin-right:.6em;
+    color:var(--aqua); font-weight:600;
+  }
+  .c{color:var(--dim)}
   .g{color:var(--aqua)}
   .y{color:var(--yellow)}
   .p{color:var(--purple)}
+  .blink{animation:blink 1.05s steps(2,start) infinite}
 
-  .nav{position:sticky; top:0; z-index:10; background:rgba(29,32,33,.94);
+  .nav{position:sticky; top:0; z-index:10; background:rgba(29,32,33,.95);
        backdrop-filter:blur(6px); border-bottom:1px solid var(--border); font-size:13px}
   .nav .wrap{display:flex; align-items:center; gap:14px; height:44px; overflow-x:auto; white-space:nowrap}
   .nav .brand{color:var(--aqua); font-weight:600}
-  .nav a{color:var(--dim)}
-  .nav a:hover{color:var(--fg); text-decoration:none}
+  .nav .brand::before{content:"root@daniwm:"; color:var(--dim); font-weight:400}
+  .nav .brand::after{content:"#"; margin-left:2px; color:var(--aqua)}
+  .nav a{color:var(--dim); border-bottom:0}
+  .nav a::before{content:"./"; color:var(--border)}
+  .nav a:hover{color:var(--aqua); background:none; text-shadow:var(--glow)}
 
   header{padding:64px 0 40px; border-bottom:1px solid var(--border)}
-  .badge{display:inline-block; font-size:12px; color:var(--aqua); border:1px solid var(--aqua);
-         border-radius:999px; padding:2px 10px; margin-bottom:18px}
-  h1{font-size:clamp(28px,5vw,44px); margin:0 0 12px; letter-spacing:-.5px}
+  .badge{display:inline-block; font-size:12px; color:var(--fg); border:1px solid var(--border);
+         border-radius:0; padding:2px 10px; margin-bottom:18px; background:var(--bg2)}
+  .badge::before{content:"[ "; color:var(--dim)}
+  .badge::after{content:" ]"; color:var(--dim)}
+  h1{font-size:clamp(28px,5vw,44px); margin:0 0 12px; letter-spacing:-.5px; color:var(--fg)}
   h1 .prompt{color:var(--aqua); user-select:none}
-  h1 .cursor{display:inline-block; width:.55ch; background:var(--aqua); animation:blink 1.1s steps(2,start) infinite}
+  h1 .cursor{display:inline-block; width:.55ch; background:var(--fg); box-shadow:var(--glow); animation:blink 1.1s steps(2,start) infinite}
   @keyframes blink{to{visibility:hidden}}
   .lead{color:var(--dim); max-width:64ch; margin:0 0 24px}
+  .lead::before{content:"> "; color:var(--aqua)}
   .btns{display:flex; flex-wrap:wrap; gap:10px}
-  .btn{display:inline-block; padding:8px 16px; border-radius:6px; border:1px solid var(--border);
+  .btn{display:inline-block; padding:8px 16px; border-radius:0; border:1px solid var(--border);
        color:var(--fg); background:var(--bg2); font-size:14px}
-  .btn:hover{border-color:var(--aqua); text-decoration:none}
-  .btn.primary{background:var(--aqua); color:#1d2021; border-color:var(--aqua); font-weight:600}
-  .btn.primary:hover{filter:brightness(1.08)}
+  .btn::before{content:"[ "}
+  .btn::after{content:" ]"}
+  .btn:hover{border-color:var(--fg); color:var(--aqua); background:var(--bg2);
+             box-shadow:var(--glow); text-shadow:var(--glow)}
+  .btn.primary{background:var(--fg); color:#000; border-color:var(--fg); font-weight:600; text-shadow:none}
+  .btn.primary:hover{background:var(--aqua); color:#000; text-shadow:none}
 
-  section{padding:48px 0; border-bottom:1px solid var(--border)}
-  h2{font-size:22px; margin:0 0 8px}
-  h2::before{content:"## "; color:var(--aqua)}
+  section{padding:48px 0; border-bottom:1px dashed var(--border)}
+  h2{font-size:22px; margin:0 0 8px; color:var(--fg)}
+  h2::before{content:"## "; color:var(--dim)}
+  h2::after{content:" _"; color:var(--fg)}
   h3{font-size:16px; margin:28px 0 8px; color:var(--yellow)}
   h3::before{content:"### "; color:var(--dim)}
   h4.t{font-size:14px; margin:22px 0 6px; color:var(--purple)}
-  .sub{color:var(--dim); margin:0 0 22px}
+  .sub{color:#c4bdaf; margin:0 0 22px}
+  .sub::before{content:"# "; color:var(--border)}
 
   .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px}
-  .card{background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:16px 18px}
+  .card{background:var(--bg2); border:1px solid var(--border); border-radius:0; padding:16px 18px;
+        position:relative; transition:border-color .15s, box-shadow .15s}
+  .card::before{content:"+-"; position:absolute; top:0; left:0; color:var(--border); font-size:12px}
+  .card:hover{border-color:var(--fg); box-shadow:var(--glow)}
   .card h4{margin:0 0 6px; font-size:14px; color:var(--yellow)}
-  .card p{margin:0; color:var(--dim); font-size:13.5px}
+  .card h4::before{content:"$ "; color:var(--dim)}
+  .card p{margin:0; color:#dcd5c2; font-size:13.5px}
 
   table{width:100%; border-collapse:collapse; font-size:13.5px; margin-top:6px}
   th,td{text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top}
-  th{color:var(--blue); font-weight:600}
+  th{color:var(--aqua); font-weight:600; text-transform:uppercase; letter-spacing:.06em; font-size:12px}
+  tbody tr:hover{background:var(--bg2)}
   td code{font-size:.95em; white-space:nowrap}
   kbd{background:var(--bg2); border:1px solid var(--border); border-bottom-width:2px;
-      border-radius:4px; padding:1px 6px; font-size:12.5px; color:var(--fg)}
+      border-radius:0; padding:1px 6px; font-size:12.5px; color:var(--fg)}
 
-  .warn{border-left:3px solid var(--red); background:#2b2323; padding:12px 16px; border-radius:0 6px 6px 0;
-        color:var(--dim); font-size:13.5px; margin:16px 0}
-  .warn strong{color:var(--red)}
-  .note{border-left:3px solid var(--blue); background:#232b2e; padding:12px 16px; border-radius:0 6px 6px 0;
-        color:var(--dim); font-size:13.5px; margin:16px 0}
-  .note strong{color:var(--blue)}
+  .warn{border-left:3px solid var(--red); background:#3a1f1c; padding:12px 16px; border-radius:0;
+        color:#e6dcc8; font-size:13.5px; margin:16px 0}
+  .warn strong{color:var(--red); text-shadow:none}
+  .note{border-left:3px solid var(--fg); background:var(--bg2); padding:12px 16px; border-radius:0;
+        color:#dcd5c2; font-size:13.5px; margin:16px 0}
+  .note strong{color:var(--aqua)}
 
-  ul.tight{margin:6px 0 0; padding-left:22px; color:var(--dim); font-size:13.5px}
+  ul.tight{margin:6px 0 0; padding-left:22px; color:#dcd5c2; font-size:13.5px; list-style:none}
+  ul.tight li::before{content:"- "; color:var(--dim)}
   ul.tight li{margin:3px 0}
   ul.tight code{font-size:.95em}
+  ol{color:#dcd5c2; font-size:13.5px}
+  ol li::marker{color:var(--aqua)}
 
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto}
+    h1 .cursor,.blink{animation:none}
+    .card{transition:none}
+  }
   @media (max-width:600px){
+    body::before{opacity:.35}
+    body::after{display:none}
     table{font-size:12px}
     th,td{padding:7px 5px; overflow-wrap:anywhere}
     td code{white-space:normal; overflow-wrap:anywhere}
     header{padding-top:40px}
-  }
-  @media (prefers-reduced-motion:reduce){
-    html{scroll-behavior:auto}
-    h1 .cursor{animation:none}
+    pre{font-size:12px; padding-top:24px}
   }
 
-  footer{padding:32px 0 56px; color:#928374; font-size:13px; text-align:center}
+  footer{padding:32px 0 56px; color:var(--dim); font-size:13px; text-align:center}
+  footer::before{content:"\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591"; margin:0 auto 15px; max-width:960px; overflow:hidden;
+                 white-space:nowrap; color:var(--border); letter-spacing:0}
+  footer .end::after{content:" _"; color:var(--fg); animation:blink 1.1s steps(2,start) infinite}
 </style>
 </head>
 <body>
@@ -122,7 +178,7 @@
 <header>
   <div class="wrap">
     <span class="badge">BYOK · Python stdlib · OpenAI-compatible · v0.1.0</span>
-    <h1><span class="prompt">$</span> dani-ai<span class="cursor">&nbsp;</span></h1>
+    <h1><span class="prompt">user@daniwm:~$</span> dani-ai<span class="cursor">&nbsp;</span></h1>
     <p class="lead">
       Chat AI ngay trong terminal. Không framework, không dependency, không GUI —
       một file Python, một API key, và tool use để đọc file / chạy lệnh.
@@ -174,11 +230,11 @@ K
 chmod 600 ~/.config/daniwm/ai.key</code></pre>
 
     <h3>Kiểm tra nhanh</h3>
-<pre><code><span class="g">$</span> dani-ai --version
+<pre class="cmds"><code>dani-ai --version
 dani-ai 0.1.0
-<span class="g">$</span> dani-ai --show-config          <span class="c"># in ra cấu hình đã resolve</span>
-<span class="g">$</span> dani-ai models                 <span class="c"># danh sách model từ /models</span>
-<span class="g">$</span> dani-ai "xin chao"              <span class="c"># thử request đầu tiên</span></code></pre>
+dani-ai --show-config          <span class="c"># in ra cấu hình đã resolve</span>
+dani-ai models                 <span class="c"># danh sách model từ /models</span>
+dani-ai "xin chao"              <span class="c"># thử request đầu tiên</span></code></pre>
 
     <p class="sub" style="margin-top:16px">
       Đặt dani-ai ở đâu cũng được — nó chỉ dùng module chuẩn, không import gì trong repo.
@@ -218,7 +274,7 @@ dani-ai --system "Trả lời ngắn gọn bằng tiếng Việt." "Giải thíc
   <div class="wrap">
     <h2>Cách dùng</h2>
     <p class="sub">Hỏi một lần, chat tương tác hoặc đưa nội dung qua stdin.</p>
-<pre><code><span class="c"># Hỏi một lần</span>
+<pre class="cmds"><code><span class="c"># Hỏi một lần</span>
 dani-ai "Giải thích sự khác nhau giữa X11 và Wayland"
 
 <span class="c"># Chat tương tác</span>
@@ -276,7 +332,7 @@ dani-ai chat --continue ten-phien</code></pre>
         <tr><td><code>run_command</code></td><td>Chạy lệnh qua <code>/bin/sh</code>, timeout 30 giây, đầu ra tối đa 64 KiB.</td></tr>
       </tbody>
     </table>
-<pre><code><span class="c"># Chỉ đọc project, chặn shell và không nạp custom tools</span>
+<pre class="cmds"><code><span class="c"># Chỉ đọc project, chặn shell và không nạp custom tools</span>
 dani-ai --tool-root "$PWD" --block-tool run_command --no-custom-tools chat
 
 <span class="c"># Tắt toàn bộ tools</span>
@@ -381,6 +437,9 @@ dani-ai --block-tool 'btc_*' chat</code></pre>
 </main>
 
 <footer>
+  <div class="wrap end">dani-ai · v0.1.0 · MIT · exit code 0</div>
+</footer>
+
   <div class="wrap">dani-ai · Python stdlib · BYOK · <a href="#">Về đầu trang ↑</a></div>
 </footer>
 </body>
