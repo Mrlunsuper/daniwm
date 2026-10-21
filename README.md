@@ -212,7 +212,7 @@ defaults); shrinking `workspaces` folds extra workspaces into the last one.
 ```sh
 dani-ai "cau hoi"        # hoi nhanh (stream mac dinh)
 dani-ai chat             # REPL: /reset /system /model /base /stream /color /quit
-dani-ai chat --continue [ten]  # mo lai chat cu (tu dong luu last.json)
+dani-ai chat --continue [ten]  # mo lai chat cu (ID rieng; last = checkpoint moi nhat)
 dani-ai models           # list model tu API (/model de chon so trong chat)
 dani-ai history          # list chat da luu (/save [ten] trong chat)
 ```
@@ -238,12 +238,215 @@ Nhan **Ctrl+V** de doc clipboard truc tiep (khong can sua terminal):
   Can terminal ho tro bracketed paste; terminal khong ho tro van co the
   coi newline trong clipboard la Enter.
 
+### Provider profiles va capabilities
+
+Profile la opt-in; khong dung `--profile` thi key/base/model van resolve nhu cu.
+Tao `~/.config/daniwm/ai.profiles.json` (nen chmod 600):
+
+```json
+{
+  "version": 1,
+  "profiles": {
+    "openai-mini": {
+      "base": "https://api.openai.com/v1",
+      "model": "gpt-4o-mini",
+      "key_env": "OPENAI_API_KEY",
+      "capabilities": {
+        "tools": true,
+        "vision": true,
+        "stream": true,
+        "token_parameter": "max_completion_tokens"
+      }
+    }
+  }
+}
+```
+
+```sh
+export OPENAI_API_KEY='...'
+dani-ai --profile openai-mini --show-config
+dani-ai --profile openai-mini chat
+# File khac: --profile NAME --profiles-file /path/to/profiles.json
+```
+
+- Profile pin endpoint, model va bien moi truong chua key; khong fallback sang
+  key env/ai.key khac. Khong luu key trong JSON. `--api-base`/`--api-key` bi
+  tu choi khi dung profile; `--model` chi chap nhan neu trung model profile.
+- Capabilities khai bao thu cong theo provider/model, khong tu probe:
+  `tools:false` tat runner, `stream:false` chon nonstream; `vision:false`
+  tu choi gui image ke ca anh trong session resume. Token parameter la
+  `max_tokens`, `max_completion_tokens`, hoac `null` (khong ho tro flag
+  `--max-tokens`). Ca stream/nonstream dung cung mapping.
+- `/model` bi khoa trong profile; khoi dong lai voi profile khac de doi model.
+  Session context co profile name/model/capabilities (khong co key); mismatch
+  can `--trust-session`, nhung model van phai khop profile.
+- API request bi rang buoc trong base profile; redirect khac origin van bi
+  chan. Remote HTTP canh bao vi khong ma hoa key/conversation; nen dung HTTPS.
+  File profile la cau hinh tin cay: nguoi sua file nay co the doi noi nhan key.
+- Chua co auto-discovery hay doi profile giua REPL; retry/backoff la opt-in
+  qua `--http-retries` (xem ben duoi). Capability
+  khong dam bao provider that su tuan thu schema; loi API van duoc bao nhu cu.
+
+### Session ID va nhieu phien cung luc
+
+- Moi REPL/co che tool checkpoint dung `session-<uuid>.json` rieng. Resume
+  tao nhanh ID moi, khong sua session nguon; `/new`, `/reset`, `/clear` va doi
+  tool root cung bat dau ID moi. ID duoc in khi thoat, dung voi `--continue ID`.
+- `last.json` la ban sao checkpoint vua duoc publish gan nhat, khong phai ID
+  co dinh cua mot REPL. Khi nhieu phien chay, `--continue` co the mo phien khac;
+  dung ID cu the de chon dung hoi thoai. Khong tu gop conversation.
+- Ghi checkpoint/last va `/save` duoc serialize bang `flock` tren
+  `.history.lock`; lock tu nha khi process thoat/crash. `/save` tu choi ten
+  da ton tai thay vi ghi de. Readline merge chi cac entry moi cua moi REPL
+  voi history tren dia, giu toi da 200 entry.
+- Lock la advisory cho cac process dani-ai hop tac tren filesystem ho tro
+  `flock` (Linux/local filesystem); khong bao ve truoc chuong trinh sua file
+  ben ngoai. Hai file ID/last khong phai mot transaction crash-atomic:
+  neu publish last loi, ban theo ID van con. Chua co retention/cleanup tu dong.
+
+### Private mode va local history
+
+- `dani-ai chat --no-history`: khong doc/ghi readline history, khong autosave,
+  khong ghi tool checkpoint; `/save` va `/resume` bi tat, khong dung chung
+  `--continue`. Single-shot cung ton trong flag nay.
+- Tool call/result van giu trong bo nho khi loi, nhung crash/kill se khong co
+  journal tren dia de phuc hoi. Day KHONG phai che do offline hay sandbox:
+  provider van nhan prompt, tool van co the ghi workspace theo permission policy,
+  terminal/shell ben ngoai CLI van co the luu log.
+- Slash-command (ke ca `/system`) khong them vao readline history moi; history
+  cu khong duoc tu dong scrub. Session binh thuong van luu system prompt.
+- `dani-ai history` la lenh local, khong can API key. Khi co `--no-history`,
+  lenh khong doc session ma chi thong bao history da tat.
+
+### Path/domain policy (builtin tools)
+
+```sh
+dani-ai chat --deny-path 'private' --deny-path '*backup*' \
+  --write-path 'src' --write-path 'src/*' --allow-domain docs.python.org
+```
+
+- Cac flag lap lai duoc. `--deny-path GLOB` chan doc/ghi va an entry khoi
+  list/find/search; ap dung ca khi `--include-ignored` hoac `--yes-tools`.
+  Deny co uu tien cao hon write allowlist va blocklist/preset van giu nguyen.
+- Glob la Python fnmatch case-sensitive tren path root-relative da normalize;
+  `*` co the match ca `/`, khong phai gitignore. Ancestor bi deny thi ca cay
+  con bi deny. Vi du `private` chan root/private va con, `*backup*` match
+  path co chu backup. Khong nhan path tuyet doi hoac thanh phan `..`.
+- Khi co `--write-path`, write/edit/mkdir chi duoc ghi path match mot glob.
+  `make_directory` kiem tra tung parent vi co the tu tao parent; vi du cho
+  phep `src` va `src/*` de tao thu muc con. Khong co flag thi giu policy cu.
+- `--allow-domain HOST` la exact hostname (IDNA/case normalized), khong scheme,
+  port hay wildcard; khong tu cho phep subdomain. Kiem tra truoc DNS o URL
+  dau va MOI redirect. Khong co flag thi van cho phep public web theo SSRF checks.
+- Preset `ask` hoi mot lan cho moi web origin (scheme/host/port) trong session,
+  ke ca origin moi qua redirect. Tu choi thi dung fetch; approval xoa khi new,
+  reset, clear, resume hoac doi root. `--yes-tools` bo prompt, khong vuot allowlist.
+- Day KHONG phai sandbox/DLP: shell/custom process co the truy cap file/network
+  ngoai policy. `git_status` la metadata cua repo, khong loc path theo deny;
+  block bang `--block-tool git_status` neu can. Noi dung da co trong RAM/session
+  khong duoc scrub khi them deny. Cac flag nay khong gioi han API provider endpoint.
+
+### Diff/undo cua luot gan nhat
+
+- `/diff` hien diff tong hop cac builtin `write_file`/`edit_file` trong luot
+  user gan nhat, toi da 64000 ky tu hien thi; khong goi Git hay provider.
+- `/undo` hien preview va hoi confirm (hoac auto-approve voi `--yes-tools`).
+  Khoi phuc noi dung/mode cu, xoa file moi do AI tao; khong reset repo, khong
+  xoa thu muc mkdir. Them thong bao vao conversation de model doc lai file.
+- Snapshot chi trong RAM, budget 8 MiB/luot; vuot budget thi tu choi file
+  mutation tiep theo. Luot user moi/new/reset/clear/resume/doi root xoa snapshot
+  cu. Khong co undo qua restart hoac single-shot CLI; private mode khong persist.
+- Undo preflight moi file: content va identity (inode/timestamps/size/mode/link)
+  phai khop trang thai AI de lai, khong symlink/hardlink. User da sua file thi
+  tu choi ca preflight, khong ghi de. Van tuan thu deny/write-path/read-only va
+  tool blocklist. Neu phat hien edit chen giua hoac shell/custom chay trong
+  luot thi tu choi undo vi khong theo doi day du side effects.
+- Khong phai filesystem transaction/sandbox: publish undo tung file, loi I/O
+  giua chung co the khoi phuc mot phan; conversation ghi ro cac file da restore.
+  Check lai truoc publish nhung van co cua so race voi writer ben ngoai; tranh
+  sua dong thoi luc undo. Khong cam ket bao ve truoc concurrent hostile writer.
+
+### Scan cursor/pagination
+
+- `find_files` / `search_files` tra `next_cursor`. Neu khac null, goi lai cung
+  tool/path/pattern (hoac query) va them `cursor: "..."` de tiep tuc. Moi trang
+  toi da 2000 entries scan, 100 matches, 16000 ky tu result; trang rong van co
+  the co cursor neu scan nhieu entries khong match. `scanned/skipped/ignored`
+  la counts cua trang hien tai, khong phai tong toan cay.
+- Cursor opaque, single-use, process-only; toi da 4 scan dang do, idle TTL 120s
+  (cleanup khi goi scan tiep). Scan thu 5 evict scan cu nhat. Reset/new/clear,
+  resume/doi root va thoat REPL dong cursors. Param/root/deny/ignore thay doi
+  thi cursor khong con hop le; bat dau scan moi. Khong persist fd/cursor.
+- DFS giu directory/file descriptors no-follow de tiep tuc thay vi scan lai
+  tu dau; toi da depth 32. `depth_limited` bao nhanh bi bo qua (khong the
+  tiep tuc bang cursor); search bo file >64 KiB/binary. Dong match qua dai
+  duoc clip va dem trong `clipped`, tranh mot dong chan tien trinh phan trang.
+- Khong phai snapshot: filesystem thay doi giua trang co the thieu/thua/stale
+  ket qua, directory dang mo co the da duoc rename. Thu tu theo filesystem,
+  khong sort toan cay; quet lai neu can ket qua nhat quan sau khi sua file.
+
+### Context va budget tool
+
+- `/context` hien so message, tool result va do lon JSON UTF-8 cua hoi thoai.
+  Day KHONG phai token usage/chi phi provider; khong tu compact.
+- `/usage` hien `prompt_tokens`, `completion_tokens`, `total_tokens` do provider
+  thuc su tra ve, tong cac response trong process hien tai va response gan nhat.
+  Bao coverage tung truong; thieu counts la unavailable, khong coi la 0. Tool
+  rounds va request dat ten `/save` cung duoc tinh. Khong uoc tinh token/cost,
+  khong persist usage qua resume; request loi/stream do dang van co the bi tinh phi.
+- Stream chi ghi nhan usage neu provider gui. `--stream-usage` opt-in gui
+  `stream_options: {"include_usage": true}`; chi bat neu provider ho tro, khong
+  tu retry/fallback khi server tu choi option. Nonstream khong can flag nay.
+- `/compact [N]` giu N luot user gan nhat (mac dinh 4), giu system prompt va
+  toan bo tool call/result trong cac luot do. Bo tron luot cu, KHONG tao summary
+  va khong goi provider. Co the mat yeu cau/quyet dinh cu; chon N co chu dich.
+  Binh thuong checkpoint ban goc theo ID, tao ID nhanh moi cho context gon;
+  lenh in ID goc de resume. Neu checkpoint loi thi giu nguyen context trong RAM.
+  Private mode chi rut gon trong RAM, khong co backup cac luot da bo.
+- Moi luot user mac dinh toi da **64 tool calls** va **1 MiB tool-result UTF-8**;
+  doi bang `--max-tool-calls N` / `--max-tool-output BYTES` (so duong).
+  Batch vuot call budget se khong duoc chay. Output chi biet sau khi tool chay:
+  neu vuot budget, ghi lai tool DA chay, dung cac call con lai va khong tu retry.
+  Khong rollback file. Call/output budgets tach biet voi cooperative `--turn-timeout`.
+
+### Turn deadline va retry opt-in
+
+- `--turn-timeout SECONDS` (mac dinh 300, so duong huu han) la cooperative
+  budget chung cho mot luot: cac API/tool rounds, retry sleeps va thoi gian
+  cho approval. Request body, web va subprocess dung budget con lai; qua han
+  thi khong bat dau tool/request tiep theo. Tool da chay khong rollback/replay.
+- Day KHONG phai hard wall-clock deadline: DNS/connect/response headers,
+  filesystem I/O, history lock va approval prompt co the giu process qua han;
+  gate kiem tra khi control quay lai. Checkpoint van duoc ghi sau deadline de
+  giu journal. Khong tu kill process giua filesystem mutation.
+- `--http-retries N` (0..3, mac dinh **0**) chi retry API HTTP
+  429/502/503/504 truoc khi body duoc doc. Backoff 1/2/4s hoac Retry-After
+  (giay nguyen/HTTP-date); neu delay khong vua request/turn budget thi dung.
+- Khong retry transport error, response body loi, JSON loi hay partial stream;
+  khong retry tool/custom/web va khong replay mutation. Sau tool, chi request
+  provider tiep theo co the retry voi cung context. Provider co the van tinh
+  phi cho POST retry; bat flag la chap nhan rui ro duplicate provider work.
+
+### Gioi han transport va test AI
+
+- API JSON/stream toi da 16 MiB; moi dong SSE toi da 1 MiB, toi da 100.000 dong;
+  noi dung answer toi da 2.097.152 ky tu. Request/session toi da 32 MiB;
+  stdin toi da 2.097.152 ky tu. Vuot budget se bao loi, khong luu partial answer.
+- `--timeout` la budget tinh tu luc bat dau request; vong doc response body
+  giam socket timeout theo thoi gian con lai, chan server gui nho giot vo han.
+  DNS resolver va pha ket noi/response headers cua urllib van phu thuoc timeout
+  nen tang: day chua phai hard wall-clock deadline cho tat ca cac pha.
+  Web fetch dung chung deadline qua cac redirect va body reads.
+- `make check-ai` chay rieng, khong can X server hay API key that; `make check`
+  cung bao gom suite nay. GitHub Actions co matrix Python 3.10/3.12/3.14.
+
 ### Tool use (bat mac dinh)
 
 Tool builtin mac dinh: `list_files`, `read_file`, `search_text`, `find_files`,
 `search_files`, `make_directory`, `write_file`, `edit_file`, `fetch_url`, `git_status`.
 Chi can chay `dani-ai chat` trong thu muc project de yeu cau tao/sua file,
-khong can flag shell hay xac nhan moi lan.
+khong can flag shell. Mac dinh `--permissions ask`: hoi xac nhan truoc khi ghi,
+fetch URL, chay shell hoac custom tool; thao tac doc file local khong hoi.
 
 - `git_status()`: xem branch va thay doi cua repo chua tool root, khong can shell,
   khong ghi index/commit, bo qua submodule. Tool root mac dinh la thu muc luc
@@ -257,9 +460,17 @@ khong can flag shell hay xac nhan moi lan.
   Offset/limit tinh bang ky tu; limit toi da 64.000. Neu `truncated=true`,
   doc tiep bang `next_offset`; khong cat noi dung am tham.
 - `find_files(path, pattern)`: tim file de quy theo glob ten file, vi du `*.py`.
+  Scan mac dinh bo qua `node_modules`, `vendor`, `build`, `dist`, `__pycache__`,
+  `venv`, `coverage`, `*.o`, `*.pyc`. Them glob vao `.aiignore` tai tool root:
+  moi dong mot pattern, dong `#` la comment; pattern khong `/` khop basename,
+  pattern co `/` khop duong dan tu root; `/` cuoi duoc bo. Khong ho tro `!`
+  negation hay day du gitignore semantics; KHONG tu doc `.gitignore`.
+  `--include-ignored` bo qua cac ignore nay, nhung khong bo qua sensitive paths,
+  symlink/hardlink restrictions. Ket qua tra them so entry `ignored`.
 - `search_files(path, query)`: tim chuoi literal de quy, tra `path:line:text`.
-  Hai tool scan toi da 2.000 entry, sau 32 cap, 100 ket qua/16.000 ky tu;
-  bao `truncated`, `skipped`. Search bo qua file >64 KiB, binary/khong phai UTF-8.
+  Moi trang scan toi da 2.000 entry, sau 32 cap, 100 ket qua/16.000 ky tu;
+  bao `truncated`, `skipped`, `next_cursor` de tiep tuc. Search bo qua file
+  >64 KiB, binary/khong phai UTF-8.
   Khong theo symlink, khong doc hardlink hay duong dan an/nhay cam.
 - `make_directory(path)`: tao thu muc va cac cha con thieu, mode 700;
   chap nhan thu muc da co, tu choi symlink va duong dan nhay cam/ngoai root.
@@ -278,15 +489,30 @@ khong can flag shell hay xac nhan moi lan.
   `..`, symlink, hardlink (khi sua), file an/nhay cam, binary/device/FIFO.
 - Ghi qua file tam va publish atomic, giu quyen rwx khi edit; file moi mode 600.
   write_file khong tu tao thu muc; dung make_directory truoc. Day khong phai sandbox cho shell/custom tool.
-- Tool ghi khong hoi xac nhan: nen dung Git/backup va chi mo project ban muon
-  cho model sua. De chi doc: `dani-ai chat --block-tool write_file --block-tool edit_file --block-tool make_directory`.
-  Neu co custom tool, dung them `--no-custom-tools` hoac audit/block tung tool ghi.
+- Quyen tool: `--permissions ask` (mac dinh) hien diff truoc ghi file va hoi
+  truoc mkdir/network/shell/custom tool. Khong co TTY thi tu choi prompt.
+  `--permissions read-only` chi cho doc file/search/git status local; chan ca
+  fetch URL, shell va custom tool. `--permissions workspace-write` giu hanh vi
+  cu: ghi trong workspace va fetch URL khong hoi; custom tool van ton trong `confirm`.
+  `--yes-tools` tu dong dong y prompt, KHONG vuot blocklist/read-only.
+  Shell van can `--allow-shell`; day KHONG phai sandbox. Nen dung Git/backup.
+- Session v2 luu project root va API base (khong luu key). Resume khac project,
+  provider hoac session cu thieu metadata se bi tu choi; chi dung `--trust-session`
+  sau khi da kiem tra noi dung va nguon goc. `/base` khong doi provider giua chat:
+  khoi dong lai voi endpoint va key tuong ung de tranh gui nham key/history.
+- REPL autosave sau moi cau tra loi; tool call/result duoc checkpoint vao
+  `last.json` truoc/sau thuc thi, ke ca single-shot co tool. Luot loi sau tool
+  duoc giu lai; file da sua KHONG tu rollback. Neu bi kill trong tool, ket qua
+  luu co the ghi execution status unknown: kiem tra workspace truoc khi retry.
+  Moi phien co ID rieng; `last.json` la latest snapshot dung chung, publish
+  duoi lock (xem muc Session ID).
 
 **`run_command` tat mac dinh**; chi bat bang `--allow-shell`.
 Model tu quyet dinh khi nao goi tool; provider/model can ho tro OpenAI function calling.
 
 **Canh bao:** sau khi bat `--allow-shell`, `run_command` chay `/bin/sh -c`
-voi quyen user hien tai, khong hoi xac nhan tung lenh. Co the ghi/xoa file, truy cap mang va doc duong dan ngoai root.
+voi quyen user hien tai; `ask` hoi xac nhan tung lenh, con
+`workspace-write`/`--yes-tools` cho phep chay khong hoi. Co the ghi/xoa file, truy cap mang va doc duong dan ngoai root.
 `--tool-root` chi la working directory cua shell, KHONG phai sandbox.
 Chi su dung voi model/provider va noi dung ban tin tuong. Chan `run_command`
 neu muon chi doc file. Blocklist theo ten tool khong phai bo loc lenh shell.
@@ -362,7 +588,7 @@ Intervals: `1m`, `5m`, `15m`, `30m`, `1h`, `1d`, `1wk`, `1mo`;
 
 ### Custom tools (tu dinh nghia)
 
-Ngoai 7 tool builtin, dani-ai nap them manifest JSON trong
+Ngoai cac tool builtin, dani-ai nap them manifest JSON trong
 `~/.config/daniwm/ai.tools/` (`$XDG_CONFIG_HOME` duoc ton trong).
 Moi tool = 1 file `<ten>.json` + 1 script/lenh bat ky (sh, python, binary...).
 Khong can sua dani-ai khi them tool moi.
@@ -422,6 +648,14 @@ Tool BTC tra `long_pct`/`short_pct` theo phan tram (0..100).
 Long/short period khac kline interval: `1m` -> `5m`, `8h` -> `6h`,
 `1w` -> `1d`; period thuc te nam trong `long_short.period`.
 
+BTC tool gioi han 2 MiB/response, budget doc du lieu 24s trong process timeout
+30s; tra `partial` va `errors` neu mot section loi/het budget, giu section da lay.
+Timestamp dung unix milliseconds; ticker/funding/OI co `age_seconds` khi nguon
+tra timestamp. Nen co `close_time`/`is_closed`; nen cuoi co the chua dong.
+`annualized_pct` chi la phep ngoai suy gia dinh funding 8 gio va rate khong doi,
+KHONG phai lich funding da xac minh, du bao hay loi nhuan. OI hien la snapshot,
+chua co OI history. DNS/connect/header van theo gioi han timeout nen tang.
+
 Tool mau: `ai.tools/btc_market.json` + `ai.tools/btc_market.py` lay du lieu
 cong khai Binance USD-M futures (ticker 24h, klines OHLCV + thong ke cua so,
 funding rate, open interest, long/short ratio) — chi doc, khong can API key,
@@ -436,11 +670,13 @@ dani-ai "Lay du lieu BTC 4h va nhan xet xu huong"   # model tu goi btc_market
 ### Do tin cay va bao mat
 
 - `--continue last "cau hoi tiep"` gui ca context da luu trong single-shot.
-  Single-shot khong tu ghi de session; REPL tu luu khi thoat.
+  Single-shot khong sua session nguon; neu co tool se checkpoint theo ID moi.
+  REPL checkpoint moi luot va khi thoat.
 - Terminal hien spinner `Đang chờ phản hồi…` cho den khi co noi dung tra loi
   (ca stream va non-stream); tu don dep khi loi/Ctrl-C. Pipe khong co spinner.
-- Loi API/timeout hoac Ctrl-C khi dang request khong dong REPL. Luot loi bi
-  loai khoi context; co the nhap lai. Cac luot thanh cong van duoc autosave.
+- Loi API/timeout hoac Ctrl-C khi dang request khong dong REPL. Luot loi
+  chua chay tool bi loai khoi context; neu da co tool thi giu journal va can
+  kiem tra workspace truoc khi thu lai. Cac luot thanh cong duoc autosave.
 - Stream phai ket thuc bang `[DONE]`. JSON loi, error event hoac stream bi cat
   duoc bao loi; phan text da hien thi khong duoc luu nhu cau tra loi hoan chinh.
   Token duoc hien thi ngay, khong doi newline; mau inline duoc render theo chunk.

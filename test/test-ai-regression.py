@@ -2,6 +2,7 @@
 """Security and failure-path tests; no real credentials or external network."""
 import contextlib
 import importlib.machinery
+import importlib.util
 import io
 import json
 import os
@@ -19,7 +20,25 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 AI = Path(__file__).resolve().parents[1] / "dani-ai"
-m = importlib.machinery.SourceFileLoader("daniai_regression", str(AI)).load_module()
+def load_source(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+m = load_source("daniai_regression", AI)
+
+
+class ChunkResponse:
+    def __init__(self, chunks):
+        self.chunks = iter(chunks)
+
+    def read1(self, size):
+        return next(self.chunks, b'')
+
+    read = read1
 
 
 class TTY(io.StringIO):
@@ -33,6 +52,817 @@ class Tests(unittest.TestCase):
         with patch.object(m, "post_json", return_value=io.BytesIO(data)):
             return m.request_stream("http://local", "fake", "m", [], 1,
                                     None, None, out, live)
+
+    def test_scan_cursor_all_pages_beyond_entry_and_match_limits(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for i in range(2050):
+                (root / ('f%04d.txt' % i)).write_text('line')
+            runner = m.ToolRunner(d)
+            found = []
+            cursor = None
+            for _ in range(40):
+                args = {'path': '.', 'pattern': '*.txt'}
+                if cursor:
+                    args['cursor'] = cursor
+                page = json.loads(runner.execute('find_files', json.dumps(args)))
+                self.assertNotIn('error', page)
+                self.assertLessEqual(page['scanned'], 2000)
+                self.assertLessEqual(len(page['result'].splitlines()), 100)
+                found.extend(page['result'].splitlines())
+                cursor = page['next_cursor']
+                if cursor is None:
+                    break
+            self.assertIsNone(cursor)
+            self.assertEqual(len(found), 2050)
+            self.assertEqual(len(set(found)), 2050)
+            self.assertFalse(runner.scan_cursors)
+
+    def test_search_cursor_same_file_line_boundary_and_clipping(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'a.txt').write_text(''.join('match %d\n' % i for i in range(240)))
+            (root / 'long.txt').write_text('match ' + 'x' * 20000)
+            runner = m.ToolRunner(d)
+            results = []
+            cursor = None
+            clipped = 0
+            for _ in range(10):
+                page = runner.scan_files('.', 'match', search=True, cursor=cursor)
+                page = json.loads(page)
+                self.assertLessEqual(len(page['result']), 16000)
+                results.extend(page['result'].splitlines())
+                clipped += page['clipped']
+                cursor = page['next_cursor']
+                if cursor is None:
+                    break
+            self.assertIsNone(cursor)
+            self.assertEqual(len(results), 241)
+            self.assertEqual(len(set(results)), 241)
+            self.assertEqual(clipped, 1)
+            self.assertTrue(any('[line clipped]' in r for r in results))
+
+    def test_scan_cursor_expiry_reuse_policy_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for i in range(105):
+                (root / ('f%d.txt' % i)).write_text('x')
+            runner = m.ToolRunner(d)
+            def page(cursor=None):
+                return json.loads(runner.scan_files('.', '*.txt', cursor=cursor))
+            first = page()['next_cursor']
+            self.assertIsNotNone(first)
+            self.assertIsNone(page(first)['next_cursor'])
+            with self.assertRaises(ValueError):
+                page(first)
+            cursor = page()['next_cursor']
+            runner.deny_paths = ['f*']
+            with self.assertRaises(ValueError):
+                page(cursor)
+            self.assertFalse(runner.scan_cursors)
+            runner.deny_paths = []
+            cursor = page()['next_cursor']
+            with patch.object(m.time, 'monotonic', return_value=time.monotonic() + 121):
+                with self.assertRaises(ValueError):
+                    page(cursor)
+            for _ in range(6):
+                page()
+            self.assertEqual(len(runner.scan_cursors), 4)
+            runner.close_scans()
+            self.assertFalse(runner.scan_cursors)
+            with self.assertRaises(ValueError):
+                runner.scan_files('.', '*', cursor=3)
+            with self.assertRaises(ValueError):
+                runner.scan_files('.', '*', cursor='unknown')
+
+    def test_http_retry_headers_bounds_and_no_transport_retry(self):
+        from unittest.mock import Mock
+        import urllib.error
+        token = m.HTTP_RETRIES.set(2)
+        try:
+            req = urllib.request.Request('https://example.test/v1/chat/completions', data=b'{}')
+            opener = Mock()
+            response = io.BytesIO(b'ok')
+            opener.open.side_effect = [urllib.error.HTTPError(req.full_url, 429, 'busy', {'Retry-After': '0'}, io.BytesIO()), response]
+            with patch.object(m.urllib.request, 'build_opener', return_value=opener), \
+                 patch.object(m.time, 'sleep') as sleep, contextlib.redirect_stderr(io.StringIO()):
+                self.assertIs(m.open_request(req, 10), response)
+                self.assertEqual(opener.open.call_count, 2)
+                sleep.assert_called_once_with(0.0)
+            opener.open.reset_mock()
+            opener.open.side_effect = urllib.error.URLError('ambiguous connection failure')
+            with patch.object(m.urllib.request, 'build_opener', return_value=opener), self.assertRaises(m.AIError):
+                m.open_request(req, 10)
+            self.assertEqual(opener.open.call_count, 1)
+            opener.open.reset_mock()
+            opener.open.side_effect = urllib.error.HTTPError(req.full_url, 503, 'busy', {'Retry-After': '60'}, io.BytesIO())
+            with patch.object(m.urllib.request, 'build_opener', return_value=opener), \
+                 patch.object(m.time, 'sleep') as sleep, self.assertRaises(m.AIError):
+                m.open_request(req, 1)
+            sleep.assert_not_called()
+            self.assertEqual(opener.open.call_count, 1)
+            opener.open.reset_mock()
+            opener.open.side_effect = lambda *a, **kw: (_ for _ in ()).throw(
+                urllib.error.HTTPError(req.full_url, 502, 'busy', {'Retry-After': '0'}, io.BytesIO()))
+            with patch.object(m.urllib.request, 'build_opener', return_value=opener), \
+                 patch.object(m.time, 'sleep'), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(m.AIError):
+                m.open_request(req, 10)
+            self.assertEqual(opener.open.call_count, 3)
+        finally:
+            m.HTTP_RETRIES.reset(token)
+
+    def test_retry_after_mutation_does_not_replay_tool(self):
+        with tempfile.TemporaryDirectory() as d:
+            runner = m.ToolRunner(d)
+            first = {'choices': [{'message': {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': 'c', 'type': 'function', 'function': {'name': 'write_file',
+                 'arguments': '{"path":"once.txt","content":"once"}'}}]}}]}
+            final = {'choices': [{'message': {'role': 'assistant', 'content': 'done'}}]}
+            token = m.HTTP_RETRIES.set(1)
+            try:
+                with patch.object(m, 'open_request_once', side_effect=[
+                        io.BytesIO(json.dumps(first).encode()), m.RetryableHTTPError(503, 0),
+                        io.BytesIO(json.dumps(final).encode())]) as request, \
+                     patch.object(runner, 'execute', wraps=runner.execute) as tool, \
+                     patch.object(m.time, 'sleep'), contextlib.redirect_stderr(io.StringIO()):
+                    result = m.complete('http://local', 'fake', 'm', [{'role': 'user', 'content': 'write'}],
+                                        10, None, None, False, io.StringIO(), runner=runner)
+                self.assertEqual(result, 'done')
+                self.assertEqual(tool.call_count, 1)
+                self.assertEqual(request.call_count, 3)
+                self.assertEqual((Path(d) / 'once.txt').read_text(), 'once')
+            finally:
+                m.HTTP_RETRIES.reset(token)
+
+    def test_turn_deadline_stops_next_tool_preserves_first_result(self):
+        with tempfile.TemporaryDirectory() as d:
+            runner = m.ToolRunner(d)
+            clock = [100.0]
+            calls = [{'id': str(i), 'type': 'function', 'function': {
+                'name': 'write_file', 'arguments': json.dumps({'path': str(i) + '.txt', 'content': 'done'})}}
+                for i in range(2)]
+            execute = runner.execute
+            def slow_execute(*args):
+                result = execute(*args)
+                clock[0] += 2
+                return result
+            messages = [{'role': 'user', 'content': 'write'}]
+            token = m.TURN_TIMEOUT.set(1)
+            try:
+                with patch.object(m.time, 'monotonic', side_effect=lambda: clock[0]), \
+                     patch.object(m, 'request_once', return_value={'role': 'assistant', 'content': None, 'tool_calls': calls}), \
+                     patch.object(runner, 'execute', side_effect=slow_execute) as tool:
+                    with self.assertRaises(m.AIError):
+                        m.complete('http://local', 'fake', 'm', messages, 60, None, None, False, io.StringIO(), runner=runner)
+                self.assertEqual(tool.call_count, 1)
+                self.assertTrue((Path(d) / '0.txt').exists())
+                self.assertFalse((Path(d) / '1.txt').exists())
+                self.assertIn('created', messages[2]['content'])
+                self.assertIn('unknown', messages[3]['content'])
+                self.assertIsNone(m.TURN_DEADLINE.get())
+            finally:
+                m.TURN_TIMEOUT.reset(token)
+
+    def test_turn_deadline_body_subprocess_and_confirmation(self):
+        token = m.TURN_DEADLINE.set(time.monotonic() - 1)
+        try:
+            with self.assertRaises(m.AIError):
+                m.response_chunk(io.BytesIO(b'ok'), 2, time.monotonic() + 60)
+            with patch.object(m.subprocess, 'Popen') as spawn, self.assertRaises(m.AIError):
+                m._run_tool_process(['/bin/true'], '.', {}, b'', 30, 100)
+            spawn.assert_not_called()
+        finally:
+            m.TURN_DEADLINE.reset(token)
+        with tempfile.TemporaryDirectory() as d:
+            clock = [100.0]
+            def confirm(*args):
+                clock[0] += 2
+                return True
+            runner = m.ToolRunner(d, permissions='ask', confirm=confirm)
+            with patch.object(m.time, 'monotonic', side_effect=lambda: clock[0]):
+                token = m.TURN_DEADLINE.set(101.0)
+                try:
+                    with self.assertRaises(m.AIError):
+                        runner.execute('write_file', '{"path":"a.txt","content":"no"}')
+                    self.assertFalse((Path(d) / 'a.txt').exists())
+                finally:
+                    m.TURN_DEADLINE.reset(token)
+        for args in (['--turn-timeout', 'nan'], ['--turn-timeout', '0'], ['--http-retries', '4']):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                m.main(args)
+
+    def test_file_turn_diff_undo_and_mode(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            path = root / 'a.txt'
+            path.write_text('original\n')
+            path.chmod(0o640)
+            runner = m.ToolRunner(d)
+            runner.begin_file_turn()
+            for old, new in [('original', 'first'), ('first', 'second')]:
+                result = json.loads(runner.execute('edit_file', json.dumps(
+                    {'path': 'a.txt', 'old_text': old, 'new_text': new})))
+                self.assertNotIn('error', result)
+            self.assertNotIn('error', json.loads(runner.execute('write_file',
+                             '{"path":"new.txt","content":"new file"}')))
+            self.assertIn('-original', runner.file_diff())
+            self.assertIn('+second', runner.file_diff())
+            self.assertIn('/dev/null', runner.file_diff())
+            self.assertEqual(set(runner.undo_files()), {'a.txt', 'new.txt'})
+            self.assertEqual(path.read_text(), 'original\n')
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
+            self.assertFalse((root / 'new.txt').exists())
+            self.assertFalse(runner.file_changes)
+
+    def test_undo_refuses_user_changes_and_preflights_all(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            runner = m.ToolRunner(d)
+            for name in ('a.txt', 'b.txt'):
+                (root / name).write_text('before')
+                runner.change_file('edit_file', {'path': name, 'old_text': 'before', 'new_text': 'after'})
+            (root / 'b.txt').write_text('user changed')
+            with self.assertRaises(ValueError):
+                runner.undo_files()
+            self.assertEqual((root / 'a.txt').read_text(), 'after')
+            self.assertEqual((root / 'b.txt').read_text(), 'user changed')
+            self.assertEqual(len(runner.file_changes), 2)
+            runner.change_file('edit_file', {'path': 'b.txt', 'old_text': 'user changed', 'new_text': 'ai again'})
+            with self.assertRaises(ValueError):
+                runner.undo_files()
+            runner.begin_file_turn()
+            self.assertFalse(runner.file_changes)
+
+    def test_undo_rejects_symlink_policy_and_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            runner = m.ToolRunner(d)
+            runner.change_file('write_file', {'path': 'a.txt', 'content': 'AI'})
+            (root / 'a.txt').unlink()
+            (root / 'user.txt').write_text('user')
+            (root / 'a.txt').symlink_to('user.txt')
+            with self.assertRaises(OSError):
+                runner.undo_files()
+            self.assertEqual((root / 'user.txt').read_text(), 'user')
+            runner.begin_file_turn()
+            runner.change_bytes = 8 * 1024 * 1024
+            with self.assertRaises(ValueError):
+                runner.change_file('write_file', {'path': 'budget.txt', 'content': 'no'})
+            self.assertFalse((root / 'budget.txt').exists())
+            runner.begin_file_turn()
+            runner.change_file('write_file', {'path': 'allowed.txt', 'content': 'AI'})
+            runner.deny_paths = ['allowed.txt']
+            with self.assertRaises(ValueError):
+                runner.undo_files()
+            self.assertTrue((root / 'allowed.txt').exists())
+
+    def test_repl_undo_local_notice_and_diff(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'a.txt'
+            path.write_text('before')
+            runner = m.ToolRunner(d, confirm=lambda *a: True)
+            seen = []
+            def complete(*args):
+                messages = args[3]
+                seen.append(messages)
+                runner.change_file('edit_file', {'path': 'a.txt', 'old_text': 'before', 'new_text': 'after'})
+                return 'done'
+            with patch.object(m, 'setup_readline', return_value=''), \
+                 patch.object(m, 'input_boxed', side_effect=['edit', '/diff', '/undo', '/q']), \
+                 patch.object(m, 'complete', side_effect=complete) as request, \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d, runner=runner)
+            self.assertEqual(request.call_count, 1)
+            self.assertEqual(path.read_text(), 'before')
+            self.assertIn('-before', out.getvalue())
+            self.assertIn('restored 1 files', out.getvalue())
+            self.assertIn('Previous tool results', seen[0][-1]['content'])
+
+    def test_path_policy_read_scan_and_mutations(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'private').mkdir()
+            (root / 'private/data.txt').write_text('hidden marker')
+            (root / 'public').mkdir()
+            (root / 'public/a.txt').write_text('public marker')
+            runner = m.ToolRunner(d, deny_paths=['private', '*backup*'],
+                                  write_paths=['public', 'public/*'], include_ignored=True,
+                                  confirm=lambda *a: True, permissions='ask')
+            def execute(name, **args):
+                return json.loads(runner.execute(name, json.dumps(args)))
+            for name in ('read_file', 'search_text', 'list_files', 'find_files', 'search_files'):
+                args = {'path': 'private/data.txt' if name in ('read_file', 'search_text') else 'private'}
+                if name in ('search_text', 'search_files'):
+                    args['query'] = 'marker'
+                if name == 'find_files':
+                    args['pattern'] = '*'
+                self.assertIn('error', execute(name, **args))
+            for name, extra in [('list_files', {}), ('find_files', {'pattern': '*'}),
+                                ('search_files', {'query': 'marker'})]:
+                result = execute(name, path='.', **extra)
+                self.assertNotIn('private', json.dumps(result))
+                self.assertNotIn('hidden marker', json.dumps(result))
+            for name, args in [('write_file', {'path': 'outside.txt', 'content': 'x'}),
+                               ('edit_file', {'path': 'private/data.txt', 'old_text': 'hidden', 'new_text': 'x'}),
+                               ('make_directory', {'path': 'outside'}),
+                               ('write_file', {'path': 'public/backup.txt', 'content': 'x'})]:
+                self.assertIn('error', execute(name, **args))
+            self.assertNotIn('error', execute('write_file', path='public/new.txt', content='ok'))
+            self.assertNotIn('error', execute('make_directory', path='public/sub'))
+            self.assertEqual((root / 'private/data.txt').read_text(), 'hidden marker')
+            self.assertFalse((root / 'outside.txt').exists())
+            # Policy applies to direct builtin methods too.
+            with self.assertRaises(ValueError):
+                runner.open_path('public/../private/data.txt')
+
+    def test_domain_policy_redirect_and_origin_approval(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as d:
+            confirm = Mock(return_value=True)
+            runner = m.ToolRunner(d, permissions='ask', confirm=confirm,
+                                  allow_domains=['EXAMPLE.COM.', 'other.example'])
+            runner.authorize_url('https://example.com/path')
+            runner.authorize_url('https://EXAMPLE.COM/another')
+            self.assertEqual(confirm.call_count, 1)
+            runner.authorize_url('https://example.com:8443/path')
+            self.assertEqual(confirm.call_count, 2)
+            with self.assertRaises(m.AIError):
+                runner.authorize_url('https://sub.example.com/')
+            self.assertEqual(confirm.call_count, 2)
+            confirm.return_value = False
+            with self.assertRaises(m.AIError):
+                runner.authorize_url('https://other.example/')
+            self.assertNotIn(('https', 'other.example', 443), runner.approved_origins)
+            # Every redirect is authorized before DNS/connection to its host.
+            response = Mock(status=302)
+            response.getheader.return_value = 'https://blocked.example/private'
+            connection = Mock()
+            connection.getresponse.return_value = response
+            connection.sock.getpeername.return_value = ('93.184.216.34', 443)
+            confirm.return_value = True
+            with patch.object(m.socket, 'getaddrinfo', return_value=[(2, 1, 6, '', ('93.184.216.34', 443))]) as dns, \
+                 patch.object(m.http.client, 'HTTPSConnection', return_value=connection):
+                result = json.loads(runner.fetch_url('https://example.com/start'))
+                self.assertIn('not in allowlist', result['error'])
+                self.assertEqual(dns.call_count, 1)
+            readonly = m.ToolRunner(d, permissions='read-only', confirm=lambda *a: True)
+            self.assertIn('error', json.loads(readonly.execute('fetch_url', '{"url":"https://example.com"}')))
+
+    def test_path_domain_policy_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            for pattern in ('', '/etc/*', '../private', 'a/../b', 'a\x00b'):
+                with self.assertRaises(m.AIError):
+                    m.ToolRunner(d, deny_paths=[pattern])
+            for domain in ('https://example.com', '*.example.com', 'example.com:443', '', 'a/b'):
+                with self.assertRaises(m.AIError):
+                    m.ToolRunner(d, allow_domains=[domain])
+            runner = m.ToolRunner(d, deny_paths=['private/'])
+            self.assertTrue(runner.path_denied('private/nested/file'))
+            self.assertFalse(runner.path_denied('other/private/file'))
+
+    def test_usage_nonstream_and_stream(self):
+        tracker = m.UsageTracker()
+        token = m.ACTIVE_USAGE.set(tracker)
+        option = m.STREAM_USAGE.set(True)
+        try:
+            response = {'choices': [{'message': {'content': 'ok'}}],
+                        'usage': {'prompt_tokens': 10, 'completion_tokens': 2, 'total_tokens': 12}}
+            with patch.object(m, 'post_json', return_value=io.BytesIO(json.dumps(response).encode())):
+                self.assertEqual(m.request_once('http://local', 'fake', 'm', [], 1, None, None), 'ok')
+            data = (b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                    b'data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}\n\n'
+                    b'data: [DONE]\n\n')
+            with patch.object(m, 'post_json', return_value=io.BytesIO(data)) as post:
+                m.request_stream('http://local', 'fake', 'm', [], 1, None, None, io.StringIO())
+            self.assertEqual(post.call_args.args[1]['stream_options'], {'include_usage': True})
+            self.assertEqual(tracker.totals, {'prompt_tokens': 30, 'completion_tokens': 5, 'total_tokens': 35})
+            tracker.record({'usage': {'prompt_tokens': True, 'completion_tokens': -1, 'total_tokens': '100'}})
+            tracker.record({})
+            self.assertEqual(tracker.requests, 4)
+            self.assertEqual(tracker.reports, 2)
+            self.assertIsNone(tracker.last)
+            self.assertNotIn('stream_options', m.chat_payload('m', [], False, None, None, None))
+            with patch.object(m, 'post_json', return_value=io.BytesIO(data.split(b'data: [DONE]')[0])):
+                with self.assertRaises(m.AIError):
+                    m.request_stream('http://local', 'fake', 'm', [], 1, None, None, io.StringIO())
+            self.assertEqual(tracker.requests, 4)  # incomplete stream is not counted as completed
+        finally:
+            m.STREAM_USAGE.reset(option)
+            m.ACTIVE_USAGE.reset(token)
+
+    def test_compact_keeps_whole_tool_turns(self):
+        messages = [{'role': 'system', 'content': 'rules'}, {'role': 'user', 'content': 'old'},
+                    {'role': 'assistant', 'content': 'old answer'}, {'role': 'user', 'content': 'recent'},
+                    {'role': 'assistant', 'content': None, 'tool_calls': [
+                        {'id': 'c', 'type': 'function', 'function': {'name': 'read_file', 'arguments': '{}'}}]},
+                    {'role': 'tool', 'tool_call_id': 'c', 'content': 'result'},
+                    {'role': 'assistant', 'content': 'new answer'}]
+        compacted, dropped = m.compact_messages(messages, 1)
+        self.assertEqual(dropped, 1)
+        self.assertEqual(compacted, messages[:1] + messages[3:])
+        self.assertEqual(m.compact_messages(messages, 4), (messages, 0))
+        for bad in (0, -1, True):
+            with self.assertRaises(m.AIError):
+                m.compact_messages(messages, bad)
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / 's.json')
+            m.save_session(path, 'm', compacted)
+            self.assertEqual(m.load_session(path)[1], compacted)
+
+    def test_compact_repl_branch_private_and_local_usage(self):
+        original = [{'role': 'system', 'content': 'rules'}]
+        for i in range(3):
+            original.extend([{'role': 'user', 'content': str(i)}, {'role': 'assistant', 'content': 'answer'}])
+        for private in (False, True):
+            with tempfile.TemporaryDirectory() as d, \
+                 patch.object(m, 'setup_readline', return_value=''), \
+                 patch.object(m, 'input_boxed', side_effect=['/compact 0', '/compact 1', '/usage', '/q']), \
+                 patch.object(m, 'complete') as complete, contextlib.redirect_stdout(io.StringIO()) as out:
+                m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d,
+                       initial=('m', original), no_history=private)
+                complete.assert_not_called()
+                self.assertIn('dropped 2 old turns', out.getvalue())
+                self.assertIn('0 completed responses', out.getvalue())
+                if private:
+                    self.assertFalse(list(Path(d).iterdir()))
+                else:
+                    sessions = [json.loads(p.read_text()) for p in Path(d).glob('session-*.json')]
+                    self.assertEqual(sorted(len(s['messages']) for s in sessions), [3, 7])
+                    self.assertEqual(len(json.loads((Path(d) / 'last.json').read_text())['messages']), 3)
+
+    def test_compact_checkpoint_failure_preserves_memory(self):
+        original = [{'role': 'user', 'content': 'old'}, {'role': 'assistant', 'content': 'old answer'},
+                    {'role': 'user', 'content': 'new'}, {'role': 'assistant', 'content': 'new answer'}]
+        with tempfile.TemporaryDirectory() as d, \
+             patch.object(m, 'setup_readline', return_value=''), \
+             patch.object(m, 'input_boxed', side_effect=['/compact 1', '/context', '/q']), \
+             patch.object(m.SessionStore, 'checkpoint', side_effect=[m.AIError('disk full'), None]), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d, initial=('m', original))
+            self.assertIn('compact failed: disk full', out.getvalue())
+            self.assertIn('4 messages', out.getvalue())
+
+    def profile_fixture(self, directory, **caps):
+        profile = {'base': 'https://profile.test/v1', 'key_env': 'TEST_PROFILE_KEY',
+                   'model': 'profile-model', 'capabilities': dict(
+                       tools=False, vision=False, stream=False, token_parameter='max_completion_tokens')}
+        profile['capabilities'].update(caps)
+        path = Path(directory) / 'profiles.json'
+        path.write_text(json.dumps({'version': 1, 'profiles': {'test': profile}}))
+        return path, profile
+
+    def test_profile_key_isolation_and_payload(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, profile = self.profile_fixture(d)
+            env = {'DANI_AI_API_KEY': 'wrong-key', 'DANI_AI_API_BASE': 'https://wrong.test',
+                   'DANI_AI_MODEL': 'wrong-model', 'TEST_PROFILE_KEY': 'right-key', 'XDG_CONFIG_HOME': d}
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(m, 'read_piped_stdin', return_value=''), \
+                 patch.object(m, 'post_json', return_value=io.BytesIO(
+                     b'{"choices":[{"message":{"content":"ok"}}]}')) as post, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(m.main(['--profile', 'test', '--profiles-file', str(path),
+                                         '--max-tokens', '123', 'hello']), 0)
+            url, payload, key, _ = post.call_args.args
+            self.assertEqual(url, profile['base'] + '/chat/completions')
+            self.assertEqual(key, 'right-key')
+            self.assertEqual(payload['model'], 'profile-model')
+            self.assertFalse(payload['stream'])
+            self.assertNotIn('tools', payload)
+            self.assertEqual(payload['max_completion_tokens'], 123)
+            self.assertNotIn('max_tokens', payload)
+            self.assertIsNone(m.ACTIVE_PROFILE.get())
+            with patch.dict(os.environ, {'DANI_AI_API_KEY': 'wrong-key', 'XDG_CONFIG_HOME': d}, clear=True), \
+                 contextlib.redirect_stderr(io.StringIO()), patch.object(m, 'post_json') as post:
+                self.assertEqual(m.main(['--profile', 'test', '--profiles-file', str(path), 'hello']), 2)
+                post.assert_not_called()
+
+    def test_profile_capability_guards(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, _ = self.profile_fixture(d)
+            profile = m.load_profile('test', str(path))
+            token = m.ACTIVE_PROFILE.set(profile)
+            try:
+                images = [{'role': 'user', 'content': [{'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,YQ=='}}]}]
+                cases = [('wrong-model', [], False, None, None),
+                         ('profile-model', [], True, None, None),
+                         ('profile-model', [], False, None, []),
+                         ('profile-model', images, False, None, None)]
+                for model, messages, stream, limit, tools in cases:
+                    with self.assertRaises(m.AIError):
+                        m.chat_payload(model, messages, stream, None, limit, tools)
+                profile['capabilities']['token_parameter'] = None
+                with self.assertRaises(m.AIError):
+                    m.chat_payload('profile-model', [], False, None, 1, None)
+                with self.assertRaises(m.AIError):
+                    m.open_request(urllib.request.Request('https://other.test/v1/models'), 1)
+            finally:
+                m.ACTIVE_PROFILE.reset(token)
+
+    def test_profile_stream_tools_and_session_context(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, _ = self.profile_fixture(d, tools=True, vision=True, stream=True)
+            profile = m.load_profile('test', str(path))
+            original = m.session_context(profile['base'], d)
+            token = m.ACTIVE_PROFILE.set(profile)
+            try:
+                context = m.session_context(profile['base'], d)
+                self.assertEqual(context['profile']['name'], 'test')
+                self.assertNotEqual(context, original)
+                data = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+                with patch.object(m, 'post_json', return_value=io.BytesIO(data)) as post:
+                    reply = m.request_stream(profile['base'], 'fake', 'profile-model', [], 1,
+                                             None, 42, io.StringIO(), tools=[])
+                self.assertEqual(reply['content'], 'ok')
+                payload = post.call_args.args[1]
+                self.assertTrue(payload['stream'])
+                self.assertEqual(payload['tools'], [])
+                self.assertEqual(payload['max_completion_tokens'], 42)
+                session = str(Path(d) / 's.json')
+                m.save_session(session, 'profile-model', [], original)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(m.load_session(session, context), (None, None))
+            finally:
+                m.ACTIVE_PROFILE.reset(token)
+
+    def test_profile_validation_and_override_rejection(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, profile = self.profile_fixture(d)
+            for change in ({'base': 'https://user:password@host/v1'},
+                           {'base': 'https://host/v1?key=secret'},
+                           {'key_env': ''}, {'capabilities': {'tools': 'yes'}},
+                           {'unexpected': 'secret'}):
+                path.write_text(json.dumps({'version': 1, 'profiles': {'test': dict(profile, **change)}}))
+                with self.assertRaises(m.AIError):
+                    m.load_profile('test', str(path))
+            path, _ = self.profile_fixture(d)
+            for extra in (['--api-base', 'https://other.test'], ['--api-key', 'secret'], ['--model', 'other']):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    m.main(['--profile', 'test', '--profiles-file', str(path)] + extra + ['hello'])
+            with self.assertRaises(m.AIError):
+                m.load_profile('missing', str(path))
+
+    def test_concurrent_session_checkpoints(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            script = '''
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader('ai', sys.argv[1])
+spec = importlib.util.spec_from_loader('ai', loader)
+m = importlib.util.module_from_spec(spec)
+loader.exec_module(m)
+s = m.SessionStore(sys.argv[2])
+for i in range(12):
+    s.checkpoint(sys.argv[3], [{'role':'user', 'content':str(i)}], None, 'complete')
+'''
+            children = [subprocess.Popen([sys.executable, '-c', script, str(AI), d, str(i)])
+                        for i in range(4)]
+            for child in children:
+                self.assertEqual(child.wait(timeout=15), 0)
+            sessions = list(Path(d).glob('session-*.json'))
+            self.assertEqual(len(sessions), 4)
+            objects = [json.loads(p.read_text()) for p in sessions]
+            self.assertEqual({o['model'] for o in objects}, {'0', '1', '2', '3'})
+            self.assertTrue(all(o['messages'][0]['content'] == '11' for o in objects))
+            last = json.loads((Path(d) / 'last.json').read_text())
+            match = next(o for o in objects if o['session_id'] == last['session_id'])
+            self.assertGreaterEqual(last.pop('updated_at'), match.pop('updated_at'))
+            self.assertEqual(last, match)
+            for path in Path(d).iterdir():
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_readline_history_merge_preserves_other_repl(self):
+        if m._rl is None:
+            self.skipTest('readline unavailable')
+        rl = m._rl
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / '.repl_history')
+            try:
+                rl.clear_history()
+                rl.add_history('old')
+                rl.write_history_file(path)
+                # Both REPLs loaded one old entry; A finishes before B.
+                rl.add_history('from A')
+                m.merge_readline_history(path, 1)
+                rl.clear_history()
+                rl.add_history('old')
+                rl.add_history('from B')
+                m.merge_readline_history(path, 1)
+                rl.clear_history()
+                rl.read_history_file(path)
+                self.assertEqual([rl.get_history_item(i) for i in range(1, 4)],
+                                 ['old', 'from A', 'from B'])
+                self.assertEqual(rl.get_current_history_length(), 3)
+            finally:
+                rl.clear_history()
+
+    def test_session_branch_and_save_collision(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / 'original.json'
+            messages = [{'role': 'user', 'content': 'original'}]
+            m.save_session(str(source), 'm', messages, m.session_context('x', Path.cwd()))
+            original = source.read_bytes()
+            with patch.object(m, 'setup_readline', return_value=''), \
+                 patch.object(m, 'input_boxed', side_effect=['/save original', 'hello', '/new', 'branch', '/q']), \
+                 patch.object(m, 'complete', return_value='answer'), \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d,
+                       initial=('m', messages))
+            self.assertEqual(source.read_bytes(), original)
+            self.assertIn('name already exists', out.getvalue())
+            sessions = list(Path(d).glob('session-*.json'))
+            self.assertEqual(len(sessions), 2)
+            for path in sessions:
+                self.assertEqual(json.loads(path.read_text())['session_id'], path.stem)
+
+    def test_history_lock_released_and_rejects_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(RuntimeError):
+                with m.history_lock(d):
+                    raise RuntimeError('interrupted')
+            with m.history_lock(d):
+                pass
+            lock = Path(d) / '.history.lock'
+            lock.unlink()
+            target = Path(d) / 'target'
+            target.write_text('untouched')
+            lock.symlink_to(target)
+            with self.assertRaises(OSError):
+                with m.history_lock(d):
+                    self.fail('followed symlink')
+            self.assertEqual(target.read_text(), 'untouched')
+
+    def test_bounded_json_and_input(self):
+        with self.assertRaises(m.AIError):
+            m.bounded_response(io.BytesIO(b'x' * 33), time.monotonic() + 1, limit=32)
+        with patch.object(m, 'MAX_STDIN_CHARS', 8), patch('sys.stdin', io.StringIO('x' * 9)):
+            with self.assertRaises(m.AIError):
+                m.read_piped_stdin()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 's.json'
+            path.write_text('x' * 33)
+            with patch.object(m, 'MAX_SESSION_BYTES', 32), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(m.load_session(str(path)), (None, None))
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'saved.json'
+            m.save_session(str(path), 'm', [])
+            before = path.read_bytes()
+            with patch.object(m, 'MAX_SESSION_BYTES', 8), contextlib.redirect_stderr(io.StringIO()):
+                self.assertFalse(m.save_session(str(path), 'm', []))
+            self.assertEqual(path.read_bytes(), before)
+        with patch.object(m, 'MAX_SESSION_BYTES', 8), patch.object(m, 'open_request') as request:
+            with self.assertRaises(m.AIError):
+                m.post_json('x', {'long': 'payload'}, 'fake', 1)
+            request.assert_not_called()
+
+    def test_scan_ignores_and_override(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'node_modules').mkdir()
+            (root / 'node_modules/a.py').write_text('needle')
+            (root / 'generated').mkdir()
+            (root / 'generated/a.py').write_text('needle')
+            (root / 'main.py').write_text('needle')
+            (root / '.aiignore').write_text('# explicit globs\ngenerated/\n')
+            args = '{"path":".","pattern":"*.py"}'
+            runner = m.ToolRunner(d)
+            result = json.loads(runner.execute('find_files', args))
+            self.assertEqual(result['result'], 'main.py')
+            self.assertEqual(result['ignored'], 2)
+            runner.include_ignored = True
+            result = json.loads(runner.execute('find_files', args))
+            self.assertIn('generated/a.py', result['result'])
+            self.assertIn('node_modules/a.py', result['result'])
+            (root / '.aiignore').unlink()
+            (root / '.aiignore').symlink_to(root / 'main.py')
+            runner.include_ignored = False
+            self.assertIn('error', json.loads(runner.execute('find_files', args)))
+
+    def test_private_repl_never_persists(self):
+        with tempfile.TemporaryDirectory() as d, \
+             patch.object(m, 'setup_readline') as setup, \
+             patch.object(m, 'save_session') as save, \
+             patch.object(m, 'input_boxed', side_effect=['hello', '/save private', '/resume last', '/q']), \
+             patch.object(m, 'complete', return_value='answer'), contextlib.redirect_stdout(io.StringIO()) as out:
+            m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d, no_history=True)
+            setup.assert_not_called()
+            save.assert_not_called()
+            self.assertFalse(list(Path(d).iterdir()))
+            self.assertIn('save/resume disabled', out.getvalue())
+        # Restore normal history behavior for subsequent tests in this process.
+        if m._rl is not None and hasattr(m._rl, 'set_auto_history'):
+            m._rl.set_auto_history(True)
+
+    def test_local_history_without_api_key(self):
+        with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {'XDG_CONFIG_HOME': d}, clear=True), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            path = Path(d) / 'daniwm/ai-history/saved.json'
+            m.save_session(str(path), 'm', [{'role': 'user', 'content': 'local hello'}])
+            self.assertEqual(m.main(['history']), 0)
+            self.assertIn('local hello', out.getvalue())
+
+    def test_private_single_shot_tools_keep_no_checkpoint(self):
+        with tempfile.TemporaryDirectory() as d, \
+             patch.dict(os.environ, {'XDG_CONFIG_HOME': d, 'DANI_AI_API_KEY': 'fake'}, clear=True), \
+             patch.object(m, 'read_piped_stdin', return_value=''), \
+             patch.object(m, 'save_session') as save, \
+             patch.object(m, 'request_once', side_effect=[
+                 {'role': 'assistant', 'content': None, 'tool_calls': [
+                     {'id': 'c', 'type': 'function', 'function': {'name': 'list_files', 'arguments': '{"path":"."}'}}]},
+                 {'role': 'assistant', 'content': 'done'}]), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(m.main(['--no-history', '--no-stream', '--tool-root', d, 'list']), 0)
+            save.assert_not_called()
+
+    def test_context_command_is_local(self):
+        with tempfile.TemporaryDirectory() as d, \
+             patch.object(m, 'setup_readline', return_value=''), \
+             patch.object(m, 'input_boxed', side_effect=['/context', '/q']), \
+             patch.object(m, 'complete') as complete, contextlib.redirect_stdout(io.StringIO()) as out:
+            m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d,
+                   runner=m.ToolRunner(d))
+            complete.assert_not_called()
+            self.assertIn('0 messages', out.getvalue())
+            self.assertIn('not token usage', out.getvalue())
+            self.assertIn('64 tool calls', out.getvalue())
+
+    def test_tool_turn_budgets(self):
+        with tempfile.TemporaryDirectory() as d:
+            runner = m.ToolRunner(d, max_tool_calls=1, max_tool_output=1)
+            call = {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': 'c1', 'type': 'function', 'function': {'name': 'write_file',
+                 'arguments': '{"path":"a","content":"written"}'}}]}
+            messages = [{'role': 'user', 'content': 'create'}]
+            with patch.object(m, 'request_once', return_value=call), self.assertRaises(m.AIError):
+                m.complete('x', 'fake', 'm', messages, 1, None, None, False, io.StringIO(), runner=runner)
+            self.assertTrue((Path(d) / 'a').exists())
+            self.assertIn('DID execute', messages[-1]['content'])
+            runner.max_tool_output = 100000
+            call['tool_calls'].append(dict(call['tool_calls'][0], id='c2'))
+            with patch.object(m, 'request_once', return_value=call), \
+                 patch.object(runner, 'execute') as execute, self.assertRaises(m.AIError):
+                m.complete('x', 'fake', 'm', [], 1, None, None, False, io.StringIO(), runner=runner)
+            execute.assert_not_called()
+
+    def test_nonstream_content_cap(self):
+        data = json.dumps({'choices': [{'message': {'role': 'assistant', 'content': 'long'}}]}).encode()
+        for tools in (None, []):
+            with patch.object(m, 'MAX_CONTENT_CHARS', 2), \
+                 patch.object(m, 'post_json', return_value=io.BytesIO(data)), self.assertRaises(m.AIError):
+                m.request_once('x', 'fake', 'm', [], 1, None, None, tools)
+
+    def test_stream_budgets_and_fragmented_lines(self):
+        data = b'data: {"choices":[{"delta":{"content":"hello"}}]}\ndata: [DONE]\n'
+        response = ChunkResponse(bytes([c]) for c in data)
+        lines = list(m.stream_lines(response, time.monotonic() + 1))
+        self.assertEqual(b''.join(lines), data)
+        for setting, limit, payload in [
+                ('SSE_MAX_LINE', 8, b'data: ' + b'x' * 30),
+                ('API_MAX_BYTES', 8, data),
+                ('SSE_MAX_EVENTS', 2, b':ping\n' * 3 + data),
+                ('MAX_CONTENT_CHARS', 2, data)]:
+            with self.subTest(setting=setting), patch.object(m, setting, limit), self.assertRaises(m.AIError):
+                self.stream(payload)
+
+    def test_stream_tool_field_limits(self):
+        for field in ('id', 'name'):
+            call = {'index': 0, 'id': 'id', 'function': {'name': 'read_file', 'arguments': '{}'}}
+            if field == 'id':
+                call['id'] = 'x' * 257
+            else:
+                call['function']['name'] = 'x' * 129
+            data = ('data: ' + json.dumps({'choices': [{'delta': {'tool_calls': [call]}}]}) +
+                    '\ndata: [DONE]\n').encode()
+            with patch.object(m, 'post_json', return_value=io.BytesIO(data)), self.assertRaises(m.AIError):
+                m.request_stream('x', 'fake', 'm', [], 1, None, None, io.StringIO(), tools=[])
+
+    def test_response_deadline_slow_drip_local_server(self):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                try:
+                    for _ in range(100):
+                        self.wfile.write(b'x')
+                        self.wfile.flush()
+                        time.sleep(0.02)
+                except OSError:
+                    pass
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            start = time.monotonic()
+            with urllib.request.urlopen('http://127.0.0.1:%d/' % server.server_port, timeout=1) as response:
+                with self.assertRaises((m.AIError, OSError)):
+                    m.bounded_response(response, start + 0.15)
+            self.assertLess(time.monotonic() - start, 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
 
     def test_stream_rejects_truncation_and_errors(self):
         for data in (b'', b'data: invalid\n\n',
@@ -58,7 +888,7 @@ class Tests(unittest.TestCase):
                 yield ('data: ' + json.dumps({'choices': [{'delta': {'content': text}}]}) + '\n').encode()
             yield b'data: [DONE]\n'
         response = unittest.mock.MagicMock()
-        response.__enter__.return_value = lines()
+        response.__enter__.return_value = ChunkResponse(lines())
         with patch.object(m, 'post_json', return_value=response):
             raw = m.request_stream('x', 'k', 'm', [], 1, None, None, out)
         self.assertIn('\x1b]', raw)
@@ -83,7 +913,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(out.getvalue(), m.render_markdown('**bold**') + '\n')
             yield b'data: [DONE]\n'
         response = unittest.mock.MagicMock()
-        response.__enter__.return_value = lines()
+        response.__enter__.return_value = ChunkResponse(lines())
         with patch.object(m, 'post_json', return_value=response):
             m.request_stream('x', 'k', 'm', [], 1, None, None, out, m._MdLive())
         self.assertEqual(out.getvalue(), m.render_markdown('**bold**\n`tail`') + '\n')
@@ -275,7 +1105,7 @@ class Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / 'daniwm/ai-history/last.json'
             old = [{'role': 'user', 'content': 'old'}, {'role': 'assistant', 'content': 'answer'}]
-            m.save_session(str(path), 'm', old)
+            m.save_session(str(path), 'm', old, m.session_context(m.DEFAULT_BASE, Path.cwd()))
             with patch.dict(os.environ, {'XDG_CONFIG_HOME': d, 'DANI_AI_API_KEY': 'fake'}, clear=True), \
                  patch.object(m, 'read_piped_stdin', return_value=''), \
                  patch.object(m, 'complete', return_value='new') as complete:
@@ -347,7 +1177,7 @@ class Tests(unittest.TestCase):
             yield b'data: {"choices":[{"delta":{"content":"hello"}}]}\n'
             self.assertTrue(out.getvalue().endswith('hello'))
             yield b'data: [DONE]\n'
-        response.__enter__.return_value = lines()
+        response.__enter__.return_value = ChunkResponse(lines())
         with patch.object(m, 'post_json', return_value=response):
             m.complete('x', 'fake', 'm', [], 1, None, None, True, out)
         self.assertTrue(out.getvalue().endswith('hello\n'))
@@ -718,8 +1548,7 @@ class Tests(unittest.TestCase):
                         m.request_stream('x', 'fake', 'm', [], 1, None, None, io.StringIO(), tools=tools)
 
     def test_gold_proxy_tool(self):
-        gold = importlib.machinery.SourceFileLoader(
-            'gold_regression', str(AI.parent / 'ai.tools/xauusd_market.py')).load_module()
+        gold = load_source('gold_regression', AI.parent / 'ai.tools/xauusd_market.py')
         fixture = {'chart': {'error': None, 'result': [{
             'meta': {'symbol': 'GC=F', 'currency': 'USD', 'regularMarketTime': 900,
                      'regularMarketPrice': 2500, 'exchangeTimezoneName': 'America/New_York'},
@@ -757,9 +1586,55 @@ class Tests(unittest.TestCase):
                 self.assertEqual(gold.main(), 1)
             self.assertIn('error', json.loads(out.getvalue()))
 
+    def test_btc_finite_data_and_candle_state(self):
+        btc = load_source('btc_hardened', AI.parent / 'ai.tools/btc_market.py')
+        for value in (True, False, 'NaN', 'Infinity', float('-inf'), None):
+            self.assertIsNone(btc.number(value))
+        rows = [[1000, '10', '12', '9', '11', '5', 2000, '55'],
+                [3000, 'NaN', '12', '9', '11', '5', 4000]]
+        out = io.StringIO()
+        with patch.object(btc, 'get', return_value=rows), patch.object(btc.time, 'time', return_value=3), \
+             patch('sys.stdin', io.StringIO('{"include":["klines"]}')), contextlib.redirect_stdout(out):
+            self.assertEqual(btc.main(), 0)
+        result = json.loads(out.getvalue())
+        self.assertFalse(result['partial'])
+        self.assertEqual(result['klines']['count'], 1)
+        self.assertTrue(result['klines']['candles'][0]['is_closed'])
+        self.assertEqual(result['timestamp_unit'], 'unix milliseconds')
+
+    def test_btc_shape_errors_and_partial_budget(self):
+        btc = load_source('btc_partial', AI.parent / 'ai.tools/btc_market.py')
+        for args in ({'interval': []}, {'include': []}, {'extra': 1}):
+            with patch('sys.stdin', io.StringIO(json.dumps(args))), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(btc.main(), 2)
+        out = io.StringIO()
+        with patch.object(btc, 'get', side_effect=[{'lastPrice': '100'}, TimeoutError('budget exhausted')]), \
+             patch('sys.stdin', io.StringIO('{"include":["ticker","funding"]}')), contextlib.redirect_stdout(out):
+            self.assertEqual(btc.main(), 0)
+        result = json.loads(out.getvalue())
+        self.assertEqual(result['ticker']['last'], 100)
+        self.assertTrue(result['partial'])
+        self.assertEqual(result['errors'][0]['section'], 'funding')
+        for section, payload in [('ticker', []), ('klines', {}), ('long_short', [42])]:
+            out = io.StringIO()
+            with patch.object(btc, 'get', return_value=payload), \
+                 patch('sys.stdin', io.StringIO(json.dumps({'include': [section]}))), contextlib.redirect_stdout(out):
+                btc.main()
+            self.assertTrue(json.loads(out.getvalue())['errors'])
+        with patch.object(btc, 'TOTAL_TIMEOUT', 0), patch.object(btc, 'get') as get, \
+             patch('sys.stdin', io.StringIO('{}')), contextlib.redirect_stdout(io.StringIO()):
+            btc.main()
+            get.assert_not_called()
+
+    def test_btc_response_size_limit(self):
+        btc = load_source('btc_limit', AI.parent / 'ai.tools/btc_market.py')
+        with patch.object(btc, 'MAX_RESPONSE', 8), \
+             patch.object(btc.urllib.request, 'urlopen', return_value=io.BytesIO(b'x' * 9)):
+            with self.assertRaises(ValueError):
+                btc.get('/test', {})
+
     def test_btc_ratio_units_and_periods(self):
-        btc = importlib.machinery.SourceFileLoader(
-            'btc_audit_regression', str(AI.parent / 'ai.tools/btc_market.py')).load_module()
+        btc = load_source('btc_audit_regression', AI.parent / 'ai.tools/btc_market.py')
         for interval in sorted(btc.INTERVALS):
             out = io.StringIO()
             with patch.object(btc, 'get', return_value=[{
@@ -909,7 +1784,101 @@ class Tests(unittest.TestCase):
             with patch.object(m, 'request_once', side_effect=[call, m.AIError('failed')]):
                 with self.assertRaises(m.AIError):
                     m.complete('x', 'fake', 'm', messages, 1, None, None, False, io.StringIO(), runner=runner)
-            self.assertEqual(messages, before)
+            self.assertEqual(messages[:len(before)], before)
+            self.assertEqual(messages[-1]['role'], 'tool')
+
+    def test_session_context_gate(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / 's.json')
+            context = m.session_context('https://provider.test/v1', d)
+            m.save_session(path, 'm', [], context, 'interrupted')
+            self.assertEqual(m.load_session(path, context), ('m', []))
+            other = m.session_context('https://other.test/v1', d)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(m.load_session(path, other), (None, None))
+                self.assertEqual(m.load_session(path, dict(context, root='/other')), (None, None))
+                m.save_session(path, 'm', [])
+                self.assertEqual(m.load_session(path, context), (None, None))
+            self.assertEqual(m.load_session(path, context, True), ('m', []))
+
+    def test_permission_presets_and_diff(self):
+        with tempfile.TemporaryDirectory() as d:
+            prompts = []
+            runner = m.ToolRunner(d, permissions='ask', confirm=lambda n, text: prompts.append(text) or False)
+            args = json.dumps({'path': 'a', 'content': 'hello\n'})
+            self.assertIn('error', json.loads(runner.execute('write_file', args)))
+            self.assertFalse((Path(d) / 'a').exists())
+            self.assertIn('+hello', prompts[-1])
+            runner.confirm = lambda n, text: True
+            self.assertIn('result', json.loads(runner.execute('write_file', args)))
+            read_only = m.ToolRunner(d, permissions='read-only', allow_shell=True,
+                                     confirm=lambda *a: self.fail('read-only prompted'))
+            for name, arguments in [('write_file', args), ('run_command', '{"command":"true"}'),
+                                    ('fetch_url', '{"url":"https://example.com"}')]:
+                self.assertTrue(read_only.is_blocked(name))
+                self.assertIn('error', json.loads(read_only.execute(name, arguments)))
+            self.assertIn('hello', read_only.execute('read_file', '{"path":"a"}'))
+
+    def test_journal_retains_mutation_on_failure_and_cancel(self):
+        for failure in (m.AIError('offline'), KeyboardInterrupt()):
+            with tempfile.TemporaryDirectory() as d:
+                runner = m.ToolRunner(d)
+                path = str(Path(d) / 'checkpoint.json')
+                runner.journal = lambda msgs, state: m.save_session(path, 'm', msgs, turn_state=state)
+                messages = [{'role': 'user', 'content': 'create a'}]
+                call = {'role': 'assistant', 'content': None, 'tool_calls': [
+                    {'id': 'c1', 'type': 'function', 'function': {'name': 'write_file',
+                     'arguments': json.dumps({'path': 'a', 'content': 'written'})}}]}
+                with patch.object(m, 'request_once', side_effect=[call, failure]):
+                    with self.assertRaises(type(failure)):
+                        m.complete('x', 'fake', 'm', messages, 1, None, None, False,
+                                   io.StringIO(), runner=runner)
+                self.assertEqual((Path(d) / 'a').read_text(), 'written')
+                self.assertEqual(m.load_session(path)[1], messages)
+                self.assertEqual(messages[-1]['role'], 'tool')
+
+    def test_repl_failed_tool_turn_is_saved(self):
+        with tempfile.TemporaryDirectory() as d:
+            runner = m.ToolRunner(d)
+            call = {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': 'c1', 'type': 'function', 'function': {'name': 'write_file',
+                 'arguments': '{"path":"a","content":"written"}'}}]}
+            with patch.object(m, 'setup_readline', return_value=''), \
+                 patch.object(m, 'input_boxed', side_effect=['create', '/q']), \
+                 patch.object(m, 'request_once', side_effect=[call, m.AIError('offline')]), \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+                m.repl('https://provider.test/v1', 'fake', 'm', '', 1, None, None,
+                       False, False, d, runner=runner)
+            saved = json.loads((Path(d) / 'last.json').read_text())
+            self.assertEqual(saved['turn_state'], 'interrupted')
+            self.assertEqual(saved['context']['root'], d)
+            self.assertEqual(saved['messages'][-1]['role'], 'tool')
+            self.assertIn('tools may have changed files', err.getvalue())
+            self.assertEqual(m.load_session(str(Path(d) / 'last.json'))[1], saved['messages'])
+
+    def test_checkpoint_precedes_tool_and_survives_cancel(self):
+        with tempfile.TemporaryDirectory() as d:
+            runner = m.ToolRunner(d)
+            messages = [{'role': 'user', 'content': 'do work'}]
+            call = {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': 'c1', 'type': 'function', 'function': {'name': 'make_directory',
+                 'arguments': '{"path":"new"}'}}]}
+            def reject_checkpoint(*args):
+                raise m.AIError('disk full')
+            runner.journal = reject_checkpoint
+            with patch.object(m, 'request_once', return_value=call), \
+                 patch.object(runner, 'execute') as execute, self.assertRaises(m.AIError):
+                m.complete('x', 'fake', 'm', messages, 1, None, None, False,
+                           io.StringIO(), runner=runner)
+            execute.assert_not_called()
+            path = str(Path(d) / 'pending.json')
+            runner.journal = lambda msgs, state: m.save_session(path, 'm', msgs, turn_state=state)
+            messages = [{'role': 'user', 'content': 'do work'}]
+            with patch.object(m, 'request_once', return_value=call), \
+                 patch.object(runner, 'execute', side_effect=KeyboardInterrupt()), self.assertRaises(KeyboardInterrupt):
+                m.complete('x', 'fake', 'm', messages, 1, None, None, False,
+                           io.StringIO(), runner=runner)
+            self.assertIn('execution status unknown', m.load_session(path)[1][-1]['content'])
 
     def test_ai_session_name(self):
         messages = [{'role': 'system', 'content': 'private system'},
@@ -948,7 +1917,8 @@ class Tests(unittest.TestCase):
                          {'role': 'user', 'content': 'old question'},
                          {'role': 'assistant', 'content': 'old answer'}]
                 name = 'last' if command.endswith(' last') else 'saved'
-                m.save_session(os.path.join(d, name + '.json'), 'saved-model', saved)
+                m.save_session(os.path.join(d, name + '.json'), 'saved-model', saved,
+                               m.session_context('x', Path.cwd()))
                 with patch.object(m, 'setup_readline', return_value=''), \
                      patch.object(m, 'input_boxed', side_effect=[command, 'next question', '/q']), \
                      patch('builtins.input', side_effect=picks), \

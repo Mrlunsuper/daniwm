@@ -96,7 +96,10 @@ test/dialog-helper: test/dialog-helper.c
 test/float-click-helper: test/float-click-helper.c
 	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11 $(SYS_LDFLAGS)
 
-check: daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper \
+check-ai:
+	./test/test-ai.sh
+
+check: check-ai daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper \
        test/menu-helper test/dialog-helper test/float-click-helper
 	./test/run-all.sh
 
@@ -158,4 +161,4 @@ clean:
 	rm -f daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper test/menu-helper test/dialog-helper test/float-click-helper src/*.o src/*.d
 	rm -rf __pycache__
 
-.PHONY: all clean check install install-examples install-user uninstall
+.PHONY: all clean check check-ai install install-examples install-user uninstall

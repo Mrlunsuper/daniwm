@@ -386,7 +386,7 @@ fi
 
 # 25. full CLI round-trip: model calls a custom tool, result is sent back
 clear_keys
-out=$(DANI_AI_API_KEY=t "$AI" --api-base "$BASE" --tools-dir "$EMPTY_CFG/daniwm/ai.tools" \
+out=$(DANI_AI_API_KEY=t "$AI" --api-base "$BASE" --tools-dir "$EMPTY_CFG/daniwm/ai.tools" --yes-tools \
       "CALLTOOL now" 2>&1); rc=$?
 if [ "$out" = "tool-answer" ] && [ $rc -eq 0 ]; then ok "custom tool CLI round-trip"; else bad "custom tool CLI round-trip" "rc=$rc out=$out"; fi
 if grep -q "CUSTOM-OK" "$MOCK_LAST"; then ok "custom tool result sent back"; else bad "custom tool result sent back" "$(cat "$MOCK_LAST")"; fi

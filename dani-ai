@@ -19,8 +19,12 @@ System order: --system > --system-file > DANI_AI_SYSTEM_FILE
 Only stdlib. Streaming default on, --no-stream to disable.
 """
 import argparse
+import fcntl
+import uuid
+import difflib
 import base64
 import contextlib
+import contextvars
 import ctypes
 import json
 import os
@@ -56,6 +60,13 @@ except ImportError:
 VERSION = "0.1.0"
 DEFAULT_BASE = "https://api.openai.com/v1"
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
+# Explicit memory budgets, independent of provider token limits.
+API_MAX_BYTES = 16 * 1024 * 1024
+SSE_MAX_LINE = 1024 * 1024
+SSE_MAX_EVENTS = 100000
+MAX_CONTENT_CHARS = 2 * 1024 * 1024
+MAX_SESSION_BYTES = 32 * 1024 * 1024
+MAX_STDIN_CHARS = 2 * 1024 * 1024
 DEFAULT_MODEL = "gpt-4o-mini"
 DEEPSEEK_MODEL = "deepseek-chat"
 
@@ -103,11 +114,62 @@ def atomic_private_write(path, writer):
             os.unlink(temporary)
 
 
-def save_session(path, model, messages):
+def session_context(base, root):
+    parts = urllib.parse.urlsplit(base)
+    context = {"root": str(Path(root).resolve()),
+               "provider": urllib.parse.urlunsplit((parts.scheme.lower(), parts.netloc.lower(),
+                                                     parts.path.rstrip('/'), '', ''))}
+    profile = ACTIVE_PROFILE.get()
+    if profile:
+        context["profile"] = {"name": profile["name"], "model": profile["model"],
+                              "capabilities": profile["capabilities"]}
+    return context
+
+
+@contextlib.contextmanager
+def history_lock(directory):
+    """Serialize cooperating history writers; kernel releases the lock on exit/crash."""
+    private_dir(directory)
+    fd = os.open(os.path.join(directory, ".history.lock"),
+                 os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError("history lock must be a regular, single-link file")
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+class SessionStore:
+    """Each invocation/resume branches to a new ID; never edits its source session."""
+    def __init__(self, directory):
+        self.directory = directory
+        self.session_id = "session-" + uuid.uuid4().hex
+
+    def checkpoint(self, model, messages, context, state):
+        with history_lock(self.directory):
+            path = os.path.join(self.directory, self.session_id + ".json")
+            if not save_session(path, model, messages, context, state, self.session_id):
+                raise AIError("checkpoint failed; refusing further tool execution")
+            # Compatibility snapshot: last = most recently published checkpoint, not
+            # a mutable session identity. Both writes happen under the same lock.
+            if not save_session(os.path.join(self.directory, "last.json"), model,
+                                messages, context, state, self.session_id):
+                raise AIError("last checkpoint failed; session retained as " + self.session_id)
+
+
+def save_session(path, model, messages, context=None, turn_state="complete", session_id=None):
     def write(temporary):
-        with open(temporary, "w", encoding="utf-8") as f:
-            json.dump({"model": model, "messages": messages}, f,
-                      ensure_ascii=False)
+        data = json.dumps({"version": 2, "model": model, "messages": messages,
+                           "context": context, "turn_state": turn_state, "session_id": session_id,
+                           "updated_at": time.time()}, ensure_ascii=False).encode("utf-8")
+        if len(data) > MAX_SESSION_BYTES:
+            raise OSError("session exceeds size limit; reset or shorten the conversation")
+        with open(temporary, "wb") as f:
+            f.write(data)
     try:
         atomic_private_write(path, write)
         return True
@@ -116,12 +178,19 @@ def save_session(path, model, messages):
         return False
 
 
-def load_session(path):
+def load_session(path, expected_context=None, allow_mismatch=False):
     try:
-        with open(path, encoding="utf-8") as f:
-            obj = json.load(f)
+        with open(path, "rb") as f:
+            data = f.read(MAX_SESSION_BYTES + 1)
+        if len(data) > MAX_SESSION_BYTES:
+            raise ValueError("session exceeds size limit")
+        obj = json.loads(data)
         if not isinstance(obj, dict) or not isinstance(obj.get("model", ""), str):
             raise ValueError("session must contain an object and a string model")
+        if expected_context is not None and not allow_mismatch:
+            if obj.get("context") != expected_context:
+                raise ValueError("session project/provider differs or legacy metadata is missing; "
+                                 "use --trust-session only after checking its origin")
         messages = obj.get("messages")
         if not isinstance(messages, list):
             raise ValueError("session messages must be a list")
@@ -146,6 +215,9 @@ def load_session(path):
                     raise ValueError("invalid message role/content")
         if pending:
             raise ValueError("missing tool results")
+        if obj.get("turn_state") in ("interrupted", "in_progress"):
+            print("dani-ai: session has an interrupted turn; inspect tool results and workspace before retrying",
+                  file=sys.stderr)
         return obj.get("model", ""), messages
     except (OSError, ValueError, AIError) as e:
         print("dani-ai: cannot load %s: %s" % (path, e), file=sys.stderr)
@@ -267,6 +339,155 @@ def resolve_model(cli_model, base, file_model):
     return DEFAULT_MODEL, "default"
 
 
+ACTIVE_PROFILE = contextvars.ContextVar("dani_ai_profile", default=None)
+ACTIVE_USAGE = contextvars.ContextVar("dani_ai_usage", default=None)
+STREAM_USAGE = contextvars.ContextVar("dani_ai_stream_usage", default=False)
+TURN_TIMEOUT = contextvars.ContextVar("dani_ai_turn_timeout", default=300.0)
+TURN_DEADLINE = contextvars.ContextVar("dani_ai_turn_deadline", default=None)
+HTTP_RETRIES = contextvars.ContextVar("dani_ai_http_retries", default=0)
+
+
+def budget_timeout(timeout):
+    deadline = TURN_DEADLINE.get()
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AIError("total turn deadline exceeded; inspect completed tool results before retrying")
+        return min(timeout, remaining)
+    return timeout
+
+
+def request_deadline(timeout):
+    return time.monotonic() + budget_timeout(timeout)
+
+
+class UsageTracker:
+    """Provider-reported counts only; missing data is never treated as zero usage."""
+    def __init__(self):
+        self.requests = 0
+        self.reports = 0
+        self.totals = {}
+        self.coverage = {}
+        self.last = None
+
+    def record(self, obj):
+        self.requests += 1
+        usage = obj.get("usage") if isinstance(obj, dict) else None
+        values = {}
+        if isinstance(usage, dict):
+            for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                value = usage.get(field)
+                if type(value) is int and 0 <= value <= 10**15:
+                    values[field] = value
+        self.last = values or None
+        if values:
+            self.reports += 1
+        for field, value in values.items():
+            self.totals[field] = self.totals.get(field, 0) + value
+            self.coverage[field] = self.coverage.get(field, 0) + 1
+
+    def display(self):
+        print("usage: %d completed responses, %d with valid provider counts" %
+              (self.requests, self.reports))
+        for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            if field in self.totals:
+                print("%s: %d (reported in %d/%d responses)" %
+                      (field, self.totals[field], self.coverage[field], self.requests))
+        print("last response: %s" % (json.dumps(self.last, sort_keys=True) if self.last else "unavailable"))
+        print("(this process only; tool rounds/title requests included; missing/failed streams may be billed; no cost estimate)")
+
+
+def record_usage(obj):
+    tracker = ACTIVE_USAGE.get()
+    if tracker is not None:
+        tracker.record(obj)
+
+
+def compact_messages(messages, keep):
+    """Drop whole old user turns, preserving all tool call/result pairs in retained turns."""
+    if type(keep) is not int or keep < 1:
+        raise AIError("usage: /compact [positive number of recent turns, default 4]")
+    system = []
+    turns = []
+    for message in messages:
+        if message.get("role") == "system":
+            system.append(message)
+            continue
+        if message.get("role") == "user" or not turns:
+            turns.append([])
+        turns[-1].append(message)
+    if len(turns) <= keep:
+        return list(messages), 0
+    return system + [m for turn in turns[-keep:] for m in turn], len(turns) - keep
+
+
+def load_profile(name, path):
+    """Explicit opt-in config; never fall back to a different provider's key."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("profile file exceeds 1 MiB")
+        obj = json.loads(raw)
+        if not isinstance(obj, dict) or set(obj) != {"version", "profiles"} or obj["version"] != 1:
+            raise ValueError("expected version 1 and profiles")
+        profiles = obj["profiles"]
+        if not isinstance(profiles, dict) or name not in profiles:
+            raise ValueError("unknown profile: " + name)
+        p = profiles[name]
+        required = {"base", "model", "key_env", "capabilities"}
+        if not isinstance(p, dict) or set(p) != required:
+            raise ValueError("profile requires base, model, key_env, capabilities only")
+        if not all(isinstance(p[k], str) and p[k].strip() for k in ("base", "model", "key_env")):
+            raise ValueError("base/model/key_env must be nonempty strings")
+        base = urllib.parse.urlsplit(p["base"])
+        if (base.scheme not in ("http", "https") or not base.hostname or base.username or
+                base.password or base.query or base.fragment or base.port == 0):
+            raise ValueError("base must be an HTTP(S) URL without credentials/query/fragment")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p["key_env"]):
+            raise ValueError("invalid key_env")
+        caps = p["capabilities"]
+        if not isinstance(caps, dict) or set(caps) != {"tools", "vision", "stream", "token_parameter"}:
+            raise ValueError("capabilities requires tools, vision, stream, token_parameter")
+        if any(type(caps[k]) is not bool for k in ("tools", "vision", "stream")):
+            raise ValueError("capability flags must be booleans")
+        if caps["token_parameter"] not in ("max_tokens", "max_completion_tokens", None):
+            raise ValueError("invalid token_parameter")
+        return dict(p, base=p["base"].rstrip("/"), name=name)
+    except (OSError, ValueError, TypeError) as e:
+        raise AIError("cannot load provider profile: %s" % e) from e
+
+
+def chat_payload(model, messages, stream, temp, max_tok, tools):
+    profile = ACTIVE_PROFILE.get()
+    caps = profile["capabilities"] if profile else None
+    if caps:
+        if model != profile["model"]:
+            raise AIError("model differs from profile; select a matching profile")
+        if stream and not caps["stream"]:
+            raise AIError("profile does not support streaming; use --no-stream")
+        if tools is not None and not caps["tools"]:
+            raise AIError("profile does not support tools")
+        if not caps["vision"] and any(
+                isinstance(m.get("content"), list) and any(
+                    p.get("type") == "image_url" for p in m["content"] if isinstance(p, dict))
+                for m in messages):
+            raise AIError("profile does not support vision; image was not sent")
+    payload = {"model": model, "messages": messages, "stream": stream}
+    if stream and STREAM_USAGE.get():
+        payload["stream_options"] = {"include_usage": True}
+    if tools is not None:
+        payload.update(tools=tools, tool_choice="auto")
+    if temp is not None:
+        payload["temperature"] = temp
+    if max_tok is not None:
+        parameter = caps["token_parameter"] if caps else "max_tokens"
+        if parameter is None:
+            raise AIError("profile does not support a token limit parameter")
+        payload[parameter] = max_tok
+    return payload
+
+
 def resolve_system(cli_system, cli_file):
     if cli_system:
         return cli_system, "--system"
@@ -297,13 +518,21 @@ def build_parser():
     p.add_argument("--api-key", default="", help="API key (else env, see --show-config)")
     p.add_argument("--api-base", default="", help="base URL, e.g. https://api.deepseek.com/v1")
     p.add_argument("--model", default="", help="model name")
+    p.add_argument("--profile", default="", help="named provider/model profile (explicit opt-in)")
+    p.add_argument("--profiles-file", default="", help="profile JSON (default: ~/.config/daniwm/ai.profiles.json)")
     p.add_argument("--system", default="", help="system prompt text")
     p.add_argument("--system-file", default="", help="path to system prompt file")
     p.add_argument("--temperature", type=float, default=None)
     p.add_argument("--max-tokens", type=int, default=None)
     p.add_argument("--timeout", type=float, default=60)
+    p.add_argument("--turn-timeout", type=float, default=300,
+                   help="shared cooperative turn budget in seconds (default: 300)")
+    p.add_argument("--http-retries", type=int, default=0,
+                   help="opt-in HTTP 429/502/503/504 retries before response body (0..3)")
     p.add_argument("--stream", dest="stream", action="store_true", default=True)
     p.add_argument("--no-stream", dest="stream", action="store_false")
+    p.add_argument("--stream-usage", action="store_true",
+                   help="request SSE usage via stream_options.include_usage (provider must support it)")
     p.add_argument("--no-color", dest="color", action="store_false", default=True,
                    help="disable markdown colors (auto-off when piped)")
     p.add_argument("--continue", dest="cont", nargs="?", const="last",
@@ -320,8 +549,26 @@ def build_parser():
                    help="custom tool manifests dir (default: ~/.config/daniwm/ai.tools)")
     p.add_argument("--no-custom-tools", action="store_true",
                    help="ignore custom tool manifests")
+    p.add_argument("--permissions", choices=("read-only", "ask", "workspace-write"),
+                   default="ask", help="tool policy (default: ask before mutations/network/custom tools)")
+    p.add_argument("--max-tool-calls", type=int, default=64,
+                   help="maximum executed tool calls per user turn (default: 64)")
+    p.add_argument("--max-tool-output", type=int, default=1048576,
+                   help="maximum aggregate tool-result UTF-8 bytes per turn (default: 1 MiB)")
+    p.add_argument("--deny-path", action="append", default=[], metavar="GLOB",
+                   help="deny builtin file access to matching root-relative paths (repeatable)")
+    p.add_argument("--write-path", action="append", default=[], metavar="GLOB",
+                   help="restrict builtin mutations to matching paths when provided (repeatable)")
+    p.add_argument("--allow-domain", action="append", default=[], metavar="HOST",
+                   help="restrict web fetch and every redirect to exact hostname (repeatable)")
+    p.add_argument("--include-ignored", action="store_true",
+                   help="scan dependency/build directories and paths excluded by .aiignore")
+    p.add_argument("--no-history", action="store_true",
+                   help="private mode: no session/checkpoint/readline persistence; disables save/resume")
+    p.add_argument("--trust-session", action="store_true",
+                   help="explicitly allow loading legacy or different-project/provider sessions")
     p.add_argument("--yes-tools", action="store_true",
-                   help="auto-approve custom tools marked confirm (no prompt)")
+                   help="explicitly auto-approve permission prompts (except read-only blocks)")
     p.add_argument("--version", action="store_true")
     return p
 
@@ -338,12 +585,53 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def open_request(req, timeout):
+    deadline = request_deadline(timeout)
+    for attempt in range(HTTP_RETRIES.get() + 1):
+        remaining = budget_timeout(deadline - time.monotonic())
+        if remaining <= 0:
+            raise AIError("request deadline exceeded before retry")
+        try:
+            return open_request_once(req, remaining)
+        except RetryableHTTPError as e:
+            if attempt >= HTTP_RETRIES.get():
+                raise
+            delay = e.retry_after if e.retry_after is not None else min(2**attempt, 8)
+            remaining = budget_timeout(deadline - time.monotonic())
+            if delay >= remaining:
+                raise AIError("HTTP retry delay exceeds remaining time budget") from e
+            print("dani-ai: HTTP %d; retry %d/%d in %.1fs (provider may bill retries)" %
+                  (e.status, attempt + 1, HTTP_RETRIES.get(), delay), file=sys.stderr)
+            time.sleep(delay)
+
+
+class RetryableHTTPError(AIError):
+    def __init__(self, status, retry_after):
+        super().__init__("HTTP %d (no automatic tool replay)" % status)
+        self.status = status
+        self.retry_after = retry_after
+
+
+def open_request_once(req, timeout):
     try:
+        profile = ACTIVE_PROFILE.get()
+        if profile and not req.full_url.startswith(profile["base"] + "/"):
+            raise AIError("request endpoint differs from active profile")
         p = urllib.parse.urlsplit(req.full_url)
         if p.scheme not in ("http", "https") or not p.hostname or p.username or p.password:
             raise AIError("API base must be an HTTP(S) URL without credentials")
-        return urllib.request.build_opener(SafeRedirectHandler()).open(req, timeout=timeout)
+        return urllib.request.build_opener(SafeRedirectHandler()).open(req, timeout=budget_timeout(timeout))
     except urllib.error.HTTPError as e:
+        if e.code in (429, 502, 503, 504):
+            value = e.headers.get("Retry-After", "") if e.headers else ""
+            delay = float(value) if re.fullmatch(r"[0-9]{1,6}", value) else None
+            if delay is None and value:
+                try:
+                    import email.utils
+                    delay = max(0, email.utils.parsedate_to_datetime(value).timestamp() - time.time())
+                except (ValueError, TypeError, OverflowError, AttributeError):
+                    pass
+            e.close()
+            raise RetryableHTTPError(e.code, delay) from e
         try:
             body = e.read(500).decode("utf-8", "replace")
         except (OSError, http.client.HTTPException):
@@ -355,8 +643,73 @@ def open_request(req, timeout):
         raise AIError("connection error: %s" % e) from e
 
 
+def response_chunk(response, size, deadline):
+    """One buffered read/recv, not read(n) which can wait through a slow drip.
+
+    Socket timeout is reduced to the remaining budget on every read. DNS and
+    urllib's connection/header phase still use the platform resolver/timeout.
+    """
+    remaining = budget_timeout(deadline - time.monotonic())
+    if remaining <= 0:
+        raise AIError("response deadline exceeded")
+    # HTTPResponse -> buffered socket reader -> SocketIO. BytesIO tests have
+    # no socket and need no timeout. Do not change global socket defaults.
+    fp = getattr(response, "fp", None)
+    raw = getattr(fp, "raw", None)
+    sock = getattr(raw, "_sock", None)
+    if sock is not None:
+        sock.settimeout(remaining)
+    read = getattr(response, "read1", response.read)
+    chunk = read(size)
+    if time.monotonic() >= deadline:
+        raise AIError("response deadline exceeded")
+    return chunk
+
+
+def bounded_response(response, deadline, limit=API_MAX_BYTES):
+    data = bytearray()
+    while True:
+        chunk = response_chunk(response, min(65536, limit + 1 - len(data)), deadline)
+        if not chunk:
+            return bytes(data)
+        data.extend(chunk)
+        if len(data) > limit:
+            raise AIError("API response exceeds size limit")
+
+
+def stream_lines(response, deadline):
+    pending = bytearray()
+    total = events = 0
+    while True:
+        chunk = response_chunk(response, 65536, deadline)
+        if not chunk:
+            if pending:
+                yield bytes(pending)
+            return
+        total += len(chunk)
+        if total > API_MAX_BYTES:
+            raise AIError("API stream exceeds size limit")
+        pending.extend(chunk)
+        while True:
+            end = pending.find(b"\n")
+            if end < 0:
+                if len(pending) > SSE_MAX_LINE:
+                    raise AIError("stream line exceeds size limit")
+                break
+            if end > SSE_MAX_LINE:
+                raise AIError("stream line exceeds size limit")
+            events += 1
+            if events > SSE_MAX_EVENTS:
+                raise AIError("stream event limit exceeded")
+            line = bytes(pending[:end + 1])
+            del pending[:end + 1]
+            yield line
+
+
 def post_json(url, payload, api_key, timeout):
     data = json.dumps(payload).encode("utf-8")
+    if len(data) > MAX_SESSION_BYTES:
+        raise AIError("request exceeds size limit; reset or shorten the conversation")
     req = urllib.request.Request(
         url,
         data=data,
@@ -445,11 +798,19 @@ def web_charset(content_type, head):
     return "utf-8"
 
 
-def web_get(url, timeout=WEB_TIMEOUT, max_bytes=WEB_MAX_BYTES):
+def web_get(url, timeout=WEB_TIMEOUT, max_bytes=WEB_MAX_BYTES, authorize=None):
     """GET a public http(s) URL: bounded size, redirects re-validated."""
     current = url
+    deadline = request_deadline(timeout)
     for _ in range(WEB_MAX_REDIRECTS + 1):
+        if time.monotonic() >= deadline:
+            raise AIError("web response deadline exceeded")
         parts = web_split_url(current)
+        if authorize is not None:
+            authorize(current)
+        budget_timeout(1)
+        if time.monotonic() >= deadline:
+            raise AIError("web response deadline exceeded")
         scheme = parts.scheme.lower()
         try:
             host = parts.hostname.encode("idna").decode("ascii")
@@ -466,7 +827,10 @@ def web_get(url, timeout=WEB_TIMEOUT, max_bytes=WEB_MAX_BYTES):
         for info in infos:
             web_check_address(info[4][0])
         cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
-        conn = cls(host, port, timeout=timeout)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AIError("web response deadline exceeded")
+        conn = cls(host, port, timeout=remaining)
         path = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
         # Percent-encode non-ASCII and spaces but keep existing escapes intact.
         path = urllib.parse.quote(path, safe="/%:@!$&'()*+,;=-._~?")
@@ -503,7 +867,7 @@ def web_get(url, timeout=WEB_TIMEOUT, max_bytes=WEB_MAX_BYTES):
                         "truncated": False}
             body = bytearray()
             while len(body) <= max_bytes:
-                chunk = response.read(65536)
+                chunk = response_chunk(response, min(65536, max_bytes + 1 - len(body)), deadline)
                 if not chunk:
                     break
                 body.extend(chunk)
@@ -800,6 +1164,7 @@ class CustomTool:
 
 def _run_tool_process(argv, cwd, env, stdin_data, timeout, output_limit):
     """Run a custom tool with a temp-file stdin and bounded pipes."""
+    timeout = budget_timeout(timeout)
     output, errors = bytearray(), bytearray()
     stopped, code = None, None
     with tempfile.TemporaryFile() as stdin_file:
@@ -811,7 +1176,7 @@ def _run_tool_process(argv, cwd, env, stdin_data, timeout, output_limit):
                                        env=env, start_new_session=True, close_fds=True)
         except OSError as e:
             return output, str(e).encode(), "spawn", None
-        deadline = time.monotonic() + timeout
+        deadline = min(time.monotonic() + timeout, TURN_DEADLINE.get() or float('inf'))
         try:
             with selectors.DefaultSelector() as selector:
                 selector.register(process.stdout, selectors.EVENT_READ)
@@ -853,6 +1218,8 @@ def _run_tool_process(argv, cwd, env, stdin_data, timeout, output_limit):
 def validate_assistant(message):
     if not isinstance(message, dict) or message.get("content") is not None and not isinstance(message.get("content"), str):
         raise AIError("invalid assistant message")
+    if isinstance(message.get("content"), str) and len(message["content"]) > MAX_CONTENT_CHARS:
+        raise AIError("response content exceeds size limit")
     calls = message.get("tool_calls", [])
     if not isinstance(calls, list) or len(calls) > 16:
         raise AIError("invalid tool calls")
@@ -865,10 +1232,12 @@ def validate_assistant(message):
         if not isinstance(cid, str) or not cid or cid in ids or not isinstance(function, dict):
             raise AIError("invalid tool call id/function")
         ids.add(cid)
+        if len(cid) > 256:
+            raise AIError("tool call id too large")
         if not isinstance(function.get("name"), str) or not isinstance(function.get("arguments"), str):
             raise AIError("invalid tool function")
-        if len(function["arguments"]) > 65536:
-            raise AIError("tool arguments too large")
+        if len(function["arguments"]) > 65536 or len(function["name"]) > 128:
+            raise AIError("tool arguments/name too large")
     if not calls and not isinstance(message.get("content"), str):
         raise AIError("missing assistant content")
     result = {"role": "assistant", "content": message.get("content")}
@@ -884,7 +1253,9 @@ class ToolRunner:
     shell) inside the tool root and are gated by an optional confirm prompt.
     """
     def __init__(self, root, blocked=(), blocklist=None, custom_dir=None,
-                 confirm=None, allow_shell=False):
+                 confirm=None, allow_shell=False, permissions="workspace-write",
+                 max_tool_calls=64, max_tool_output=1048576, include_ignored=False,
+                 deny_paths=(), write_paths=(), allow_domains=()):
         """custom_dir: manifest dir; falsy (None/"") loads no custom tools."""
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
@@ -892,6 +1263,19 @@ class ToolRunner:
         default = Path(default_system_file()).with_name("ai.tools.blocklist")
         path = Path(blocklist) if blocklist else default
         self.allow_shell = allow_shell
+        self.permissions = permissions
+        self.journal = None
+        self.file_changes = {}
+        self.change_bytes = 0
+        self.undo_invalid = False
+        self.max_tool_calls = max_tool_calls
+        self.max_tool_output = max_tool_output
+        self.include_ignored = include_ignored
+        self.deny_paths = self.validate_path_patterns(deny_paths)
+        self.write_paths = self.validate_path_patterns(write_paths)
+        self.allow_domains = {self.normalize_domain(host) for host in allow_domains}
+        self.approved_origins = set()
+        self.scan_cursors = {}
         self.blocked = list(blocked)
         if blocklist or path.exists():
             self.blocked += [line.split("#", 1)[0].strip()
@@ -918,6 +1302,8 @@ class ToolRunner:
                     "offset": {"type": "integer", "minimum": 0, "description": "Character offset (default 0)."},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 64000,
                               "description": "Characters per page (default 16000)."}})
+            if name in ("find_files", "search_files"):
+                properties["cursor"] = {"type": "string", "description": "Opaque next_cursor from previous page; same path/query/pattern required. Omit for new scan."}
             if name == "find_files":
                 properties["pattern"] = {"type": "string", "description": "Filename glob, e.g. *.py"}
                 required.append("pattern")
@@ -945,11 +1331,11 @@ class ToolRunner:
                     "list_files": "List a directory (nonrecursive, maximum 200 entries).",
                     "git_status": "Read Git status and branch for the repository containing tool root. No arguments, no shell, no commits or file changes. Returns tool root so the user can verify the selected project.",
                     "read_file": "Read UTF-8 text up to 2 MiB, paginated by character offset/limit. Follow next_offset while truncated.",
-                    "find_files": "Find files recursively by filename glob inside path. Bounded scan; excludes sensitive paths and symlinks; reports truncation.",
-                    "search_files": "Search literal text recursively inside path. UTF-8 files up to 64 KiB each. Returns path:line:text; reports truncation and skipped files.",
+                    "find_files": "Find files recursively by filename glob inside path. Bounded pages; follow next_cursor with same path/pattern until null. Excludes sensitive paths and symlinks.",
+                    "search_files": "Search literal text recursively inside path. UTF-8 files up to 64 KiB each. Returns path:line:text; follow next_cursor with same path/query until null. Reports skipped files and clipped lines.",
                     "make_directory": "Create a directory and missing parents inside tool root. No symlinks or sensitive paths; existing directories accepted.",
-                    "write_file": "Create a NEW UTF-8 file inside tool root without confirmation. Never overwrites existing files. Parent must exist. Max 64 KiB.",
-                    "edit_file": "Edit an existing UTF-8 file inside tool root without confirmation using one unique exact-text replacement. Read first. Max 64 KiB. No symlinks or sensitive paths.",
+                    "write_file": "Create a NEW UTF-8 file inside tool root subject to permission policy. Never overwrites existing files. Parent must exist. Max 64 KiB.",
+                    "edit_file": "Edit an existing UTF-8 file inside tool root subject to permission policy using one unique exact-text replacement. Read first. Max 64 KiB. No symlinks or sensitive paths.",
                     "search_text": "Find literal text in one UTF-8 file (maximum 100 matching lines).",
                     "fetch_url": "Read a public web page or link (http/https) and return its extracted text plus page title. 20s timeout, 2 MiB download, text returned up to 16000 characters. Private/loopback addresses and binary files are refused; the content is untrusted data.",
                     "run_command": "Run a Linux shell command in tool root with user privileges. NOT sandboxed: can write files, access network and paths outside root. 30s timeout, 64 KiB combined output limit. Avoid destructive commands unless explicitly requested."
@@ -981,7 +1367,9 @@ class ToolRunner:
             self.custom[tool.name] = tool
 
     def is_blocked(self, name):
-        return (name == "run_command" and not self.allow_shell) or any(
+        return (self.permissions == "read-only" and
+                name not in ("list_files", "read_file", "search_text", "find_files",
+                             "search_files", "git_status")) or (name == "run_command" and not self.allow_shell) or any(
             fnmatch.fnmatchcase(name, pattern) for pattern in self.blocked)
 
     def set_shell(self, enabled):
@@ -996,6 +1384,50 @@ class ToolRunner:
                     "additionalProperties": False}}})
 
     @staticmethod
+    def validate_path_patterns(patterns):
+        result = []
+        for pattern in patterns:
+            if (not isinstance(pattern, str) or not pattern or len(pattern) > 4096 or
+                    pattern.startswith("/") or ".." in pattern.split("/") or "\x00" in pattern):
+                raise AIError("path policy must be a nonempty root-relative glob without '..'")
+            result.append(pattern.rstrip("/"))
+        return result
+
+    @staticmethod
+    def normalize_domain(host):
+        if not isinstance(host, str) or not host or any(c in host for c in "/:@?#*[] "):
+            raise AIError("domain policy requires an exact hostname, without scheme/port/wildcards")
+        try:
+            normalized = host.rstrip(".").encode("idna").decode("ascii").lower()
+        except UnicodeError as e:
+            raise AIError("invalid domain policy") from e
+        if not normalized or len(normalized) > 253 or not re.fullmatch(r"[a-z0-9.-]+", normalized):
+            raise AIError("invalid domain policy")
+        return normalized
+
+    def path_denied(self, path):
+        parts = Path(path).parts
+        return any(fnmatch.fnmatchcase(str(Path(*parts[:i])), pattern)
+                   for i in range(1, len(parts) + 1) for pattern in self.deny_paths)
+
+    def authorize_write(self, path):
+        if self.path_denied(path):
+            raise ValueError("path denied by policy")
+        if self.write_paths and not any(fnmatch.fnmatchcase(str(Path(path)), p) for p in self.write_paths):
+            raise ValueError("write path not in allowlist")
+
+    def authorize_url(self, url):
+        parts = web_split_url(url)
+        host = parts.hostname.rstrip(".").encode("idna").decode("ascii").lower()
+        if self.allow_domains and host not in self.allow_domains:
+            raise AIError("web hostname not in allowlist: " + host)
+        origin = (parts.scheme.lower(), host, parts.port or (443 if parts.scheme == "https" else 80))
+        if self.permissions == "ask" and origin not in self.approved_origins:
+            if self.confirm is None or not self.confirm("fetch_url", "New web origin: %s://%s:%d\nURL: %s" % (*origin, url)):
+                raise AIError("web origin declined by user")
+            self.approved_origins.add(origin)
+
+    @staticmethod
     def allowed(name):
         lower = name.lower()
         return not (name.startswith(".") or lower in {"ai.key", "ai.system", "id_rsa", "id_ed25519"}
@@ -1005,6 +1437,8 @@ class ToolRunner:
     def open_path(self, path):
         if not isinstance(path, str) or len(path) > 4096:
             raise ValueError("invalid path")
+        if self.path_denied(path):
+            raise ValueError("path denied by policy")
         parts = Path(path).parts
         if Path(path).is_absolute() or any(p == ".." or not self.allowed(p) for p in parts):
             raise ValueError("path is outside root or sensitive")
@@ -1028,6 +1462,9 @@ class ToolRunner:
         parts = Path(path).parts
         if Path(path).is_absolute() or any(p == ".." or not self.allowed(p) for p in parts):
             raise ValueError("path is outside root or sensitive")
+        self.authorize_write(path)
+        for i in range(1, len(parts) + 1):
+            self.authorize_write(str(Path(*parts[:i])))
         fd = self.open_path(".")
         try:
             for part in parts:
@@ -1042,71 +1479,242 @@ class ToolRunner:
         finally:
             os.close(fd)
 
-    def scan_files(self, path, value, search=False):
-        if not isinstance(value, str) or not 0 < len(value) <= 1000:
-            raise ValueError("pattern/query must be 1..1000 characters")
-        results, scanned, skipped, truncated, size = [], 0, 0, False, 0
+    def scan_ignore_patterns(self):
+        """Small explicit glob format, NOT a partial implementation of gitignore."""
+        if self.include_ignored:
+            return []
+        patterns = ["node_modules", "vendor", "build", "dist", "__pycache__",
+                    "venv", "coverage", "*.o", "*.pyc"]
+        # .aiignore is user configuration, not model-readable data. Open only
+        # this exact root-relative file without following links/hardlinks.
+        root = self.open_path(".")
+        try:
+            try:
+                fd = os.open(".aiignore", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root)
+            except FileNotFoundError:
+                return patterns
+            with os.fdopen(fd, "rb") as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ValueError(".aiignore must be a regular non-hardlinked file")
+                data = source.read(65537)
+            if len(data) > 65536:
+                raise ValueError(".aiignore exceeds 64 KiB")
+            patterns += [line.strip().rstrip("/") for line in data.decode("utf-8").splitlines()
+                         if line.strip() and not line.lstrip().startswith("#")]
+            return patterns
+        finally:
+            os.close(root)
 
+    def scan_events(self, path, value, search, patterns):
+        """Resumable descriptor-relative DFS. Events bound per-page scan work."""
         def walk(fd, prefix, depth):
-            nonlocal scanned, skipped, truncated, size
             with os.scandir(fd) as entries:
                 for entry in entries:
-                    scanned += 1
-                    if scanned > 2000:
-                        truncated = True
-                        return
+                    budget_timeout(1)
+                    yield ("scanned", None)
                     if not self.allowed(entry.name) or entry.is_symlink():
                         continue
                     relative = str(Path(prefix) / entry.name)
+                    if self.path_denied(relative):
+                        continue
+                    if any(fnmatch.fnmatchcase(relative if "/" in p else entry.name,
+                                              p.lstrip("/")) for p in patterns):
+                        yield ("ignored", None)
+                        continue
                     child = None
                     try:
                         child = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
                         info = os.fstat(child)
                         if stat.S_ISDIR(info.st_mode):
                             if depth >= 32:
-                                truncated = True
+                                yield ("depth_limited", None)
                             else:
-                                walk(child, relative, depth + 1)
+                                yield from walk(child, relative, depth + 1)
                         elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
                             if not search:
-                                matches = [relative] if fnmatch.fnmatchcase(entry.name, value) else []
+                                if fnmatch.fnmatchcase(entry.name, value):
+                                    yield ("match", relative)
                             else:
                                 with os.fdopen(os.dup(child), "rb") as source:
                                     data = source.read(65537)
                                 if len(data) > 65536 or b"\x00" in data:
-                                    skipped += 1
+                                    yield ("skipped", None)
                                     continue
-                                matches = ("%s:%d: %s" % (relative, i, line)
-                                           for i, line in enumerate(data.decode("utf-8").splitlines(), 1)
-                                           if value in line)
-                            for match in matches:
-                                if len(results) >= 100 or size + len(match) + 1 > 16000:
-                                    truncated = True
-                                    return
-                                results.append(match)
-                                size += len(match) + 1
+                                for i, line in enumerate(data.decode("utf-8").splitlines(), 1):
+                                    if value in line:
+                                        yield ("match", "%s:%d: %s" % (relative, i, line))
                     except (OSError, UnicodeError):
-                        skipped += 1
+                        yield ("skipped", None)
                     finally:
                         if child is not None:
                             os.close(child)
-                    if truncated:
-                        return
         fd = self.open_path(path)
         try:
             if not stat.S_ISDIR(os.fstat(fd).st_mode):
                 raise ValueError("not a directory")
-            walk(fd, str(Path(path)), 0)
+            yield from walk(fd, str(Path(path)), 0)
         finally:
             os.close(fd)
-        return json.dumps({"result": "\n".join(results), "truncated": truncated,
-                           "scanned": min(scanned, 2000), "skipped": skipped,
+
+    def scan_files(self, path, value, search=False, cursor=None):
+        if not isinstance(value, str) or not 0 < len(value) <= 1000:
+            raise ValueError("pattern/query must be 1..1000 characters")
+        if not isinstance(path, str) or len(path) > 4096:
+            raise ValueError("invalid path")
+        if cursor is not None and (not isinstance(cursor, str) or len(cursor) > 64):
+            raise ValueError("invalid scan cursor")
+        now = time.monotonic()
+        patterns = self.scan_ignore_patterns()
+        signature = (str(self.root), path, value, search, tuple(patterns),
+                     tuple(self.deny_paths), self.include_ignored)
+        for key, state in list(self.scan_cursors.items()):
+            if now - state["touched"] > 120 or state["signature"] != signature and key == cursor:
+                state["iterator"].close()
+                del self.scan_cursors[key]
+        if cursor is not None:
+            if cursor not in self.scan_cursors:
+                raise ValueError("unknown/expired scan cursor or scan parameters/policy changed; start a new scan")
+            state = self.scan_cursors.pop(cursor)
+        else:
+            if len(self.scan_cursors) >= 4:
+                oldest = min(self.scan_cursors, key=lambda k: self.scan_cursors[k]["touched"])
+                self.scan_cursors.pop(oldest)["iterator"].close()
+            state = {"iterator": self.scan_events(path, value, search, patterns),
+                     "signature": signature, "pending": None, "touched": now}
+        results, size = [], 0
+        counts = dict(scanned=0, skipped=0, ignored=0, depth_limited=0, clipped=0)
+        more = True
+        try:
+            while True:
+                budget_timeout(1)
+                event = state["pending"]
+                state["pending"] = None
+                if event is None:
+                    try:
+                        event = next(state["iterator"])
+                    except StopIteration:
+                        more = False
+                        break
+                kind, match = event
+                if kind == "scanned" and counts["scanned"] >= 2000:
+                    state["pending"] = event
+                    break
+                if kind != "match":
+                    counts[kind] += 1
+                    continue
+                if len(results) >= 100 or size + min(len(match), 15999) + 1 > 16000:
+                    state["pending"] = event
+                    break
+                if len(match) > 15999:
+                    match = match[:15950] + " [line clipped]"
+                    counts["clipped"] += 1
+                results.append(match)
+                size += len(match) + 1
+        except BaseException:
+            state["iterator"].close()
+            raise
+        next_cursor = None
+        if more:
+            next_cursor = uuid.uuid4().hex
+            state["touched"] = time.monotonic()
+            self.scan_cursors[next_cursor] = state
+        else:
+            state["iterator"].close()
+        return json.dumps({"result": "\n".join(results), "truncated": more or counts["depth_limited"] > 0,
+                           "next_cursor": next_cursor, **counts,
+                           "include_ignored": self.include_ignored,
                            "untrusted": True}, ensure_ascii=False)
+
+    @staticmethod
+    def file_identity(info):
+        return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns,
+                info.st_size, info.st_nlink, stat.S_IMODE(info.st_mode))
+
+    def close_scans(self):
+        for state in self.scan_cursors.values():
+            state["iterator"].close()
+        self.scan_cursors.clear()
+
+    def begin_file_turn(self):
+        self.file_changes.clear()
+        self.change_bytes = 0
+        self.undo_invalid = False
+
+    def file_diff(self):
+        result = []
+        for path, change in self.file_changes.items():
+            result.append("".join(difflib.unified_diff(
+                (change["before"] or "").splitlines(keepends=True),
+                change["after"].splitlines(keepends=True),
+                fromfile=path if change["before"] is not None else "/dev/null", tofile=path)))
+        return "".join(result)
+
+    def check_undo_file(self, parent, leaf, change):
+        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                    self.file_identity(info) != change["identity"] or
+                    os.read(fd, 65537) != change["after"].encode("utf-8")):
+                raise ValueError("file changed since AI write; refusing undo: " + leaf)
+        finally:
+            os.close(fd)
+
+    def undo_files(self):
+        """Preflight all paths; publish individually, refusing observed concurrent changes."""
+        if self.permissions == "read-only":
+            raise ValueError("undo blocked by read-only policy")
+        if self.undo_invalid:
+            raise ValueError("intervening edits or shell/custom execution in turn; undo unavailable")
+        handles = []
+        restored = []
+        try:
+            for path, change in self.file_changes.items():
+                tool = "write_file" if change["before"] is None else "edit_file"
+                if self.is_blocked(tool):
+                    raise ValueError("undo blocked by tool policy: " + tool)
+                self.authorize_write(path)
+                parent = self.open_path(str(Path(path).parent))
+                handles.append((path, change, parent))
+                self.check_undo_file(parent, Path(path).name, change)
+            for path, change, parent in handles:
+                leaf = Path(path).name
+                temporary = None
+                try:
+                    if change["before"] is not None:
+                        temporary = ".dani-ai-undo-" + os.urandom(16).hex()
+                        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                     0o600, dir_fd=parent)
+                        with os.fdopen(fd, "wb") as f:
+                            f.write(change["before"].encode("utf-8"))
+                            f.flush()
+                            os.fchmod(f.fileno(), change["mode"])
+                            os.fsync(f.fileno())
+                    self.check_undo_file(parent, leaf, change)
+                    if temporary is None:
+                        os.unlink(leaf, dir_fd=parent)
+                    else:
+                        os.replace(temporary, leaf, src_dir_fd=parent, dst_dir_fd=parent)
+                        temporary = None
+                    restored.append(path)
+                    del self.file_changes[path]
+                    os.fsync(parent)
+                finally:
+                    if temporary is not None:
+                        os.unlink(temporary, dir_fd=parent)
+            return restored
+        finally:
+            for _, _, parent in handles:
+                os.close(parent)
+            self.last_undo_paths = restored
 
     def change_file(self, name, args):
         path = args["path"]
         if not isinstance(path, str) or not path or len(path) > 4096 or "\x00" in path:
             raise ValueError("invalid path")
+        self.authorize_write(path)
+        path = str(Path(path))
         parts = Path(path).parts
         if (not parts or Path(path).is_absolute() or
                 any(p == ".." or not self.allowed(p) for p in parts)):
@@ -1147,6 +1755,23 @@ class ToolRunner:
             data = content.encode("utf-8")
             if len(data) > 65536:
                 raise ValueError("result exceeds 64 KiB")
+            previous_change = self.file_changes.get(path)
+            snapshot_bytes = len(data) + (len(text.encode("utf-8")) if before is not None else 0)
+            if self.change_bytes + snapshot_bytes > 8 * 1024 * 1024:
+                raise ValueError("undo snapshot budget exceeded (8 MiB); file not changed")
+            if previous_change and (before is None or
+                    self.file_identity(before) != previous_change["identity"] or
+                    text != previous_change["after"]):
+                self.undo_invalid = True
+            if self.permissions == "ask":
+                preview = "".join(difflib.unified_diff(
+                    text.splitlines(keepends=True) if before is not None else [],
+                    content.splitlines(keepends=True), fromfile=path, tofile=path))
+                if len(preview) > 12000:
+                    preview = preview[:11800] + "\n[diff truncated; declining is recommended — inspect the complete change first]\n"
+                if self.confirm is None or not self.confirm(name, preview):
+                    raise ValueError("file change declined by user")
+            budget_timeout(1)
             temporary = ".dani-ai-write-" + os.urandom(16).hex()
             fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=parent)
@@ -1169,6 +1794,15 @@ class ToolRunner:
                     raise ValueError("file changed during edit; read again and retry")
                 os.replace(temporary, leaf, src_dir_fd=parent, dst_dir_fd=parent)
                 temporary = None
+            if temporary is not None:
+                os.unlink(temporary, dir_fd=parent)
+                temporary = None
+            published = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+            self.file_changes[path] = {
+                "before": previous_change["before"] if previous_change else (text if before is not None else None),
+                "after": content, "mode": previous_change["mode"] if previous_change else mode,
+                "identity": self.file_identity(published)}
+            self.change_bytes += snapshot_bytes
             os.fsync(parent)
             return json.dumps({"result": {"path": path, "bytes": len(data),
                                           "action": "created" if before is None else "edited"},
@@ -1207,7 +1841,7 @@ class ToolRunner:
     def fetch_url(self, url):
         """Read one public link; HTML is reduced to text and marked untrusted."""
         try:
-            page = web_get(url)
+            page = web_get(url, authorize=self.authorize_url)
             content_type = page["content_type"]
             body = page["body"]
             base_type = content_type.split(";", 1)[0].strip().lower()
@@ -1238,6 +1872,7 @@ class ToolRunner:
                                "error": str(e), "untrusted": True}, ensure_ascii=False)
 
     def run_command(self, command, timeout=30, output_limit=65536):
+        timeout = budget_timeout(timeout)
         if not isinstance(command, str) or not 0 < len(command) <= 16000 or "\x00" in command:
             raise ValueError("command must be 1..16000 characters without NUL")
         # Do not hand API credentials inherited from the CLI to child processes.
@@ -1250,7 +1885,7 @@ class ToolRunner:
                                    stderr=subprocess.STDOUT, env=env, start_new_session=True)
         output = bytearray()
         reason = None
-        deadline = time.monotonic() + timeout
+        deadline = min(time.monotonic() + timeout, TURN_DEADLINE.get() or float('inf'))
         try:
             with selectors.DefaultSelector() as selector:
                 selector.register(process.stdout, selectors.EVENT_READ)
@@ -1296,15 +1931,17 @@ class ToolRunner:
         error = tool.validate(args)
         if error:
             return json.dumps({"error": "invalid arguments: %s" % error})
-        if tool.confirm and self.confirm is not None:
-            if not self.confirm(tool.name, tool.description):
+        if self.permissions == "ask" or tool.confirm:
+            if self.confirm is None or not self.confirm(tool.name, tool.description + "\nArguments: " + arguments[:4000]):
                 return json.dumps({"error": "tool call declined by user",
                                    "untrusted": True})
         return tool.run(args, self.root)
 
     def execute(self, name, arguments):
         try:
+            budget_timeout(1)
             if name in self.custom and not self.is_blocked(name):
+                self.undo_invalid = True
                 return self.execute_custom(name, arguments)
             if name not in TOOL_NAMES or self.is_blocked(name):
                 raise ValueError("tool unknown or blocked")
@@ -1316,19 +1953,25 @@ class ToolRunner:
                         {"path", "old_text", "new_text"} if name == "edit_file" else
                         {"path", "pattern"} if name == "find_files" else
                         {"path", "query"} if name in ("search_text", "search_files") else {"path"})
-            optional = {"offset", "limit"} if name == "read_file" else set()
+            optional = ({"offset", "limit"} if name == "read_file" else
+                        {"cursor"} if name in ("find_files", "search_files") else set())
             if not isinstance(args, dict) or not required <= set(args) or set(args) - required - optional:
                 raise ValueError("invalid tool arguments")
+            if self.permissions == "ask" and name in ("make_directory", "run_command"):
+                if self.confirm is None or not self.confirm(name, json.dumps(args, ensure_ascii=False)[:12000]):
+                    raise ValueError("tool call declined by user")
+            budget_timeout(1)
             if name == "make_directory":
                 return self.make_directory(args["path"])
             if name in ("find_files", "search_files"):
                 return self.scan_files(args["path"], args["pattern" if name == "find_files" else "query"],
-                                       search=name == "search_files")
+                                       search=name == "search_files", cursor=args.get("cursor"))
             if name == "git_status":
                 return self.git_status()
             if name in ("write_file", "edit_file"):
                 return self.change_file(name, args)
             if name == "run_command":
+                self.undo_invalid = True
                 return self.run_command(args["command"])
             if name == "fetch_url":
                 return self.fetch_url(args["url"])
@@ -1348,7 +1991,8 @@ class ToolRunner:
                                 entries.append("[truncated]")
                                 truncated = True
                                 break
-                            if self.allowed(entry.name) and not entry.is_symlink():
+                            if (self.allowed(entry.name) and not entry.is_symlink()
+                                    and not self.path_denied(str(Path(args["path"]) / entry.name))):
                                 entries.append(entry.name + ("/" if entry.is_dir(follow_symlinks=False) else ""))
                     result = "\n".join(sorted(entries))
                 else:
@@ -1468,8 +2112,10 @@ class _ToolDisplay:
 
 def tool_complete(base, api_key, model, messages, timeout, temp, max_tok,
                   stream, out, render, runner):
-    work = list(messages)
+    work = messages
+    executed = output_bytes = 0
     for turn in range(33):
+        budget_timeout(timeout)
         if stream:
             fw = _FrameWriter(out, "🤖 · %s" % safe_terminal(model)) if render else out
             try:
@@ -1491,34 +2137,53 @@ def tool_complete(base, api_key, model, messages, timeout, temp, max_tok,
                 out.flush()
         calls = reply.get("tool_calls", [])
         if not calls:
-            messages.extend(work[len(messages):])
             return reply["content"]
         if turn == 32:
             raise AIError("tool round limit reached (32)")
+        if executed + len(calls) > runner.max_tool_calls:
+            raise AIError("tool call budget exceeded (%d); no calls from this batch executed" % runner.max_tool_calls)
         work.append(reply)
+        start = len(work)
+        # Protocol-valid pending results survive cancellation; unknown execution
+        # status must never be interpreted as permission to replay a mutation.
         for call in calls:
+            work.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps({
+                "error": "interrupted: execution status unknown; inspect workspace before retrying",
+                "untrusted": True})})
+        if runner.journal:
+            runner.journal(work, "interrupted")
+        for index, call in enumerate(calls):
             function = call["function"]
             with _ToolDisplay(out, function, render) as display:
+                budget_timeout(timeout)
                 result = runner.execute(function["name"], function["arguments"])
+                executed += 1
+                output_bytes += len(result.encode("utf-8"))
+                if output_bytes > runner.max_tool_output:
+                    work[start + index]["content"] = json.dumps({
+                        "error": "tool output budget exceeded; tool DID execute; inspect workspace before retrying",
+                        "untrusted": True})
+                    for pending in work[start + index + 1:]:
+                        pending["content"] = json.dumps({"error": "not executed: tool output budget exhausted"})
+                    if runner.journal:
+                        runner.journal(work, "interrupted")
+                    raise AIError("tool output budget exceeded (%d bytes); tool may have changed files" % runner.max_tool_output)
+                work[start + index]["content"] = result
+                if runner.journal:
+                    runner.journal(work, "in_progress")
                 display.finish(result)
-            work.append({"role": "tool", "tool_call_id": call["id"], "content": result})
     raise AIError("tool round limit reached")
 
 
 def request_once(base, api_key, model, messages, timeout, temp, max_tok, tools=None):
-    payload = {"model": model, "messages": messages, "stream": False}
-    if tools is not None:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
-    if temp is not None:
-        payload["temperature"] = temp
-    if max_tok is not None:
-        payload["max_tokens"] = max_tok
+    payload = chat_payload(model, messages, False, temp, max_tok, tools)
+    deadline = request_deadline(timeout)
     with post_json(base + "/chat/completions", payload, api_key, timeout) as r:
         try:
-            obj = json.loads(r.read().decode("utf-8"))
+            obj = json.loads(bounded_response(r, deadline).decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as e:
             raise AIError("bad JSON response: %s" % e) from e
+    record_usage(obj)
     try:
         choice = obj["choices"][0]
         if not isinstance(choice, dict):
@@ -1533,6 +2198,8 @@ def request_once(base, api_key, model, messages, timeout, temp, max_tok, tools=N
         content = message["content"]
         if not isinstance(content, str):
             raise TypeError("message content is not text")
+        if len(content) > MAX_CONTENT_CHARS:
+            raise AIError("response content exceeds size limit")
         return content
     except (KeyError, IndexError, TypeError) as e:
         raise AIError("unexpected chat response") from e
@@ -1545,9 +2212,10 @@ def list_models(base, api_key, timeout):
         headers={"Authorization": "Bearer " + api_key},
         method="GET",
     )
+    deadline = request_deadline(timeout)
     try:
         with open_request(req, timeout) as r:
-            obj = json.loads(r.read().decode("utf-8"))
+            obj = json.loads(bounded_response(r, deadline).decode("utf-8"))
     except (AIError, ValueError, OSError, http.client.HTTPException) as e:
         print("dani-ai: models: %s" % safe_terminal(str(e)), file=sys.stderr)
         return None
@@ -1563,21 +2231,17 @@ def list_models(base, api_key, timeout):
 
 def request_stream(base, api_key, model, messages, timeout, temp, max_tok, out,
                    live=None, tools=None):
-    payload = {"model": model, "messages": messages, "stream": True}
-    if tools is not None:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
-    if temp is not None:
-        payload["temperature"] = temp
-    if max_tok is not None:
-        payload["max_tokens"] = max_tok
+    payload = chat_payload(model, messages, True, temp, max_tok, tools)
     full = []
+    content_chars = 0
     calls = {}
     done = False
+    reported_usage = None
     pending_line = ""
     sanitizer = TerminalSanitizer() if live is not None or out_is_tty(out) else None
+    deadline = request_deadline(timeout)
     with post_json(base + "/chat/completions", payload, api_key, timeout) as r:
-        for raw in r:
+        for raw in stream_lines(r, deadline):
             text = raw.decode("utf-8", "replace").strip()
             if not text or text.startswith(":") or text.startswith(("event:", "id:", "retry:")):
                 continue
@@ -1591,6 +2255,8 @@ def request_stream(base, api_key, model, messages, timeout, temp, max_tok, out,
                 obj = json.loads(data)
                 if not isinstance(obj, dict) or "error" in obj:
                     raise ValueError("API stream error")
+                if isinstance(obj.get("usage"), dict):
+                    reported_usage = obj["usage"]
                 choices = obj["choices"]
                 if not isinstance(choices, list):
                     raise ValueError("invalid choices")
@@ -1613,8 +2279,9 @@ def request_stream(base, api_key, model, messages, timeout, temp, max_tok, out,
                             target["id"] += call["id"]
                         for key in ("name", "arguments"):
                             target["function"][key] += call.get("function", {}).get(key, "")
-                        if len(target["function"]["arguments"]) > 65536:
-                            raise ValueError("tool arguments too large")
+                        if (len(target["function"]["arguments"]) > 65536 or
+                                len(target["id"]) > 256 or len(target["function"]["name"]) > 128):
+                            raise ValueError("tool arguments/id/name too large")
                 delta = chunk.get("content", "")
                 if delta is None:
                     delta = ""
@@ -1623,6 +2290,9 @@ def request_stream(base, api_key, model, messages, timeout, temp, max_tok, out,
             except (ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
                 raise AIError("invalid or error stream event") from e
             if delta:
+                content_chars += len(delta)
+                if content_chars > MAX_CONTENT_CHARS:
+                    raise AIError("response content exceeds size limit; partial answer not saved")
                 full.append(delta)
                 visible = sanitizer.feed(delta) if sanitizer else delta
                 if live is not None:
@@ -1637,6 +2307,7 @@ def request_stream(base, api_key, model, messages, timeout, temp, max_tok, out,
                 out.flush()
     if not done:
         raise AIError("stream interrupted before [DONE]; partial answer not saved")
+    record_usage({"usage": reported_usage})
     if full or tools is None:
         # Tool-call-only rounds produce no text: do not emit a blank line.
         if live is not None and pending_line:
@@ -1775,6 +2446,16 @@ def waiting_stream(base, api_key, model, messages, timeout, temp, max_tok, out,
 
 def complete(base, api_key, model, messages, timeout, temp, max_tok, stream, out,
                render=False, runner=None):
+    token = TURN_DEADLINE.set(time.monotonic() + TURN_TIMEOUT.get())
+    try:
+        return complete_turn(base, api_key, model, messages, timeout, temp, max_tok,
+                             stream, out, render, runner)
+    finally:
+        TURN_DEADLINE.reset(token)
+
+
+def complete_turn(base, api_key, model, messages, timeout, temp, max_tok, stream, out,
+                  render=False, runner=None):
     if runner is not None and runner.schemas:
         return tool_complete(base, api_key, model, messages, timeout, temp,
                              max_tok, stream, out, render, runner)
@@ -2083,7 +2764,7 @@ def input_boxed(color=True):
 # ---- REPL slash-command completion + hints (readline, stdlib) ----
 
 COMMANDS = [
-    "/base", "/clear", "/color", "/exit", "/help", "/model",
+    "/base", "/clear", "/color", "/compact", "/context", "/diff", "/undo", "/usage", "/exit", "/help", "/model",
     "/new", "/q", "/quit", "/reset", "/resume", "/root", "/save", "/shell", "/stream", "/system",
 ]
 
@@ -2133,6 +2814,7 @@ def setup_readline(hist_dir):
         if hasattr(_rl, "set_auto_history"):
             _rl.set_auto_history(True)
         hf = os.path.join(hist_dir, ".repl_history")
+        _rl.clear_history()
         try:
             _rl.read_history_file(hf)
         except OSError:
@@ -2142,18 +2824,52 @@ def setup_readline(hist_dir):
         return ""
 
 
+def merge_readline_history(path, baseline):
+    """Merge only this REPL's new entries with the latest on-disk history."""
+    current = [_rl.get_history_item(i) for i in range(1, _rl.get_current_history_length() + 1)]
+    added = current[baseline:]
+    if not added:
+        return
+    try:
+        with history_lock(os.path.dirname(path)):
+            _rl.clear_history()
+            try:
+                _rl.read_history_file(path)
+            except FileNotFoundError:
+                pass
+            for line in added:
+                _rl.add_history(line)
+            atomic_private_write(path, _rl.write_history_file)
+    finally:
+        _rl.clear_history()
+        for line in current:
+            _rl.add_history(line)
+
+
 def read_piped_stdin():
     if sys.stdin.isatty():
         return ""
     try:
-        data = sys.stdin.read()
+        data = sys.stdin.read(MAX_STDIN_CHARS + 1)
+        if len(data) > MAX_STDIN_CHARS:
+            raise AIError("stdin exceeds size limit (%d characters)" % MAX_STDIN_CHARS)
     except OSError:
         return ""
     return data.strip()
 
 
 def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
-         hist_dir, initial=None, runner=None):
+         hist_dir, initial=None, runner=None, trust_session=False, no_history=False):
+    token = ACTIVE_USAGE.set(ACTIVE_USAGE.get() or UsageTracker())
+    try:
+        return run_repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
+                        hist_dir, initial, runner, trust_session, no_history)
+    finally:
+        ACTIVE_USAGE.reset(token)
+
+
+def run_repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
+             hist_dir, initial=None, runner=None, trust_session=False, no_history=False):
     if initial is not None:
         model, messages = initial
         messages = list(messages)
@@ -2170,7 +2886,25 @@ def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
             messages.append({"role": "system", "content": system})
     print("dani-ai chat (%s). /help for commands, Tab completes, Ctrl+Shift+V pastes text (Enter to send), Ctrl+V pastes text/images, Ctrl-D to quit."
           % safe_terminal(model))
-    histfile = setup_readline(hist_dir)
+    histfile = setup_readline(hist_dir) if not no_history else ""
+    history_baseline = _rl.get_current_history_length() if histfile and _rl else 0
+    store = SessionStore(hist_dir) if not no_history else None
+    if _rl is not None and no_history:
+        _rl.clear_history()
+        if hasattr(_rl, "set_auto_history"):
+            _rl.set_auto_history(False)
+    if no_history:
+        print("(private mode: no disk history/checkpoints; tools may still write workspace files)")
+    turn_state = "complete"
+
+    def checkpoint(current, state):
+        if no_history:
+            return
+        context = session_context(base, runner.root if runner else Path.cwd())
+        store.checkpoint(model, current, context, state)
+
+    if runner:
+        runner.journal = checkpoint
     try:
         while True:
             try:
@@ -2183,6 +2917,14 @@ def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
                 print("")
                 break
             s = line.strip()
+            if _rl is not None and s.startswith("/"):
+                length = _rl.get_current_history_length()
+                if length and _rl.get_history_item(length) == line:
+                    _rl.remove_history_item(length - 1)
+            if no_history and (s == "/save" or s.startswith("/save ") or
+                               s == "/resume" or s.startswith("/resume ")):
+                print("(save/resume disabled in private mode)")
+                continue
             if not s:
                 continue
             if s in ("/quit", "/exit", "/q"):
@@ -2192,13 +2934,87 @@ def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
                     # Clear visible screen and scrollback, then move to top-left.
                     print("\x1b[2J\x1b[3J\x1b[H", end="", flush=True)
                 messages = [{"role": "system", "content": system}] if system else []
+                turn_state = "complete"
+                store = SessionStore(hist_dir) if not no_history else None
+                if runner:
+                    runner.approved_origins.clear()
+                    runner.close_scans()
+                    runner.begin_file_turn()
                 print("(new session)" if s == "/clear" else "(history cleared)")
+                continue
+            if s in ("/diff", "/undo"):
+                if runner is None or not runner.file_changes:
+                    print("(no tracked file changes in the latest turn)")
+                    continue
+                diff = runner.file_diff()
+                print(safe_terminal(diff[:64000]))
+                if len(diff) > 64000:
+                    print("(diff truncated at 64000 characters)")
+                if s == "/diff":
+                    continue
+                if runner.confirm is None or not runner.confirm("undo", "Restore tracked files from latest turn?\n" + diff[:12000]):
+                    print("(undo declined)")
+                    continue
+                runner.last_undo_paths = []
+                try:
+                    checkpoint(messages, turn_state)
+                    restored = runner.undo_files()
+                    print("(restored %d files; no repo reset)" % len(restored))
+                except (AIError, OSError, ValueError) as e:
+                    print("(undo failed: %s)" % safe_terminal(str(e)))
+                finally:
+                    if runner.last_undo_paths:
+                        # Do not erase tool history: tell the next request what changed.
+                        messages.append({"role": "user", "content":
+                            "Local /undo restored these builtin file changes: " +
+                            json.dumps(runner.last_undo_paths) +
+                            ". Previous tool results for these paths are stale; read files again."})
+                        checkpoint(messages, turn_state)
+                continue
+            if s == "/usage":
+                ACTIVE_USAGE.get().display()
+                continue
+            if s == "/compact" or s.startswith("/compact "):
+                try:
+                    argument = s[len("/compact"):].strip()
+                    candidate, dropped = compact_messages(messages, int(argument) if argument else 4)
+                    if not dropped:
+                        print("(nothing to compact)")
+                        continue
+                    before = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+                    after = len(json.dumps(candidate, ensure_ascii=False).encode("utf-8"))
+                    if not no_history:
+                        # Preserve original under its ID, then publish a new branch.
+                        checkpoint(messages, turn_state)
+                        previous_id = store.session_id
+                        new_store = SessionStore(hist_dir)
+                        new_store.checkpoint(model, candidate,
+                                             session_context(base, runner.root if runner else Path.cwd()), turn_state)
+                        store = new_store
+                        print("(original retained: --continue %s)" % previous_id)
+                    messages = candidate
+                    print("(compacted: dropped %d old turns; %d -> %d JSON bytes; no summary)" %
+                          (dropped, before, after))
+                    if no_history:
+                        print("(private mode: discarded turns have no disk backup)")
+                except (ValueError, AIError, OSError) as e:
+                    print("(compact failed: %s)" % safe_terminal(str(e)))
+                continue
+            if s == "/context":
+                serialized = json.dumps(messages, ensure_ascii=False).encode("utf-8")
+                tool_count = sum(m.get("role") == "tool" for m in messages)
+                print("context: %d messages, %d tool results, %d UTF-8 JSON bytes" %
+                      (len(messages), tool_count, len(serialized)))
+                print("(bytes are not token usage; /usage shows provider-reported counts when available)")
+                if runner:
+                    print("turn budgets: %d tool calls, %d tool-result bytes" %
+                          (runner.max_tool_calls, runner.max_tool_output))
                 continue
             if s in ("/help", "/h", "/?"):
                 print("/reset clear history  /system <text> set system  /model select model  /base <url>")
                 print("/clear clear terminal + new session  /new new session")
                 print("/save [name] (no name = AI title)  /resume [name] (no name = picker)")
-                print("/stream on|off  /color on|off  /quit")
+                print("/stream on|off  /color on|off  /context size  /usage provider counts  /compact [keep=4]  /diff  /undo  /quit")
                 print("/root [directory] show/change tool root (supports ~; no shell needed)")
                 print("/shell on|off enable/disable UNSANDBOXED shell for this session (allows Git commit/push)")
                 print("Commands: /reset /system /model /base /root /save /resume /stream /color /quit")
@@ -2219,9 +3035,14 @@ def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
                     while os.path.exists(os.path.join(hist_dir, safe + ".json")):
                         safe = "%s-%d" % (stem, suffix)
                         suffix += 1
-                if save_session(os.path.join(hist_dir, safe + ".json"), model,
-                                messages):
-                    print("(saved %s)" % safe)
+                with history_lock(hist_dir):
+                    path = os.path.join(hist_dir, safe + ".json")
+                    if os.path.lexists(path):
+                        print("(name already exists; choose a different /save name)")
+                    elif save_session(path, model, messages,
+                                      session_context(base, runner.root if runner else Path.cwd()),
+                                      turn_state, store.session_id):
+                        print("(saved %s)" % safe)
                 continue
             if s == "/resume" or s.startswith("/resume "):
                 name = s[len("/resume"):].strip()
@@ -2248,11 +3069,22 @@ def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
                 if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
                     print("(invalid session name; use letters, numbers, _ or -)")
                     continue
-                loaded_model, loaded_messages = load_session(os.path.join(hist_dir, name + ".json"))
+                loaded_model, loaded_messages = load_session(
+                    os.path.join(hist_dir, name + ".json"),
+                    session_context(base, runner.root if runner else Path.cwd()), trust_session)
                 if loaded_messages is None:
+                    continue
+                if ACTIVE_PROFILE.get() and loaded_model != ACTIVE_PROFILE.get()["model"]:
+                    print("(session model differs from profile; select a matching profile)")
                     continue
                 model = loaded_model or model
                 messages = loaded_messages
+                store = SessionStore(hist_dir)
+                if runner:
+                    runner.approved_origins.clear()
+                    runner.close_scans()
+                    runner.begin_file_turn()
+                turn_state = "complete"
                 system = next((m["content"] for m in messages if m["role"] == "system"), "")
                 count = sum(m["role"] != "system" for m in messages)
                 print("(resumed %s: %d messages, model=%s)" % (name, count, safe_terminal(model)))
@@ -2267,6 +3099,9 @@ def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
                 else:
                     system = ""
                     print("(system cleared)")
+                continue
+            if ACTIVE_PROFILE.get() and (s == "/model" or s.startswith("/model ")):
+                print("(profile pins model/capabilities; restart with another --profile)")
                 continue
             if s == "/model":
                 ids = list_models(base, api_key, timeout)
@@ -2325,6 +3160,11 @@ def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
                             # another filesystem context. Do not let the model
                             # edit the new project based on stale file contents.
                             messages = [{"role": "system", "content": system}] if system else []
+                            turn_state = "complete"
+                            store = SessionStore(hist_dir) if not no_history else None
+                            runner.approved_origins.clear()
+                            runner.close_scans()
+                            runner.begin_file_turn()
                             print("(tool root changed; conversation cleared to avoid stale file context)")
                     except (OSError, ValueError, RuntimeError) as e:
                         print("(cannot change root: %s)" % safe_terminal(str(e)))
@@ -2334,8 +3174,11 @@ def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
             if s == "/base" or s.startswith("/base "):
                 url = s[len("/base"):].strip()
                 if url:
-                    base = url.rstrip("/")
-                    print("(base = %s)" % base)
+                    candidate = url.rstrip("/")
+                    if candidate != base:
+                        print("(changing provider can disclose the API key; restart with --api-base and the matching key)")
+                        continue
+                    print("(base = %s)" % safe_terminal(base))
                 else:
                     print("base = %s" % base)
                 continue
@@ -2359,32 +3202,58 @@ def repl(base, api_key, model, system, timeout, temp, max_tok, stream, color,
                 hint = suggest_command(s)
                 print(hint or "unknown command. /help")
                 continue
+            if runner:
+                runner.begin_file_turn()
+            turn_start = len(messages)
             messages.append({"role": "user", "content": attached_content(s)})
+            turn_state = "in_progress"
+
+            def failed_turn():
+                nonlocal turn_state
+                if any(m.get("role") == "tool" for m in messages[turn_start:]):
+                    turn_state = "interrupted"
+                    print("(interrupted turn retained; tools may have changed files — inspect before retrying)",
+                          file=sys.stderr)
+                    checkpoint(messages, turn_state)
+                else:
+                    del messages[turn_start:]
+                    turn_state = "complete"
+
             try:
                 reply = complete(base, api_key, model, messages, timeout, temp, max_tok,
                                  stream, sys.stdout, color, runner)
             except BrokenPipeError:
-                messages.pop()
+                failed_turn()
                 break
             except (AIError, OSError, ValueError, http.client.HTTPException) as e:
-                messages.pop()  # failed turn must not contaminate future requests
+                failed_turn()
                 print("\ndani-ai: %s" % safe_terminal(str(e)), file=sys.stderr)
                 continue
             except KeyboardInterrupt:
-                messages.pop()
+                failed_turn()
                 print("\n(request cancelled)", file=sys.stderr)
                 continue
             messages.append({"role": "assistant", "content": reply})
+            turn_state = "complete"
+            checkpoint(messages, turn_state)
     finally:
-        if has_content(messages):
+        if runner:
+            runner.journal = None
+            runner.close_scans()
+        if no_history and _rl is not None:
+            _rl.clear_history()
+            if hasattr(_rl, "set_auto_history"):
+                _rl.set_auto_history(True)
+        if has_content(messages) and not no_history:
             try:
-                if save_session(os.path.join(hist_dir, "last.json"), model, messages):
-                    print("(auto-saved, --continue to resume)")
+                checkpoint(messages, turn_state)
+                print("(auto-saved %s; --continue %s to resume; --continue = latest checkpoint)" %
+                      (store.session_id, store.session_id))
             except (BrokenPipeError, OSError):
                 pass
         if histfile and _rl is not None:
             try:
-                atomic_private_write(histfile, _rl.write_history_file)
+                merge_readline_history(histfile, history_baseline)
             except Exception:
                 pass
 
@@ -2398,8 +3267,8 @@ def confirm_tool(name, description):
     except OSError:
         return False
     try:
-        writer.write("\n⚠ dani-ai muon chay custom tool '%s'\n  %s\n  Cho phep? [y/N] "
-                     % (safe_terminal(name), " ".join(safe_terminal(description).split())[:200]))
+        writer.write("\n⚠ dani-ai tool '%s'\n%s\nCho phep? [y/N] "
+                     % (safe_terminal(name), safe_terminal(description)[:12000]))
         writer.flush()
         answer = reader.readline().strip().lower()
         return answer in ("y", "yes")
@@ -2411,10 +3280,37 @@ def confirm_tool(name, description):
 
 
 def main(argv=None):
+    token = ACTIVE_PROFILE.set(None)
+    usage_token = ACTIVE_USAGE.set(UsageTracker())
+    stream_token = STREAM_USAGE.set(False)
+    timeout_token = TURN_TIMEOUT.set(300.0)
+    retry_token = HTTP_RETRIES.set(0)
+    try:
+        return configured_main(argv)
+    finally:
+        HTTP_RETRIES.reset(retry_token)
+        TURN_TIMEOUT.reset(timeout_token)
+        STREAM_USAGE.reset(stream_token)
+        ACTIVE_USAGE.reset(usage_token)
+        ACTIVE_PROFILE.reset(token)
+
+
+def configured_main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    STREAM_USAGE.set(args.stream_usage)
+    if not math.isfinite(args.turn_timeout) or args.turn_timeout <= 0:
+        parser.error("--turn-timeout must be finite and positive")
+    if not 0 <= args.http_retries <= 3:
+        parser.error("--http-retries must be between 0 and 3")
+    TURN_TIMEOUT.set(args.turn_timeout)
+    HTTP_RETRIES.set(args.http_retries)
     if args.timeout <= 0 or not math.isfinite(args.timeout):
         parser.error("--timeout must be finite and positive")
+    if args.no_history and args.cont is not None:
+        parser.error("--no-history cannot be combined with --continue")
+    if args.max_tool_calls <= 0 or args.max_tool_output <= 0:
+        parser.error("tool call/output budgets must be positive")
     if args.max_tokens is not None and args.max_tokens <= 0:
         parser.error("--max-tokens must be positive")
     if args.temperature is not None and not math.isfinite(args.temperature):
@@ -2427,6 +3323,27 @@ def main(argv=None):
     if key_source and key_source != "--api-key" and key_source not in KEY_ENVS:
         _, file_base, file_model, _ = read_key_file()
     base, base_source = resolve_base(args.api_base, key_source, file_base)
+    profile = None
+    if args.profiles_file and not args.profile:
+        parser.error("--profiles-file requires --profile")
+    if args.profile:
+        if args.api_key or args.api_base:
+            parser.error("--profile cannot be combined with --api-key/--api-base")
+        path = args.profiles_file or os.path.join(os.path.dirname(default_system_file()), "ai.profiles.json")
+        profile = load_profile(args.profile, path)
+        if args.model and args.model != profile["model"]:
+            parser.error("--model differs from profile model; select another profile")
+        ACTIVE_PROFILE.set(profile)
+        api_key = os.environ.get(profile["key_env"], "").strip()
+        key_source = profile["key_env"]
+        base, base_source = profile["base"], "profile:" + args.profile
+        if not profile["capabilities"]["tools"]:
+            args.no_tools = True
+        if not profile["capabilities"]["stream"]:
+            args.stream = False
+        if urllib.parse.urlsplit(base).scheme == "http" and urllib.parse.urlsplit(base).hostname not in ("localhost", "127.0.0.1", "::1"):
+            print("dani-ai: WARNING profile uses remote HTTP; key and conversation are not encrypted",
+                  file=sys.stderr)
     system, system_source = resolve_system(args.system, args.system_file)
     hist = history_dir()
     runner = None
@@ -2434,15 +3351,27 @@ def main(argv=None):
         runner = ToolRunner(args.tool_root, args.block_tool, args.tool_blocklist,
                             None if args.no_custom_tools
                             else (args.tools_dir or tools_dir_default()),
-                            None if args.yes_tools else confirm_tool,
-                            allow_shell=args.allow_shell)
+                            (lambda name, description: True) if args.yes_tools else confirm_tool,
+                            allow_shell=args.allow_shell, permissions=args.permissions,
+                            max_tool_calls=args.max_tool_calls, max_tool_output=args.max_tool_output,
+                            include_ignored=args.include_ignored, deny_paths=args.deny_path,
+                            write_paths=args.write_path, allow_domains=args.allow_domain)
     saved_model, saved_msgs = "", None
     if args.cont is not None:
-        name = args.cont if args.cont.endswith(".json") else args.cont + ".json"
-        saved_model, saved_msgs = load_session(os.path.join(hist, name))
+        stem = args.cont[:-5] if args.cont.endswith(".json") else args.cont
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", stem):
+            raise AIError("invalid session name")
+        name = stem + ".json"
+        saved_model, saved_msgs = load_session(
+            os.path.join(hist, name), session_context(base, runner.root if runner else Path.cwd()),
+            args.trust_session)
         if saved_msgs is None:
             return 1
-    if args.model:
+    if profile:
+        model, model_source = profile["model"], "profile:" + args.profile
+        if saved_model and saved_model != model:
+            raise AIError("session model differs from profile; select a matching profile")
+    elif args.model:
         model, model_source = args.model, "--model"
     elif saved_model:
         model, model_source = saved_model, "history"
@@ -2462,12 +3391,20 @@ def main(argv=None):
                                 if runner and runner.schemas else "(disabled)"))
         if runner:
             print("tool_root = %s" % runner.root)
+            print("deny_paths = %s" % json.dumps(runner.deny_paths))
+            print("write_paths = %s" % json.dumps(runner.write_paths))
+            print("allow_domains = %s" % json.dumps(sorted(runner.allow_domains)))
             print("custom_tools = %s" % (", ".join(sorted(runner.custom)) or "(none)"))
             if runner.custom_dir:
                 print("tools_dir = %s" % runner.custom_dir)
             for problem in runner.custom_errors:
                 print("tool_manifest_error = %s" % problem)
             print("blocked_tools = %s" % (", ".join(runner.blocked) or "(none)"))
+        if profile:
+            print("profile = %s" % safe_terminal(profile["name"]))
+            print("capabilities = %s" % json.dumps(profile["capabilities"], sort_keys=True))
+        print("permissions = %s" % args.permissions)
+        print("history = %s" % ("disabled (private)" if args.no_history else "enabled"))
         print("system = %s" % (system_source or "(none)"))
         if system:
             print("--- system preview ---")
@@ -2488,7 +3425,11 @@ def main(argv=None):
         if runner.custom_dir:
             print("manifests: %s" % runner.custom_dir)
         return 0
-    if not api_key:
+    if not api_key and words != ["history"] and profile:
+        print("dani-ai: missing profile API key; set %s (no fallback to other keys)" %
+              profile["key_env"], file=sys.stderr)
+        return 2
+    if not api_key and words != ["history"]:
         print("dani-ai: missing API key. Set DANI_AI_API_KEY (or OPENAI_API_KEY /",
               file=sys.stderr)
         print("  DEEPSEEK_API_KEY), pass --api-key, or save the key as the",
@@ -2507,6 +3448,9 @@ def main(argv=None):
             print(safe_terminal(mid) if sys.stdout.isatty() else mid)
         return 0
     if len(words) == 1 and words[0] == "history":
+        if args.no_history:
+            print("(history disabled in private mode)")
+            return 0
         try:
             files = [f for f in os.listdir(hist) if f.endswith(".json")]
         except OSError:
@@ -2534,13 +3478,13 @@ def main(argv=None):
     if want_chat:
         repl(base, api_key, model, system, args.timeout,
              args.temperature, args.max_tokens, args.stream, render, hist,
-             initial, runner)
+             initial, runner, args.trust_session, args.no_history)
         return 0
     piped = read_piped_stdin()
     if not words and not piped:
         repl(base, api_key, model, system, args.timeout,
              args.temperature, args.max_tokens, args.stream, render, hist,
-             initial, runner)
+             initial, runner, args.trust_session, args.no_history)
         return 0
     prompt = " ".join(words).strip()
     if piped:
@@ -2553,8 +3497,18 @@ def main(argv=None):
         messages = [m for m in messages if m["role"] != "system"]
         messages.insert(0, {"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-    complete(base, api_key, model, messages, args.timeout,
-             args.temperature, args.max_tokens, args.stream, sys.stdout, render, runner)
+    store = SessionStore(hist) if not args.no_history else None
+    if runner:
+        def journal(current, state):
+            if args.no_history:
+                return
+            store.checkpoint(model, current, session_context(base, runner.root), state)
+        runner.journal = journal
+    reply = complete(base, api_key, model, messages, args.timeout,
+                     args.temperature, args.max_tokens, args.stream, sys.stdout, render, runner)
+    if runner and any(m.get("role") == "tool" for m in messages):
+        messages.append({"role": "assistant", "content": reply})
+        runner.journal(messages, "complete")
     return 0
 
 

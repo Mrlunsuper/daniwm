@@ -1,0 +1,26 @@
+name: AI regression tests
+
+on:
+  push:
+    paths: ['dani-ai', 'ai.tools/**', 'test/test-ai*', 'Makefile', '.github/workflows/ai.yml']
+  pull_request:
+    paths: ['dani-ai', 'ai.tools/**', 'test/test-ai*', 'Makefile', '.github/workflows/ai.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: make check-ai
