@@ -30,10 +30,17 @@ static Client *findscratch(void) {
     }
     return NULL;
 }
+/* Store an XID, not a Client pointer: the previous window may close
+ * while the scratchpad is open. Validate its workspace before restoring. */
+static Window scratch_return;
 static void k_scratch(int unused) {
     (void)unused;
     Client *s = findscratch();
-    if (!s) { spawn(scratchcmd); return; }
+    if (!s) {
+        scratch_return = sel && sel->ws == curws ? sel->win : None;
+        spawn(scratchcmd);
+        return;
+    }
     XWindowAttributes a;
     if (!XGetWindowAttributes(dpy, s->win, &a)) { unmanage(s->win); return; }
     if (s->ws == curws && a.map_state == IsViewable) {
@@ -41,12 +48,20 @@ static void k_scratch(int unused) {
         ewmh_set_wm_desktop(s); /* → sticky 0xFFFFFFFF */
         ewmh_client_list(); /* drop parked window from _NET_CLIENT_LIST */
         XUnmapWindow(dpy, s->win);
-        sel = NULL;
-        Client *n = first_in_ws(curws);
+        Client *n = sel != s ? sel : find(scratch_return);
+        if (!n || n->ws != curws) n = first_in_ws(curws);
+        scratch_return = None;
+        sel = n;
+        ws_sel[curws] = n;
         arrange();
         if (n) focus(n);
-        else drawbar();
+        else {
+            XSetInputFocus(dpy, root, RevertToPointerRoot, wm_time());
+            ewmh_active();
+            drawbar();
+        }
     } else {
+        scratch_return = sel && sel != s && sel->ws == curws ? sel->win : None;
         s->ws = curws;
         ewmh_set_wm_desktop(s);
         ewmh_client_list(); /* re-add unparked window to _NET_CLIENT_LIST */

@@ -577,7 +577,25 @@ void unmanage(Window w) {
         drag.mode = 0;
         XUngrabPointer(dpy, CurrentTime);
     }
+    /* Pick the successor before arranging. In monocle, falling back to
+     * the list head AFTER arrange briefly shows the old tile, then swaps
+     * it out again. A closing float should reveal/focus the visible tile
+     * beneath it, not an unrelated hidden client. */
+    Client *next = sel == c ? NULL : sel;
+    if (!next && LAYOUT == L_MONOCLE) {
+        for (Client *t = clients; t; t = t->next)
+            if (t != c && t->ws == curws && t->mon == c->mon &&
+                !t->floating && !t->fullscreen && !t->hidden) {
+                next = t;
+                break;
+            }
+    }
+    if (!next)
+        for (Client *t = clients; t; t = t->next)
+            if (t != c && t->ws == curws) { next = t; break; }
     detach(c);
+    sel = next;
+    ws_sel[curws] = next;
     /* window may already be gone (DestroyNotify): trap logs BadWindow */
     trap_errors(dpy);
     ewmh_set_wm_state(c, WithdrawnState);
@@ -585,9 +603,9 @@ void unmanage(Window w) {
     untrap_errors(dpy);
     free(c);
     ewmh_client_list();
-    arrange();
+    /* focus() already arranges monocle; never expose an interim tile. */
+    if (LAYOUT != L_MONOCLE || !sel) arrange();
     if (sel) focus(sel);
-    else if (first_in_ws(curws)) focus(first_in_ws(curws));
     else {
         XSetInputFocus(dpy, root, RevertToPointerRoot, wm_time());
         ewmh_active();

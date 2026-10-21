@@ -116,6 +116,12 @@ void monocle_mon(int m) {
     Client *show = NULL;
     if (sel && sel->ws == curws && sel->mon == m &&
         !sel->floating && !sel->fullscreen) show = sel;
+    /* Focusing a float (e.g. scratchpad) must keep the current monocle
+     * window underneath it, rather than switching back to the list head. */
+    if (!show)
+        for (Client *c = clients; c; c = c->next)
+            if (c->ws == curws && c->mon == m && !c->floating &&
+                !c->fullscreen && !c->hidden) { show = c; break; }
     if (!show)
         for (Client *c = clients; c; c = c->next)
             if (c->ws == curws && c->mon == m && !c->floating && !c->fullscreen) { show = c; break; }

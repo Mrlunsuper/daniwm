@@ -715,7 +715,9 @@ int main(int argc, char **argv) {
              * Explicit actions still raise: Mod+click/drag, keys, and
              * plain clicks on floats (observed via XI2 raw events in
              * xi2_raw_click, which never touches the app's press). */
-            if (c && c != sel && c->ws == curws) focus_noraise(c);
+            /* A queued crossing can outlive the tile it entered. Never
+             * remap a now-hidden monocle client because of stale hover. */
+            if (c && c != sel && c->ws == curws && !c->hidden) focus_noraise(c);
             break;
         }
         case PropertyNotify: {
