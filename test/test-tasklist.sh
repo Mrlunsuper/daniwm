@@ -68,7 +68,12 @@ assert "B focused after close" "$(active_dec)" -eq "$idB"
 
 # Phase 2: fixed width (bar_task_w=200 -> buttons [~291,491] [491,691]).
 kill $WM 2>/dev/null
-pkill -x xterm 2>/dev/null; sleep 1
+# Kill only clients belonging to this test's Xvfb display, not the user's
+# terminals on other displays (including another test's terminals).
+while read -r id; do
+    [ -n "$id" ] && xdotool windowkill "$id" 2>/dev/null || true
+done < <(xdotool search --class xterm 2>/dev/null || true)
+sleep 1
 printf 'bar_modules = clock\nbar_task_w = 200\n' > "$H/.config/daniwm/config"
 HOME=$H "${WM_BIN:-$TDIR/../daniwm}" &
 WM=$!

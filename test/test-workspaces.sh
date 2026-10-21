@@ -19,6 +19,14 @@ spawnwait() { # spawnwait <n>
     xdotool key super+Return
     i=0; while [ "$(nvis)" -lt "$1" ] && [ $i -lt 40 ]; do sleep 0.5; i=$((i+1)); done
 }
+# X requests are scoped to this test's dedicated DISPLAY, including hidden
+# windows on other workspaces. Never kill by process name.
+close_test_terms() {
+    local id
+    while read -r id; do
+        [ -n "$id" ] && xdotool windowkill "$id" 2>/dev/null || true
+    done < <(xdotool search --class xterm 2>/dev/null || true)
+}
 alive() { # alive <stage>
     if kill -0 $WM 2>/dev/null; then echo "PASS: wm alive ($1)"; else echo "FAIL: wm dead ($1)"; fail=1; fi
 }
@@ -48,7 +56,7 @@ xdotool key super+1; sleep 1
 assert "ws1 empty after move" "$(nvis)" -eq 0
 alive "part1 end"
 kill "$WM"; sleep 1
-pkill -x xterm 2>/dev/null; sleep 1
+close_test_terms; sleep 1
 
 # --- part 2: mod-only config rebuilds default binds on alt ---
 echo "mod = alt" > "$H/.config/daniwm/config"
@@ -67,7 +75,7 @@ xdotool key alt+1; sleep 1
 assert "alt+1 back" "$(nvis)" -eq 1
 alive "part2 end"
 kill "$WM"; sleep 1
-pkill -x xterm 2>/dev/null; sleep 1
+close_test_terms; sleep 1
 
 # --- part 3: reload shrink folds ws3 into last (ws2) ---
 rm "$H/.config/daniwm/config"

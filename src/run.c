@@ -12,10 +12,10 @@
  *
  *   font = SpaceMono Nerd Font:size=11
  *   cols = 5
- *   lines = 2
+ *   lines = 2         (requested grid rows, 1..16; paginated to fit screen)
  *   drun_lines = 12     (rows in the drun list)
  *   width = 800         (drun window width)
- *   cell_w = 136        (fav/power grid cell width)
+ *   cell_w = 136        (fav/power grid cell width, 32..240)
  *   cell_h = 112        (fav/power grid cell height)
  *   input_h = 44        (input band height)
  *   padding = 0         (inner margin, all sides: top/right/bottom/left)
@@ -51,6 +51,11 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <sys/file.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <signal.h>
+#include <time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <wordexp.h>
@@ -78,6 +83,7 @@ typedef struct {
 /* ---- config ---- */
 static char font_pat[256] = "";
 static int opt_cols = 5, opt_lines = 2;
+static int power_cols = -1, power_lines = -1, power_cell_w = -1, power_cell_h = -1;
 #ifdef HAVE_CAIRO
 static char icon_theme[64];
 #endif
@@ -153,13 +159,19 @@ static char *trim(char *s) {
     while (e > s && isspace((unsigned char)e[-1])) *--e = 0;
     return s;
 }
-/* strip a trailing "# comment" from a value; a leading '#' is hex color -> keep */
+/* Comments start at an unquoted # after whitespace. Keep colors, URL
+ * fragments and quoted/escaped command arguments intact. */
 static void strip_comment(char *v) {
-    char *p, *h;
+    int quote = 0;
     if (!v) return;
-    p = (*v == '#') ? v + 1 : v;
-    h = strchr(p, '#');
-    if (h) { *h = 0; trim(v); }
+    for (char *p = v; *p; p++) {
+        if (*p == '\\' && quote != '\'' && p[1]) { p++; continue; }
+        if ((*p == '\'' || *p == '"') && (!quote || quote == *p)) {
+            quote = quote ? 0 : *p;
+        } else if (*p == '#' && !quote && p > v && isspace((unsigned char)p[-1])) {
+            *p = 0; trim(v); break;
+        }
+    }
 }
 static int parse_hex(const char *s, unsigned long *out) {
     char *e = NULL;
@@ -173,13 +185,13 @@ static int parse_hex(const char *s, unsigned long *out) {
     *out = v & 0xffffff;
     return 1;
 }
-static void push_entry_vec(Entry **vec, unsigned *n, unsigned *cap,
+static int push_entry_vec(Entry **vec, unsigned *n, unsigned *cap,
         char *name, char *exec, char *icon) {
     Entry *nv;
     if (*n == *cap) {
         unsigned nc = *cap ? *cap * 2 : 16;
         nv = realloc(*vec, nc * sizeof(**vec));
-        if (!nv) { free(name); free(exec); free(icon); return; }
+        if (!nv) { free(name); free(exec); free(icon); return 0; }
         *vec = nv; *cap = nc;
     }
     (*vec)[*n].name = name;
@@ -189,6 +201,7 @@ static void push_entry_vec(Entry **vec, unsigned *n, unsigned *cap,
     (*vec)[*n].hist = 0;
     (*vec)[*n].score = 0;
     (*n)++;
+    return 1;
 }
 /* triple "icon;name;cmd": split only on the first 2 ';'. 1 ';' -> empty icon. */
 static int parse_triple(const char *val, char **icon, char **name, char **cmd) {
@@ -315,6 +328,57 @@ static void load_wm_theme(void) {
     }
     fclose(f);
 }
+static int valid_run_number(const char *key, const char *value) {
+    static const struct { const char *key; long min, max; } limits[] = {
+        { "power_cols", 1, 9 },
+        { "power_lines", 1, 16 },
+        { "power_cell_w", 32, 240 },
+        { "power_cell_h", 48, 200 },
+        { "cols", 1, 9 },
+        { "lines", 1, 16 },
+        { "drun_lines", 3, 16 },
+        { "width", 320, 1200 },
+        { "cell_w", 32, 240 },
+        { "cell_h", 48, 200 },
+        { "input_h", 24, 96 },
+        { "footer_h", 20, 96 },
+        { "opacity", 1, 100 },
+        { "drun_icons", 0, 1 },
+        { "row_gap", 0, 32 },
+        { "padding", 0, 64 },
+        { "padding_top", 0, 64 },
+        { "padding_right", 0, 64 },
+        { "padding_bottom", 0, 64 },
+        { "padding_left", 0, 64 },
+        { "drun_padding", 0, 64 },
+        { "drun_padding_top", 0, 64 },
+        { "drun_padding_right", 0, 64 },
+        { "drun_padding_bottom", 0, 64 },
+        { "drun_padding_left", 0, 64 },
+        { "grid_padding", 0, 64 },
+        { "grid_padding_top", 0, 64 },
+        { "grid_padding_right", 0, 64 },
+        { "grid_padding_bottom", 0, 64 },
+        { "grid_padding_left", 0, 64 },
+        { "cell_gap", 0, 64 },
+        { "cell_gap_x", 0, 64 },
+        { "cell_gap_y", 0, 64 },
+        { "margin", 0, 64 },
+        { "text_pad", 0, 64 },
+    };
+    for (size_t i = 0; i < sizeof(limits) / sizeof(limits[0]); i++) {
+        if (strcmp(key, limits[i].key)) continue;
+        char *end;
+        errno = 0;
+        long n = strtol(value, &end, 10);
+        if (errno || end == value || *end || n < limits[i].min || n > limits[i].max) {
+            fprintf(stderr, "dani-run: invalid %s='%s' (expected %ld..%ld); keeping default\n",
+                    key, value, limits[i].min, limits[i].max);
+            return 0;
+        }
+    }
+    return 1;
+}
 static void load_run_config(void) {
     char path[1024], line[1024];
     FILE *f;
@@ -332,14 +396,23 @@ static void load_run_config(void) {
         k = trim(s); vv = trim(eq + 1);
         for (char *p = k; *p; p++) *p = (char)tolower((unsigned char)*p);
         strip_comment(vv);
+        if (!valid_run_number(k, vv)) continue;
         if (!strcmp(k, "font")) {
             if (*vv) snprintf(font_pat, sizeof(font_pat), "%.255s", vv);
+        } else if (!strcmp(k, "power_cols")) {
+            power_cols = (int)strtol(vv, NULL, 10);
+        } else if (!strcmp(k, "power_lines")) {
+            power_lines = (int)strtol(vv, NULL, 10);
+        } else if (!strcmp(k, "power_cell_w")) {
+            power_cell_w = (int)strtol(vv, NULL, 10);
+        } else if (!strcmp(k, "power_cell_h")) {
+            power_cell_h = (int)strtol(vv, NULL, 10);
         } else if (!strcmp(k, "cols")) {
             v = strtol(vv, NULL, 10);
             if (v >= 1 && v <= 9) opt_cols = (int)v;
         } else if (!strcmp(k, "lines")) {
             v = strtol(vv, NULL, 10);
-            if (v >= 1 && v <= 4) opt_lines = (int)v;
+            if (v >= 1 && v <= 16) opt_lines = (int)v;
         } else if (!strcmp(k, "drun_lines")) {
             v = strtol(vv, NULL, 10);
             if (v >= 3 && v <= 16) list_rows = (int)v;
@@ -348,10 +421,10 @@ static void load_run_config(void) {
             if (v >= 320 && v <= 1200) opt_width = (int)v;
         } else if (!strcmp(k, "cell_w")) {
             v = strtol(vv, NULL, 10);
-            if (v >= 80 && v <= 240) cell_w = (int)v;
+            if (v >= 32 && v <= 240) cell_w = (int)v;
         } else if (!strcmp(k, "cell_h")) {
             v = strtol(vv, NULL, 10);
-            if (v >= 64 && v <= 200) cell_h = (int)v;
+            if (v >= 48 && v <= 200) cell_h = (int)v;
         } else if (!strcmp(k, "drun_icons")) {
             long iv = strtol(vv, NULL, 10);
             opt_drun_icons = iv != 0;
@@ -424,6 +497,8 @@ static void load_run_config(void) {
         } else if (!strcmp(k, "text_pad")) {
             v = strtol(vv, NULL, 10);
             if (v >= 0 && v <= 64) opt_text_pad = (int)v;
+        } else if (!strcmp(k, "footer_h")) {
+            footer_h = (int)strtol(vv, NULL, 10);
         } else if (!strcmp(k, "input_h")) {
             v = strtol(vv, NULL, 10);
             if (v >= 24 && v <= 96) input_h = (int)v;
@@ -463,101 +538,231 @@ static void load_run_config(void) {
 }
 
 /* ============ .desktop scan (drun) ============ */
-static char *clean_exec(const char *src) {
-    /* drop field codes %f/%u/... (%% -> %), trim extra whitespace */
-    size_t n = strlen(src);
-    char *out = malloc(n + 1), *d;
-    size_t i = 0;
+/* Desktop Exec is NOT shell syntax. Parse into literal arguments, expand
+ * supported field codes, then serialize with single quotes for launch().
+ * No variable, tilde, glob or command substitution can survive serialization. */
+typedef struct { char **v; size_t n, cap; } Args;
+static void args_free(Args *a) {
+    for (size_t i = 0; i < a->n; i++) free(a->v[i]);
+    free(a->v); memset(a, 0, sizeof(*a));
+}
+static int args_add(Args *a, const char *s) {
+    if (a->n + 1 >= a->cap) {
+        size_t cap = a->cap ? a->cap * 2 : 8;
+        char **v = realloc(a->v, cap * sizeof(*v));
+        if (!v) return 0;
+        a->v = v; a->cap = cap;
+    }
+    char *copy = xstrdup(s);
+    if (!copy) return 0;
+    a->v[a->n++] = copy; a->v[a->n] = NULL;
+    return 1;
+}
+static char *desktop_unescape(const char *src) {
+    char *out = malloc(strlen(src) + 1), *d;
     if (!out) return NULL;
     d = out;
-    while (src[i]) {
-        if (src[i] == '%' && src[i + 1]) {
-            if (src[i + 1] == '%') { *d++ = '%'; i += 2; }
-            else i += 2;
-        } else *d++ = src[i++];
+    for (; *src; src++) {
+        if (*src == '\\' && src[1]) {
+            src++;
+            switch (*src) {
+            case 's': *d++ = ' '; break;
+            case 'n': *d++ = '\n'; break;
+            case 't': *d++ = '\t'; break;
+            case 'r': *d++ = '\r'; break;
+            case '\\': *d++ = '\\'; break;
+            default: *d++ = '\\'; *d++ = *src; break;
+            }
+        } else *d++ = *src;
     }
     *d = 0;
     return out;
 }
-static void scan_dir(const char *dir) {
-    DIR *dp = opendir(dir);
-    struct dirent *de;
-    if (!dp) return;
-    while ((de = readdir(dp))) {
-        size_t L = strlen(de->d_name);
-        char path[2048], line[1024];
-        FILE *f;
-        char *name_plain = NULL, *name_any = NULL, *exec = NULL, *icon_name = NULL;
-        int terminal = 0, hidden = 0;
-        if (L < 9 || strcmp(de->d_name + L - 8, ".desktop")) continue;
-        snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
-        f = fopen(path, "r");
-        if (!f) continue;
-        while (fgets(line, sizeof(line), f)) {
-            char *s = trim(line);
-            if (!*s || *s == '#' || *s == '[') continue;
-            if (!strncmp(s, "Name=", 5) && !name_plain) name_plain = xstrdup(trim(s + 5));
-            else if (!strncmp(s, "Name[", 5) && !name_any) {
-                char *rb = strchr(s, '=');
-                if (rb && *(trim(rb + 1))) name_any = xstrdup(trim(rb + 1));
-            } else if (!strncmp(s, "Exec=", 5) && !exec) exec = xstrdup(trim(s + 5));
-            else if (!strncmp(s, "Icon=", 5) && !icon_name) icon_name = xstrdup(trim(s + 5));
-            else if (!strncmp(s, "Terminal=", 9))
-                terminal = !strcasecmp(trim(s + 9), "true");
-            else if (!strncmp(s, "NoDisplay=", 10) || !strncmp(s, "Hidden=", 7))
-                if (!strcasecmp(trim(strchr(s, '=') + 1), "true")) hidden = 1;
+static char *desktop_exec(const char *src, const char *name,
+                          const char *path, const char *icon) {
+    Args tokens = {0}, args = {0};
+    char *raw = desktop_unescape(src), *buf = NULL, *result = NULL;
+    if (!raw) return NULL;
+    buf = malloc(strlen(raw) + 1);
+    if (!buf) goto done;
+    const char *p = raw;
+    while (*p) {
+        while (isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        size_t k = 0;
+        int quoted = 0;
+        while (*p && (quoted || !isspace((unsigned char)*p))) {
+            if (*p == '"') { quoted = !quoted; p++; }
+            else if (*p == '\\' && p[1]) { p++; buf[k++] = *p++; }
+            else buf[k++] = *p++;
         }
-        fclose(f);
-        {
-            char *nm = name_plain ? name_plain : name_any;
-            name_plain = NULL; name_any = NULL;
-            if (!nm || !*nm || !exec || !*exec || hidden) {
-                free(nm); free(exec); free(icon_name);
-                continue;
+        if (quoted) goto done;
+        buf[k] = 0;
+        if (!args_add(&tokens, buf)) goto done;
+    }
+    for (size_t i = 0; i < tokens.n; i++) {
+        const char *t = tokens.v[i];
+        if (!strcmp(t, "%c")) { if (!args_add(&args, name)) goto done; }
+        else if (!strcmp(t, "%k")) { if (!args_add(&args, path)) goto done; }
+        else if (!strcmp(t, "%i")) {
+            if (icon && *icon && (!args_add(&args, "--icon") || !args_add(&args, icon))) goto done;
+        } else if (!strcmp(t, "%f") || !strcmp(t, "%F") ||
+                   !strcmp(t, "%u") || !strcmp(t, "%U") ||
+                   !strcmp(t, "%d") || !strcmp(t, "%D") ||
+                   !strcmp(t, "%n") || !strcmp(t, "%N") ||
+                   !strcmp(t, "%v") || !strcmp(t, "%m")) {
+            /* No files/URLs supplied by this launcher; obsolete fields omitted. */
+        } else {
+            size_t k = 0;
+            for (size_t j = 0; t[j]; j++) {
+                if (t[j] == '%') {
+                    if (t[j + 1] != '%') goto done; /* invalid/embedded field */
+                    j++;
+                }
+                buf[k++] = t[j];
             }
-            /* dedupe by name (user dir is scanned first, so it wins) */
-            {
-                int dup = 0;
-                for (unsigned i = 0; i < nentries; i++)
-                    if (!strcmp(entries[i].name, nm)) { dup = 1; break; }
-                if (dup) { free(nm); free(exec); free(icon_name); continue; }
+            buf[k] = 0;
+            if (!args_add(&args, buf)) goto done;
+        }
+    }
+    if (!args.n || !*args.v[0]) goto done;
+    size_t size = 1;
+    for (size_t i = 0; i < args.n; i++) size += strlen(args.v[i]) * 4 + 3;
+    result = malloc(size);
+    if (result) {
+        char *d = result;
+        for (size_t i = 0; i < args.n; i++) {
+            if (i) *d++ = ' ';
+            *d++ = '\'';
+            for (const char *q = args.v[i]; *q; q++) {
+                if (*q == '\'') { memcpy(d, "'\\''", 4); d += 4; }
+                else *d++ = *q;
             }
-            {
-                char *ce = clean_exec(exec);
-                free(exec);
-                if (!ce || !*trim(ce)) { free(nm); free(ce); free(icon_name); continue; }
-                {
-                    char *t = trim(ce);
-                    char *final_exec;
-                    if (terminal) {
-                        /* wrap in terminal: ${TERMINAL:-alacritty} -e <exec> */
-                        const char *te = getenv("TERMINAL");
-                        if (!te || !*te) te = "alacritty";
-                        final_exec = malloc(strlen(te) + 4 + strlen(t) + 1);
-                        if (final_exec) sprintf(final_exec, "%s -e %s", te, t);
-                        free(ce);
-                    } else {
-                        final_exec = xstrdup(t);
-                        free(ce);
-                    }
-                    if (!final_exec) { free(nm); free(icon_name); continue; }
-                    push_entry_vec(&entries, &nentries, &capentries, nm, final_exec,
-                        icon_name ? icon_name : xstrdup(""));
-                    entries[nentries - 1].terminal = terminal;
+            *d++ = '\'';
+        }
+        *d = 0;
+    }
+done:
+    free(buf); free(raw); args_free(&tokens); args_free(&args);
+    return result;
+}
+
+static Args desktop_ids;
+/* IDs are reserved before filtering so a user's Hidden=true masks system apps. */
+static int reserve_desktop_id(const char *id) {
+    for (size_t i = 0; i < desktop_ids.n; i++)
+        if (!strcmp(desktop_ids.v[i], id)) return 0;
+    return args_add(&desktop_ids, id);
+}
+static void scan_desktop(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char *line = NULL, *name = NULL, *localized = NULL, *exec = NULL, *icon = NULL;
+    size_t cap = 0;
+    int section = 0, application = 0, terminal = 0, hidden = 0, best_locale = 0;
+    char locale[128];
+    snprintf(locale, sizeof(locale), "%s", setlocale(LC_MESSAGES, NULL));
+    /* Desktop locale keys omit the codeset, retaining an optional modifier. */
+    char *dot = strchr(locale, '.');
+    if (dot) {
+        char *modifier = strchr(dot, '@');
+        if (modifier) memmove(dot, modifier, strlen(modifier) + 1);
+        else *dot = 0;
+    }
+    while (getline(&line, &cap, f) >= 0) {
+        char *s = trim(line);
+        if (*s == '[') { section = !strcmp(s, "[Desktop Entry]"); continue; }
+        if (!section || !*s || *s == '#') continue;
+        char *eq = strchr(s, '=');
+        if (!eq) continue;
+        *eq++ = 0;
+        char *key = trim(s), *value = trim(eq);
+        if (!strcmp(key, "Name") && !name) name = desktop_unescape(value);
+        else if (!strncmp(key, "Name[", 5)) {
+            char *end = strchr(key + 5, ']');
+            if (end && !end[1]) {
+                *end = 0;
+                char *tag = key + 5;
+                size_t language = strcspn(locale, "_@");
+                int rank = !strcmp(tag, locale) ? 3 :
+                    (strlen(tag) == language && !strncmp(tag, locale, language) ? 1 : 0);
+                /* country fallback for language_COUNTRY@modifier */
+                char *modifier = strchr(locale, '@');
+                if (modifier && strlen(tag) == (size_t)(modifier - locale) &&
+                    !strncmp(tag, locale, (size_t)(modifier - locale))) rank = 2;
+                if (rank > best_locale) {
+                    char *copy = desktop_unescape(value);
+                    if (copy) { free(localized); localized = copy; best_locale = rank; }
                 }
             }
+        } else if (!strcmp(key, "Exec") && !exec) exec = xstrdup(value);
+        else if (!strcmp(key, "Icon") && !icon) icon = desktop_unescape(value);
+        else if (!strcmp(key, "Type")) application = !strcmp(value, "Application");
+        else if (!strcmp(key, "Terminal")) terminal = !strcasecmp(value, "true");
+        else if (!strcmp(key, "Hidden") || !strcmp(key, "NoDisplay"))
+            hidden |= !strcasecmp(value, "true");
+    }
+    free(line); fclose(f);
+    if (localized) { free(name); name = localized; }
+    if (application && !hidden && name && *name && exec && *exec) {
+        char *ce = desktop_exec(exec, name, path, icon);
+        if (ce && terminal) {
+            const char *te = getenv("TERMINAL");
+            if (!te || !*te) te = "alacritty";
+            size_t size = strlen(te) + strlen(ce) + 5;
+            char *wrapped = malloc(size);
+            if (wrapped) snprintf(wrapped, size, "%s -e %s", te, ce);
+            free(ce); ce = wrapped;
+        }
+        if (ce) {
+            /* push owns the strings on success and failure. */
+            if (push_entry_vec(&entries, &nentries, &capentries, name, ce, icon))
+                entries[nentries - 1].terminal = terminal;
+            name = icon = NULL;
+        }
+    }
+    free(name); free(exec); free(icon);
+}
+static void scan_dir(const char *dir, const char *prefix, unsigned depth) {
+    if (depth > 32) return;
+    DIR *dp = opendir(dir);
+    if (!dp) return;
+    struct dirent *de;
+    while ((de = readdir(dp))) {
+        if (de->d_name[0] == '.') continue;
+        char path[4096], id[4096];
+        if (snprintf(path, sizeof(path), "%s/%s", dir, de->d_name) >= (int)sizeof(path) ||
+            snprintf(id, sizeof(id), "%s%s", prefix, de->d_name) >= (int)sizeof(id)) continue;
+        struct stat st;
+        if (lstat(path, &st)) continue;
+        if (S_ISDIR(st.st_mode)) {
+            size_t len = strlen(id);
+            if (len + 1 < sizeof(id)) { id[len] = '-'; id[len + 1] = 0; scan_dir(path, id, depth + 1); }
+        } else {
+            size_t len = strlen(id);
+            if (len > 8 && !strcmp(id + len - 8, ".desktop") && reserve_desktop_id(id))
+                scan_desktop(path);
         }
     }
     closedir(dp);
 }
 static void load_drun(void) {
-    char user[1024];
-    const char *home = getenv("HOME");
-    if (home && *home) {
-        snprintf(user, sizeof(user), "%s/.local/share/applications", home);
-        scan_dir(user);
+    char path[4096];
+    const char *home = getenv("HOME"), *data = getenv("XDG_DATA_HOME");
+    if (data && *data) {
+        if (snprintf(path, sizeof(path), "%s/applications", data) < (int)sizeof(path)) scan_dir(path, "", 0);
+    } else if (home && *home) {
+        if (snprintf(path, sizeof(path), "%s/.local/share/applications", home) < (int)sizeof(path)) scan_dir(path, "", 0);
     }
-    scan_dir("/usr/share/applications");
+    const char *dirs = getenv("XDG_DATA_DIRS");
+    char *copy = xstrdup(dirs && *dirs ? dirs : "/usr/local/share:/usr/share");
+    if (copy) {
+        char *save = NULL;
+        for (char *d = strtok_r(copy, ":", &save); d; d = strtok_r(NULL, ":", &save))
+            if (*d == '/' && snprintf(path, sizeof(path), "%s/applications", d) < (int)sizeof(path)) scan_dir(path, "", 0);
+        free(copy);
+    }
+    args_free(&desktop_ids);
 }
 
 /* ============ history (~/.cache/dani-run/history) ============ */
@@ -593,9 +798,24 @@ static void hist_load(void) {
         nm = trim(tab + 1);
         if (c <= 0 || !*nm) continue;
         for (unsigned i = 0; i < n; i++)
-            if (!strcmp(vec[i].name, nm) && vec[i].hist == 0) { vec[i].hist = (int)c; break; }
+            if (!strcmp(vec[i].name, nm) && vec[i].hist == 0) { vec[i].hist = c > INT_MAX ? INT_MAX : (int)c; break; }
     }
     fclose(f);
+}
+static int make_parents(const char *path) {
+    char *dir = xstrdup(path);
+    if (!dir) return 0;
+    for (char *p = dir + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = 0;
+        if (mkdir(dir, 0700) && errno != EEXIST) { free(dir); return 0; }
+        *p = '/';
+    }
+    free(dir);
+    return 1;
+}
+static int hist_count(long n) {
+    return n > INT_MAX ? INT_MAX : n > 0 ? (int)n : 0;
 }
 static void hist_save(const char *name) {
     char path[1024], line[512];
@@ -604,7 +824,13 @@ static void hist_save(const char *name) {
     struct { char *k; int c; } map[HIST_MAX + 8];
     int nm = 0;
     hist_path(path, sizeof(path));
-    if (!path[0] || !name) return;
+    if (!path[0] || !name || strchr(name, '\n') || strchr(name, '\t')) return;
+    if (!make_parents(path)) return;
+    char lockpath[1100];
+    snprintf(lockpath, sizeof(lockpath), "%s.lock", path);
+    int lockfd = open(lockpath, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (lockfd < 0) return;
+    if (flock(lockfd, LOCK_EX)) { close(lockfd); return; }
     f = fopen(path, "r");
     if (f) {
         while (nm < HIST_MAX && fgets(line, sizeof(line), f)) {
@@ -615,7 +841,7 @@ static void hist_save(const char *name) {
             c = strtol(trim(line), NULL, 10);
             if (c > 0 && *trim(tab + 1)) {
                 map[nm].k = xstrdup(trim(tab + 1));
-                map[nm].c = (int)c;
+                map[nm].c = hist_count(c);
                 if (map[nm].k) nm++;
             }
         }
@@ -624,35 +850,28 @@ static void hist_save(const char *name) {
     {
         int found = 0;
         for (int i = 0; i < nm; i++)
-            if (!strcmp(map[i].k, name)) { map[i].c++; found = 1; break; }
+            if (!strcmp(map[i].k, name)) { if (map[i].c < INT_MAX) map[i].c++; found = 1; break; }
         if (!found && nm < HIST_MAX) {
             map[nm].k = xstrdup(name);
             map[nm].c = 1;
             if (map[nm].k) nm++;
         }
-        /* mkdir -p ~/.cache/dani-run */
-        {
-            char dir[1024];
-            snprintf(dir, sizeof(dir), "%.1000s", path);
-            {
-                char *sl = strrchr(dir, '/');
-                if (sl) {
-                    *sl = 0;
-                    mkdir(dir, 0755); /* parent ~/.cache thuong da co */
-                }
-            }
-        }
-        f = fopen(path, "w");
+        char tmp[1100];
+        snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path);
+        int fd = mkstemp(tmp);
+        f = fd >= 0 ? fdopen(fd, "w") : NULL;
         if (f) {
-            for (int i = 0; i < nm; i++) {
-                fprintf(f, "%d\t%s\n", map[i].c, map[i].k);
-                free(map[i].k);
-            }
-            fclose(f);
-        } else {
-            for (int i = 0; i < nm; i++) free(map[i].k);
-        }
+            for (int i = 0; i < nm; i++) fprintf(f, "%d\t%s\n", map[i].c, map[i].k);
+            int ok = !ferror(f);
+            if (fflush(f) || fsync(fd)) ok = 0;
+            if (fclose(f)) ok = 0;
+            if (ok) { if (rename(tmp, path)) unlink(tmp); }
+            else unlink(tmp);
+        } else if (fd >= 0) { close(fd); unlink(tmp); }
+        for (int i = 0; i < nm; i++) free(map[i].k);
     }
+    flock(lockfd, LOCK_UN);
+    close(lockfd);
 }
 
 /* ============ calc: recursive-descent (+ - * / % ^, (), funcs, pi/e) ============ */
@@ -708,12 +927,12 @@ static double pe_primary(PExpr *x) {
     return v;
 }
 static double pe_pow(PExpr *x) {
-    double b = pe_unary(x);
+    double b = pe_primary(x);
     pe_skip(x);
     if (*x->p == '^') {
         double e;
         x->p++;
-        e = pe_pow(x); /* right-assoc: 2^3^2 = 2^(3^2) */
+        e = pe_unary(x); /* right-assoc, including negative exponents */
         b = pow(b, e);
         if (!isfinite(b)) x->ok = 0;
     }
@@ -723,21 +942,21 @@ static double pe_unary(PExpr *x) {
     pe_skip(x);
     if (*x->p == '-') { x->p++; return -pe_unary(x); }
     if (*x->p == '+') { x->p++; return pe_unary(x); }
-    return pe_primary(x);
+    return pe_pow(x);
 }
 static double pe_term(PExpr *x) {
-    double v = pe_pow(x);
+    double v = pe_unary(x);
     for (;;) {
         pe_skip(x);
-        if (*x->p == '*') { x->p++; v *= pe_pow(x); }
+        if (*x->p == '*') { x->p++; v *= pe_unary(x); }
         else if (*x->p == '/') {
             double d;
-            x->p++; d = pe_pow(x);
+            x->p++; d = pe_unary(x);
             if (d == 0) { x->ok = 0; return 0; }
             v /= d;
         } else if (*x->p == '%') {
             double d;
-            x->p++; d = pe_pow(x);
+            x->p++; d = pe_unary(x);
             if (d == 0) { x->ok = 0; return 0; }
             v = fmod(v, d);
         } else break;
@@ -763,7 +982,7 @@ static int calc_eval(const char *s, double *out) {
     if (!s || !*s) return 0;
     v = pe_expr(&x);
     pe_skip(&x);
-    if (!x.ok || *x.p) return 0;
+    if (!x.ok || *x.p || !isfinite(v)) return 0;
     if (v == 0) v = 0; /* -0 -> 0 */
     *out = v;
     return 1;
@@ -771,8 +990,9 @@ static int calc_eval(const char *s, double *out) {
 static void calc_str(double v, char *out, size_t n) {
     snprintf(out, n, "%.10g", v);
 }
-/* Copy the result to the clipboard (xclip, xsel fallback). Always returns (never blocks). */
-static void to_clipboard(const char *s) {
+/* Detached worker owns bounded helper waits; UI never waits for clipboard. */
+static void clipboard_worker(const char *s) {
+    signal(SIGPIPE, SIG_IGN);
     static const char *tools[][4] = {
         { "xclip", "-selection", "clipboard", NULL },
         { "xsel", "--clipboard", "--input", NULL },
@@ -785,12 +1005,13 @@ static void to_clipboard(const char *s) {
         if (pid == -1) { close(pfd[0]); close(pfd[1]); return; }
         if (pid == 0) {
             if (dpy) close(ConnectionNumber(dpy));
-            setsid();
+            setpgid(0, 0);
             dup2(pfd[0], 0);
             close(pfd[0]); close(pfd[1]);
             execvp(tools[t][0], (char *const *)tools[t]);
             _exit(127);
         }
+        setpgid(pid, pid);
         close(pfd[0]);
         {
             ssize_t w = write(pfd[1], s, strlen(s));
@@ -798,12 +1019,42 @@ static void to_clipboard(const char *s) {
         }
         close(pfd[1]);
         {
-            int st;
-            pid_t w = waitpid(pid, &st, 0);
-            if (w == pid && WIFEXITED(st) && WEXITSTATUS(st) != 127) return; /* ok */
+            int st = 0;
+            pid_t w = 0;
+            for (int i = 0; i < 100; i++) {
+                w = waitpid(pid, &st, WNOHANG);
+                if (w == pid || (w < 0 && errno != EINTR)) break;
+                usleep(10000);
+            }
+            if (w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 0) return;
+            if (w == 0) {
+                kill(-pid, SIGKILL);
+                while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+            }
         }
-        /* 127 = tool missing: try the next one */
+        /* Missing, failed or timed out: try the next tool. */
     }
+}
+static void to_clipboard(const char *s) {
+    pid_t pid = fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        if (dpy) close(ConnectionNumber(dpy));
+        dpy = NULL;
+        setsid();
+        pid_t worker = fork();
+        if (worker < 0) _exit(1);
+        if (worker > 0) _exit(0);
+        /* Do not keep caller stdout/stderr pipes open after UI exits. */
+        int nullfd = open("/dev/null", O_RDWR);
+        if (nullfd >= 0) {
+            dup2(nullfd, 0); dup2(nullfd, 1); dup2(nullfd, 2);
+            if (nullfd > 2) close(nullfd);
+        }
+        clipboard_worker(s);
+        _exit(0);
+    }
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
 }
 
 /* ============ fuzzy: case-insensitive subsequence, word-start > mid-word ============ */
@@ -994,6 +1245,11 @@ static void utf8_pop(char *s) {
 }
 /* truncate a label to cell_w: trailing "...", never split a UTF-8 char */
 static void ellipsize(const char *src, int maxw, char *out, size_t n) {
+    if (maxw < runs_w(NULL, "...")) {
+        snprintf(out, n, "%s", src);
+        while (*out && runs_w(NULL, out) > maxw) utf8_pop(out);
+        return;
+    }
     if (runs_w(NULL, src) <= maxw) { snprintf(out, n, "%s", src); return; }
     {
         char tmp[160];
@@ -1477,6 +1733,32 @@ static const char *help_hint(void) {
     return "\xe2\x86\x91\xe2\x86\x93 move \xc2\xb7 \xe2\x86\xb5 run \xc2\xb7 esc quit";
 }
 
+/* One hit-test for hover and clicks; reject bands, margins and gaps before
+ * division (negative division truncates to zero in C). */
+static int hit_entry(int mx, int my) {
+    if (mx < 0 || mx >= WW || my < input_h + opt_pad_t ||
+        my >= HH - footer_h - opt_pad_b || mode == MODE_CALC) return -1;
+    int idx;
+    if (mode == MODE_DRUN) {
+        if (mx < opt_margin + opt_pad_l || mx >= WW - opt_margin - opt_pad_r) return -1;
+        int dy = my - input_h - opt_pad_t;
+        int r = dy / row_h, y = dy % row_h;
+        if (r >= list_rows || y >= row_h - opt_row_gap) return -1;
+        idx = scroll + r;
+    } else {
+        int gw = opt_cols * cell_w + opt_cell_gap_x * (opt_cols - 1);
+        int gx0 = opt_pad_l + (WW - opt_pad_l - opt_pad_r - gw) / 2;
+        int dx = mx - gx0, dy = my - input_h - opt_pad_t;
+        if (dx < 0 || dy < 0) return -1;
+        int cx = dx / (cell_w + opt_cell_gap_x), cy = dy / (cell_h + opt_cell_gap_y);
+        if (cx >= opt_cols || cy >= opt_lines ||
+            dx % (cell_w + opt_cell_gap_x) >= cell_w ||
+            dy % (cell_h + opt_cell_gap_y) >= cell_h) return -1;
+        idx = scroll + cy * opt_cols + cx;
+    }
+    return idx >= 0 && idx < nfilt ? idx : -1;
+}
+
 /* ============ draw ============ */
 static void draw(void) {
     unsigned n;
@@ -1516,7 +1798,7 @@ static void draw(void) {
         for (int r = 0; r < list_rows; r++) {
             int idx = scroll + r;
             int y = input_h + opt_pad_t + r * row_h;
-            int ty = y + row_h / 2 + (f_main ? (f_main->ascent - f_main->descent) / 2 : 5);
+            int ty = y + (row_h - opt_row_gap) / 2 + (f_main ? (f_main->ascent - f_main->descent) / 2 : 5);
             char label[180];
             int pos[MAXQ];
             int npos = 0;
@@ -1539,21 +1821,22 @@ static void draw(void) {
                 if (qlen > 0) { match_pos(label, query, pos, qlen); npos = qlen; }
                 /* pill first: it is opaque and would erase anything under it */
                 if (idx == sel)
-                    pill(opt_margin + opt_pad_l, y + opt_row_gap / 2,
+                    pill(opt_margin + opt_pad_l, y,
                          WW - 2 * opt_margin - opt_pad_l - opt_pad_r,
                          row_h - opt_row_gap, 0, c_sel.pixel, c_selout.pixel);
                 if (icol > 0) {
 #ifdef HAVE_CAIRO
                     if (isf) {
                         unsigned long bg = (idx == sel) ? c_sel.pixel : T_BG;
-                        draw_icon_img(isf, 30 + (icol - ICONPIX) / 2, y + (row_h - ICONPIX) / 2, bg);
+                        draw_icon_img(isf, opt_margin + opt_pad_l + opt_text_pad + (icol - ICONPIX) / 2, y + (row_h - opt_row_gap - ICONPIX) / 2, bg);
                     } else
 #endif
                     {
                         first_letter(vec[filt[idx]].name, fl, sizeof(fl));
                         ic = pick_icon(icon_glyph(vec[filt[idx]].icon), fl);
                         iw = runs_w(f_main, ic);
-                        runs_draw(f_main, idx == sel ? &c_fg : &c_acc, 30 + (icol - iw) / 2, ty, ic);
+                        runs_draw(f_main, idx == sel ? &c_fg : &c_acc,
+                            opt_margin + opt_pad_l + opt_text_pad + (icol - iw) / 2, ty, ic);
                     }
                 }
                 draw_match_text(&c_fg, &c_acc, tx, ty, label, npos ? pos : NULL, npos);
@@ -1596,16 +1879,23 @@ static void draw(void) {
             }
             first_letter(vec[filt[idx]].name, fl, sizeof(fl));
             ic = pick_icon(vec[filt[idx]].icon, fl);
-            iw = runs_w(f_big, ic);
+            XftFont *icon_font = cell_w < 80 || cell_h < 80 ? f_main : f_big;
+            char compact_icon[32];
+            if (runs_w(icon_font, ic) > cell_w - 8) {
+                first_letter(vec[filt[idx]].name, compact_icon, sizeof(compact_icon));
+                ic = compact_icon;
+            }
+            iw = runs_w(icon_font, ic);
+            int icon_y = cy + (cell_h < 80 ? cell_h / 2 : 48);
             if (idx == sel) {
-                runs_draw(f_big, &c_fg, cx + (cell_w - iw) / 2, cy + 48, ic);
+                runs_draw(icon_font, &c_fg, cx + (cell_w - iw) / 2, icon_y, ic);
             } else {
                 XftColor *cc = (mode == MODE_POWER) ? power_color(vec[filt[idx]].name) : &c_acc;
-                runs_draw(f_big, cc, cx + (cell_w - iw) / 2, cy + 48, ic);
+                runs_draw(icon_font, cc, cx + (cell_w - iw) / 2, icon_y, ic);
             }
-            ellipsize(vec[filt[idx]].name, cell_w - 24, label, sizeof(label));
+            ellipsize(vec[filt[idx]].name, cell_w - (cell_w < 80 ? 8 : 24), label, sizeof(label));
             iw = runs_w(NULL, label);
-            ty = cy + cell_h - 28;
+            ty = cy + cell_h - (cell_h < 80 ? 8 : 28);
             runs_draw(NULL, idx == sel ? &c_fg : &c_dim, cx + (cell_w - iw) / 2, ty, label);
             (void)fl;
         }
@@ -1640,12 +1930,15 @@ static void draw(void) {
 
 /* ============ launch: wordexp + fork+exec, like menucmd ============ */
 static void launch(const char *cmd, const char *name) {
-    wordexp_t w;
+    wordexp_t w = {0};
     if (!cmd || !*cmd) return;
-    if (wordexp(cmd, &w, WRDE_NOCMD) != 0 || w.we_wordc == 0) {
-        wordfree(&w);
+    int rc = wordexp(cmd, &w, WRDE_NOCMD);
+    if (rc) {
+        if (rc == WRDE_NOSPACE) wordfree(&w);
+        fprintf(stderr, "dani-run: invalid command (wordexp %d)\n", rc);
         return;
     }
+    if (!w.we_wordc) { wordfree(&w); return; }
     hist_save(name);
     {
         pid_t pid = fork();
@@ -1685,10 +1978,11 @@ static void activate(void) {
         char res[64];
         if (!calc_eval(query, &v)) { XCloseDisplay(dpy); exit(1); }
         calc_str(v, res, sizeof(res));
-        to_clipboard(res);
         printf("%s\n", res);
         fflush(stdout);
         XCloseDisplay(dpy);
+        dpy = NULL;
+        to_clipboard(res);
         exit(0);
     }
     if (nfilt > 0) {
@@ -1699,6 +1993,17 @@ static void activate(void) {
     } else return;
     XCloseDisplay(dpy);
     exit(0);
+}
+
+/* Validate lookup output before any indexing/copy. Overflow reports required
+ * bytes, not initialized bytes; discard the commit without changing query. */
+static int lookup_length(int n, size_t cap, int use_im, Status status, KeySym *ks) {
+    if ((use_im && status == XBufferOverflow) || n < 0 || (size_t)n >= cap) return -1;
+    if (use_im) {
+        if (status != XLookupKeySym && status != XLookupBoth) *ks = NoSymbol;
+        if (status != XLookupChars && status != XLookupBoth) return 0;
+    }
+    return n;
 }
 
 /* ============ main ============ */
@@ -1732,10 +2037,17 @@ int main(int argc, char **argv) {
     load_wm_theme();
     defaults();
     load_run_config();
+    if (mode == MODE_POWER) {
+        if (power_cols > 0) opt_cols = power_cols;
+        if (power_lines > 0) opt_lines = power_lines;
+        if (power_cell_w > 0) cell_w = power_cell_w;
+        if (power_cell_h > 0) cell_h = power_cell_h;
+    }
 #ifdef HAVE_CAIRO
     load_gtk_icon_theme();
 #endif
     resolve_padding();
+    row_h = 34 + opt_row_gap;
     if (!font_pat[0]) {
         if (T_FONT[0]) snprintf(font_pat, sizeof(font_pat), "%.255s", T_FONT);
         else snprintf(font_pat, sizeof(font_pat), "SpaceMono Nerd Font:size=11");
@@ -1765,8 +2077,17 @@ int main(int argc, char **argv) {
             WW = opt_width; HH = input_h + row_h * list_rows + footer_h + opt_pad_t + opt_pad_b;
         }
         else {
+            int available_w = sw - 40 - opt_pad_l - opt_pad_r - 32;
+            int available_h = sh - 80 - input_h - footer_h - opt_pad_t - opt_pad_b;
+            int fit_cols = (available_w + opt_cell_gap_x) / (cell_w + opt_cell_gap_x);
+            int fit_rows = (available_h + opt_cell_gap_y) / (cell_h + opt_cell_gap_y);
+            if (fit_cols < 1) fit_cols = 1;
+            if (fit_rows < 1) fit_rows = 1;
+            if (opt_cols > fit_cols) opt_cols = fit_cols;
+            if (opt_lines > fit_rows) opt_lines = fit_rows;
+            refilter();
             WW = opt_cols * cell_w + opt_cell_gap_x * (opt_cols - 1) + opt_pad_l + opt_pad_r + 32;
-            HH = input_h + opt_pad_t + opt_lines * (cell_h + opt_cell_gap_y) + opt_pad_b + footer_h;
+            HH = input_h + opt_pad_t + opt_lines * cell_h + (opt_lines - 1) * opt_cell_gap_y + opt_pad_b + footer_h;
         }
         if (WW > sw - 40) WW = sw - 40;
         if (HH > sh - 80) HH = sh - 80;
@@ -1805,9 +2126,17 @@ int main(int argc, char **argv) {
                 XIMPreeditNothing | XIMStatusNothing, XNClientWindow, win, NULL);
         }
         /* grab keyboard: let our WM pass (daniwm never grabs override windows) */
+        int grabbed = 0;
         for (int i = 0; i < 100; i++) {
-            if (XGrabKeyboard(dpy, win, True, GrabModeAsync, GrabModeAsync, CurrentTime) == GrabSuccess) break;
+            if (XGrabKeyboard(dpy, win, True, GrabModeAsync, GrabModeAsync, CurrentTime) == GrabSuccess) {
+                grabbed = 1; break;
+            }
             usleep(10000);
+        }
+        if (!grabbed) {
+            fprintf(stderr, "dani-run: cannot grab keyboard\n");
+            XCloseDisplay(dpy);
+            return 1;
         }
     }
     /* fonts: main + Nerd fallbacks (like bar.c), text fallbacks are lazy */
@@ -1872,6 +2201,7 @@ int main(int argc, char **argv) {
     for (;;) {
         XEvent ev;
         XNextEvent(dpy, &ev);
+        if (XFilterEvent(&ev, None)) continue;
         /* Stay on top: daniwm may raise docks/floating/fullscreen via
          * XRaiseWindow, pushing our override_redirect window down.
          * Re-raise ourselves after every event to counter this. */
@@ -1880,13 +2210,14 @@ int main(int argc, char **argv) {
             if (ev.xexpose.count == 0) draw();
         } else if (ev.type == KeyPress) {
             char buf[64];
-            KeySym ks;
-            Status st;
+            KeySym ks = NoSymbol;
+            Status st = XLookupNone;
             int n = xic
                 ? Xutf8LookupString(xic, &ev.xkey, buf, sizeof(buf) - 1, &ks, &st)
                 : XLookupString(&ev.xkey, buf, sizeof(buf) - 1, &ks, NULL);
             int ctrl = (ev.xkey.state & ControlMask) != 0;
-            if (n < 0) n = 0;
+            n = lookup_length(n, sizeof(buf), xic != NULL, st, &ks);
+            if (n < 0) continue;
             buf[n] = 0;
             if (ks == XK_Escape) return 0;
             else if (ks == XK_Return || ks == XK_KP_Enter) activate();
@@ -1901,7 +2232,7 @@ int main(int argc, char **argv) {
                 if (mode == MODE_DRUN) move_sel(-1);
                 else move_sel(-opt_cols);
                 draw();
-            } else if (ks == XK_Down || (ctrl && (ks == XK_j || ks == XK_N))) {
+            } else if (ks == XK_Down || (ctrl && (ks == XK_j || ks == XK_J))) {
                 if (mode == MODE_DRUN) move_sel(1);
                 else move_sel(opt_cols);
                 draw();
@@ -1947,25 +2278,10 @@ int main(int argc, char **argv) {
                 }
             }
         } else if (ev.type == MotionNotify) {
-            int mx = ev.xmotion.x, my = ev.xmotion.y, idx = -1;
-            if (mode == MODE_DRUN) {
-                int r = (my - input_h - opt_pad_t) / row_h;
-                if (r >= 0 && r < list_rows && mx > 8 && mx < WW - 8) idx = scroll + r;
-            } else {
-                int per = opt_cols * opt_lines;
-                int gw = opt_cols * cell_w + opt_cell_gap_x * (opt_cols - 1);
-                int gx0 = opt_pad_l + (WW - opt_pad_l - opt_pad_r - gw) / 2;
-                int gy0 = input_h + opt_pad_t;
-                int cx = (mx - gx0) / (cell_w + opt_cell_gap_x);
-                int cy = (my - gy0) / (cell_h + opt_cell_gap_y);
-                if (cx >= 0 && cx < opt_cols && cy >= 0 && cy < opt_lines) {
-                    int k = cy * opt_cols + cx;
-                    if (k < per) idx = scroll + k;
-                }
-            }
+            int idx = hit_entry(ev.xmotion.x, ev.xmotion.y);
             if (idx >= 0 && idx < nfilt && idx != sel) { sel = idx; draw(); }
         } else if (ev.type == ButtonPress) {
-            int mx = (int)ev.xbutton.x, my = (int)ev.xbutton.y, idx = -1;
+            int idx;
             if (ev.xbutton.button == Button4) { /* scroll up */
                 if (mode == MODE_DRUN) move_sel(-1); else move_sel(-opt_cols);
                 draw(); continue;
@@ -1975,18 +2291,7 @@ int main(int argc, char **argv) {
                 draw(); continue;
             }
             if (ev.xbutton.button != Button1) continue;
-            if (mode == MODE_DRUN) {
-                int r = (my - input_h - opt_pad_t) / row_h;
-                if (r >= 0 && r < list_rows) idx = scroll + r;
-            } else {
-                int gw = opt_cols * cell_w + opt_cell_gap_x * (opt_cols - 1);
-                int gx0 = opt_pad_l + (WW - opt_pad_l - opt_pad_r - gw) / 2;
-                int gy0 = input_h + opt_pad_t;
-                int cx = (mx - gx0) / (cell_w + opt_cell_gap_x);
-                int cy = (my - gy0) / (cell_h + opt_cell_gap_y);
-                if (cx >= 0 && cx < opt_cols && cy >= 0 && cy < opt_lines)
-                    idx = scroll + cy * opt_cols + cx;
-            }
+            idx = hit_entry(ev.xbutton.x, ev.xbutton.y);
             if (idx >= 0 && idx < nfilt) { sel = idx; activate(); }
         }
     }

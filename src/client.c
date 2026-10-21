@@ -516,10 +516,19 @@ void manage(Window w) {
     if (!c) return; /* OOM: leave the window unmanaged, WM keeps running */
     c->win = w;
     c->mon = mon_by_pointer();
+    Window trans = None;
+    int istransient = XGetTransientForHint(dpy, w, &trans);
+    Client *parent = istransient ? find(trans) : NULL;
+    /* Inherit only a real workspace, never the parked scratchpad sentinel.
+     * Explicit rules override inheritance; _NET_WM_DESKTOP overrides rules,
+     * as before (also preserves desktop assignment across WM restarts). */
     int rulefloat = 0, rulews = curws, rulelayout = -1;
+    if (parent) {
+        if (parent->ws >= 0 && parent->ws < NWS) rulews = parent->ws;
+        c->mon = parent->mon;
+    }
     matchrules(w, &rulefloat, &rulews, &rulelayout);
     { int d = ewmh_read_desktop(w); if (d >= 0 && d < NWS) rulews = d; }
-    Window trans = None;
     c->fx = a.x; c->fy = a.y; c->fw = a.width; c->fh = a.height;
     c->cfact = 1.0f;
     /* ghost-manage race: the window can die between the probe above and
@@ -527,7 +536,7 @@ void manage(Window w) {
      * swallowed) and re-probe before attach; a dead window frees the
      * struct instead of haunting the client list. */
     trap_errors(dpy);
-    if (XGetTransientForHint(dpy, w, &trans) || ewmh_isfloating_type(w) || rulefloat) {
+    if (istransient || ewmh_isfloating_type(w) || rulefloat) {
         c->floating = 1;
         int ax, ay, aw, ah;
         getarea(c->mon, &ax, &ay, &aw, &ah);
