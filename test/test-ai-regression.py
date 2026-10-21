@@ -738,6 +738,99 @@ for i in range(12):
             runner.include_ignored = False
             self.assertIn('error', json.loads(runner.execute('find_files', args)))
 
+    def test_replay_candidate_tool_guards_and_attachments(self):
+        image = [{'type': 'text', 'text': 'look'},
+                 {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA=='}}]
+        original = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': image},
+                    {'role': 'assistant', 'content': 'answer'}]
+        prefix, prompt = m.replay_candidate(original)
+        self.assertEqual(prefix, original[:1])
+        self.assertEqual(prompt, image)
+        self.assertEqual(m.replay_candidate(original, replacement='new')[1], 'new')
+        for tail in ([{'role': 'tool', 'content': 'done'}],
+                     [{'role': 'assistant', 'tool_calls': [{'id': 'unknown'}]}]):
+            with self.assertRaises(ValueError):
+                m.replay_candidate(original + tail)
+        for messages in ([], original[:1]):
+            with self.assertRaises(ValueError):
+                m.replay_candidate(messages)
+        with self.assertRaises(ValueError):
+            m.replay_candidate(original, replacement=' ')
+        self.assertEqual(m.replay_candidate(original[:1], (original[:1], 'failed'))[1], 'failed')
+        self.assertEqual(len(original), 3)
+
+    def test_replay_repl_branches_failed_retry_and_edit(self):
+        with tempfile.TemporaryDirectory() as d:
+            observed = []
+            def complete(*args):
+                observed.append(json.loads(json.dumps(args[3])))
+                if len(observed) == 1:
+                    raise m.AIError('network failure')
+                return 'answer%d' % len(observed)
+            out = io.StringIO()
+            with patch.object(m, 'complete', side_effect=complete), \
+                 patch.object(m, 'input_boxed', side_effect=[
+                     'original', '/retry', '/edit-last replacement', '/retry', '/q']), \
+                 contextlib.redirect_stdout(out):
+                m.repl('x', 'fake', 'm', 'sys', 1, None, None, False, False, d)
+            self.assertEqual([v[-1]['content'] for v in observed],
+                             ['original', 'original', 'replacement', 'replacement'])
+            self.assertTrue(all(len(v) == 2 for v in observed))
+            sessions = [json.loads(p.read_text()) for p in Path(d).glob('session-*.json')]
+            self.assertEqual(len(sessions), 4)
+            self.assertTrue(any(any(msg.get('content') == 'answer2' for msg in s['messages']) for s in sessions))
+            self.assertIn('original retained', out.getvalue())
+
+    def test_replay_repl_tool_refusal_private_and_checkpoint_failure(self):
+        call = {'role': 'assistant', 'content': None, 'tool_calls': [
+            {'id': 'x', 'type': 'function', 'function': {'name': 'read_file', 'arguments': '{}'}}]}
+        initial = [{'role': 'user', 'content': 'old'}, call,
+                   {'role': 'tool', 'tool_call_id': 'x', 'content': 'done'}]
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(m, 'complete') as complete, \
+                 patch.object(m, 'input_boxed', side_effect=['/retry', '/edit-last new', '/q']), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d,
+                       initial=('m', initial), no_history=True)
+                complete.assert_not_called()
+            self.assertEqual(list(Path(d).iterdir()), [])
+            observed = []
+            def answer(*args):
+                observed.append(list(args[3]))
+                return 'ok'
+            with patch.object(m, 'complete', side_effect=answer), \
+                 patch.object(m, 'input_boxed', side_effect=['hello', '/edit-last new', '/q']), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d, no_history=True)
+            self.assertEqual(observed[-1], [{'role': 'user', 'content': 'new'}])
+            self.assertEqual(list(Path(d).iterdir()), [])
+            with patch.object(m.SessionStore, 'checkpoint', side_effect=[m.AIError('disk'), None]), \
+                 patch.object(m, 'complete') as complete, \
+                 patch.object(m, 'input_boxed', side_effect=['/retry', '/q']), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d,
+                       initial=('m', [{'role': 'user', 'content': 'original'}]))
+                complete.assert_not_called()
+
+    def test_replay_interrupted_tool_turn_never_runs_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            def fail(*args):
+                args[3].extend([
+                    {'role': 'assistant', 'content': None, 'tool_calls': [
+                        {'id': 'w', 'type': 'function', 'function': {'name': 'write_file', 'arguments': '{}'}}]},
+                    {'role': 'tool', 'tool_call_id': 'w', 'content': 'created'}])
+                raise m.AIError('after mutation')
+            out = io.StringIO()
+            with patch.object(m, 'complete', side_effect=fail) as complete, \
+                 patch.object(m, 'input_boxed', side_effect=['write', '/retry', '/edit-last again', '/q']), \
+                 contextlib.redirect_stdout(out):
+                m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d)
+                self.assertEqual(complete.call_count, 1)
+            self.assertEqual(out.getvalue().count('turn contains tools'), 2)
+            saved = json.loads((Path(d) / 'last.json').read_text())
+            self.assertEqual(saved['turn_state'], 'interrupted')
+            self.assertEqual(saved['messages'][-1]['role'], 'tool')
+
     def test_session_export_delete_local_cli(self):
         with tempfile.TemporaryDirectory() as d:
             hist = Path(d) / 'history'

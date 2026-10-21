@@ -35,9 +35,11 @@ User đã yêu cầu commit và push phần dani-ai sau đợt 12. Chỉ đưa c
 
 18. Session export/delete UX: keyless local `history export NAME json|md PATH`, `history delete NAME CONFIRM`; REPL `/export json|md PATH` current RAM, `/delete NAME` gõ lại tên. Create-only 0600 export không overwrite/chmod parent; delete exact snapshot under lock, nofollow/regular-singlelink bounded session reads. Private chặn cả hai. Không scrub secrets/alias cascade/secure erase; active checkpoints có thể recreate.
 
+19. `/retry` và `/edit-last <text>` REPL tool-free latest turn: giữ attachments khi retry, edit thay toàn prompt. Từ chối mọi tool call/result. Failed no-tool prompt giữ RAM để retry ngay (slash-command khác/prompt mới invalidates). Backup original + branch trước request, checkpoint failure giữ RAM; private RAM-only. Chưa replay after tools/persistent failed-prompt/editor.
+
 ## Kiểm tra gần nhất
 
-- `make check-ai`: **35 PASS, 0 FAIL; 106 Python regression tests OK**.
+- `make check-ai`: **35 PASS, 0 FAIL; 110 Python regression tests OK**.
 - `python3 -m py_compile dani-ai ai.tools/btc_market.py test/test-ai-regression.py`: pass.
 - `git diff --check`: pass.
 - Chỉ mock/local HTTP, chưa dùng provider hay Binance thật. CI matrix chưa chạy trên GitHub. Chưa chạy full WM suite.
@@ -59,7 +61,7 @@ Working tree từ trước có thay đổi WM/launcher: `run.config`, `src/clien
 
 ## Phần còn lại / thứ tự đề xuất
 
-Đã hoàn thành session ID + concurrency locking, provider profiles/capabilities, context compaction/usage, builtin path/domain policy, `/diff`/`/undo` RAM-only và cooperative turn deadline/retry opt-in. Đã thêm scan cursor/pagination. Đã bổ sung OI history/klines multi-timeframe opt-in (đợt 13). Session export/delete UX đã hoàn thành đợt 14 theo yêu cầu user. Ưu tiên tiếp theo đề xuất: phân tích price/OI deterministic có alignment/test hoặc session retention; user chưa chọn bước tiếp theo. User đã yêu cầu commit/push đợt 13–14; xem git log và remote để kiểm tra trạng thái publish. Các lần commit tiếp theo vẫn cần user yêu cầu.
+Đã hoàn thành session ID + concurrency locking, provider profiles/capabilities, context compaction/usage, builtin path/domain policy, `/diff`/`/undo` RAM-only và cooperative turn deadline/retry opt-in. Đã thêm scan cursor/pagination. Đã bổ sung OI history/klines multi-timeframe opt-in (đợt 13). Session export/delete đã hoàn thành đợt 14; đợt 13–14 đã commit/push `d0e9c9c`. User chọn `/retry` + `/edit-last`, đã hoàn thành đợt 15 và yêu cầu commit/push; xem git log/remote để kiểm tra trạng thái publish. Ưu tiên tiếp theo đề xuất: session retention hoặc price/OI deterministic có alignment/test; user chưa chọn bước tiếp theo. Các lần commit tiếp theo vẫn cần user yêu cầu.
 
 - Session ID + advisory locking đã có; `last.json` cố ý là latest snapshot chung, không phải identity. Export/delete một snapshot đã có; còn retention/bulk cleanup nếu tiếp tục mở rộng session UX.
 - Path/domain policy CLI đã có; chưa policy file riêng hay URL path rules. Không coi policy/prompt là sandbox hay DLP; shell/custom và git_status metadata không được lọc theo deny-path.
@@ -68,7 +70,7 @@ Working tree từ trước có thay đổi WM/launcher: `run.config`, `src/clien
 - Compaction đã có dạng bỏ nguyên lượt cũ; chưa model summary/auto-threshold. Usage đã có process-only provider counts; chưa persistent ledger/cost có bảng giá cấu hình. Profile đã có base/key_env/model/capabilities cố định; chưa auto-discovery hay switch trong REPL.
 - Scan cursor/pagination đã có; chưa đầy đủ `.gitignore` (hiện chỉ `.aiignore` glob đơn giản) hoặc stable FS snapshot/sorted scan.
 - OI history/multi-timeframe data đã có; chưa align price/OI hoặc phân tích SMC/BOS/CHoCH/FVG deterministic.
-- `/retry`, `/edit-last`, branching, export/delete, attach/editor, JSONL, read-only parallelism nếu có nhu cầu.
+- `/retry`/`/edit-last` tool-free, branching và export/delete đã có; còn attach/editor, JSONL, read-only parallelism nếu có nhu cầu.
 
 ## Ghi chú khi rà soát tiếp
 

@@ -193,6 +193,26 @@ def read_session_object(path):
     return obj
 
 
+def replay_candidate(messages, failed=None, replacement=None):
+    """Return a tool-free prefix/prompt, never replay a recorded tool round."""
+    if failed is not None and messages == failed[0]:
+        prefix, content = failed
+    else:
+        index = next((i for i in range(len(messages) - 1, -1, -1)
+                      if messages[i].get("role") == "user"), None)
+        if index is None:
+            raise ValueError("no user turn to retry/edit")
+        tail = messages[index:]
+        if any(m.get("role") == "tool" or m.get("tool_calls") for m in tail):
+            raise ValueError("turn contains tools; replay refused. Send a new prompt referencing the journal instead")
+        prefix, content = messages[:index], messages[index]["content"]
+    if replacement is not None:
+        if not replacement.strip():
+            raise ValueError("usage: /edit-last <new prompt>; replaces the entire prompt including attachments")
+        content = replacement
+    return list(prefix), content
+
+
 def session_path(directory, name):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
         raise ValueError("invalid session name; use letters, numbers, _ or - (without .json)")
@@ -2840,7 +2860,7 @@ def input_boxed(color=True):
 COMMANDS = [
     "/base", "/clear", "/color", "/compact", "/context", "/diff", "/undo", "/usage", "/exit", "/help", "/model",
     "/new", "/q", "/quit", "/reset", "/resume", "/root", "/save", "/shell", "/stream", "/system",
-    "/export", "/delete",
+    "/export", "/delete", "/retry", "/edit-last",
 ]
 
 
@@ -2971,6 +2991,7 @@ def run_repl(base, api_key, model, system, timeout, temp, max_tok, stream, color
     if no_history:
         print("(private mode: no disk history/checkpoints; tools may still write workspace files)")
     turn_state = "complete"
+    failed_prompt = None
 
     def checkpoint(current, state):
         if no_history:
@@ -2992,6 +3013,11 @@ def run_repl(base, api_key, model, system, timeout, temp, max_tok, stream, color
                 print("")
                 break
             s = line.strip()
+            replay = s == "/retry" or s == "/edit-last" or s.startswith("/edit-last ")
+            # A local state command may invalidate a removed failed prompt, even if
+            # the resulting conversation happens to compare equal (e.g. /reset).
+            if s.startswith("/") and not replay:
+                failed_prompt = None
             if _rl is not None and s.startswith("/"):
                 length = _rl.get_current_history_length()
                 if length and _rl.get_history_item(length) == line:
@@ -3092,6 +3118,7 @@ def run_repl(base, api_key, model, system, timeout, temp, max_tok, stream, color
                 print("/clear clear terminal + new session  /new new session")
                 print("/save [name] (no name = AI title)  /resume [name] (no name = picker)")
                 print("/export json|md PATH (current chat, create-only)  /delete NAME (confirm snapshot deletion)")
+                print("/retry  /edit-last <new prompt> (tool-free turns only; branches history)")
                 print("/stream on|off  /color on|off  /context size  /usage provider counts  /compact [keep=4]  /diff  /undo  /quit")
                 print("/root [directory] show/change tool root (supports ~; no shell needed)")
                 print("/shell on|off enable/disable UNSANDBOXED shell for this session (allows Git commit/push)")
@@ -3306,25 +3333,51 @@ def run_repl(base, api_key, model, system, timeout, temp, max_tok, stream, color
                     color = False
                 print("(color %s)" % ("on" if color else "off"))
                 continue
-            if s.startswith("/"):
+            if replay:
+                try:
+                    replacement = s[len("/edit-last"):].strip() if s.startswith("/edit-last") else None
+                    prefix, prompt = replay_candidate(messages, failed_prompt, replacement)
+                    if not no_history:
+                        # Preserve the old conversation before changing RAM or identity.
+                        checkpoint(messages, turn_state)
+                        previous_id = store.session_id
+                        new_store = SessionStore(hist_dir)
+                        new_store.checkpoint(model, prefix + [{"role": "user", "content": prompt}],
+                                             session_context(base, runner.root if runner else Path.cwd()),
+                                             "in_progress")
+                        store = new_store
+                        print("(branched; original retained as %s)" % previous_id)
+                    else:
+                        print("(private mode: replay replaces the RAM turn; no disk backup)")
+                    messages = prefix
+                    failed_prompt = None
+                except (AIError, OSError, ValueError) as e:
+                    print("(replay refused: %s)" % safe_terminal(str(e)))
+                    continue
+            elif s.startswith("/"):
                 hint = suggest_command(s)
                 print(hint or "unknown command. /help")
                 continue
+            else:
+                prompt = attached_content(s)
+                failed_prompt = None
             if runner:
                 runner.begin_file_turn()
             turn_start = len(messages)
-            messages.append({"role": "user", "content": attached_content(s)})
+            messages.append({"role": "user", "content": prompt})
             turn_state = "in_progress"
 
             def failed_turn():
-                nonlocal turn_state
-                if any(m.get("role") == "tool" for m in messages[turn_start:]):
+                nonlocal turn_state, failed_prompt
+                failed_prompt = None
+                if any(m.get("role") == "tool" or m.get("tool_calls") for m in messages[turn_start:]):
                     turn_state = "interrupted"
                     print("(interrupted turn retained; tools may have changed files — inspect before retrying)",
                           file=sys.stderr)
                     checkpoint(messages, turn_state)
                 else:
                     del messages[turn_start:]
+                    failed_prompt = (list(messages), prompt)
                     turn_state = "complete"
 
             try:
@@ -3342,6 +3395,7 @@ def run_repl(base, api_key, model, system, timeout, temp, max_tok, stream, color
                 print("\n(request cancelled)", file=sys.stderr)
                 continue
             messages.append({"role": "assistant", "content": reply})
+            failed_prompt = None
             turn_state = "complete"
             checkpoint(messages, turn_state)
     finally:

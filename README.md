@@ -304,6 +304,31 @@ dani-ai --profile openai-mini chat
   ben ngoai. Hai file ID/last khong phai mot transaction crash-atomic:
   neu publish last loi, ban theo ID van con. Chua co retention/cleanup tu dong.
 
+### Retry/edit-last an toan (REPL)
+
+```text
+/retry
+/edit-last Prompt moi thay the toan bo prompt gan nhat
+```
+
+- `/retry` chay lai user turn gan nhat, bo cau tra loi cu; giu nguyen prompt
+  va attachments. `/edit-last <text>` thay **toan bo** prompt, bo attachments
+  cu, khong ho tro multiline/editor trong lenh nay. Cac luot truoc van giu.
+- Tu choi neu turn do co bat ky tool call/result nao, ke ca read-only,
+  failed/pending tool. Khong replay mutation/shell/custom, khong undo file.
+  Hay gui prompt moi dua tren journal neu tool da chay. Tool execution cua
+  request moi van theo permission/budget nhu binh thuong.
+- Loi/huy request chua co tool: prompt bi rut khoi conversation nhu truoc,
+  nhung giu RAM de `/retry` hoac `/edit-last` ngay sau do. Prompt loi nay
+  khong persist qua restart; prompt moi hoac slash-command khac se bo cache.
+- Truoc replay, checkpoint ban goc theo ID va tao nhanh moi voi prompt du
+  kien; loi checkpoint khong doi conversation RAM hay goi provider. Loi API
+  van giu prompt de thu lai, khong tu retry tool. Phien private chi thay RAM,
+  khong co backup. Usage van cong don trong process, provider co the tinh phi
+  cho moi lan request (ke ca request truoc do loi).
+- `/retry` khong tham so; `/edit-last` can text khong rong. Khong chon turn
+  tuy y, khong resume token stream, khong import prompt da mat sau restart.
+
 ### Session export/delete (local, khong can API key)
 
 ```sh

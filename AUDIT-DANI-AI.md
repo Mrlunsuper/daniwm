@@ -251,6 +251,14 @@ Giới hạn còn lại: chưa có checkpoint rollback/undo, trust theo domain/p
 - Test CLI keyless dispatch/roundtrip JSON/Markdown/permissions/no overwrite/private/explicit confirmation, path/symlink/hardlink/malformed guards và REPL export/cancel/delete/private. `make check-ai`: **35 PASS, 0 FAIL; 106 regression tests OK**; py_compile và git diff --check pass. Chưa provider/Binance thật, GitHub CI hoặc full WM suite.
 - Lock chỉ serialize cooperating history writers; không chống hostile external writer/race hay hostile destination-directory owner. Markdown là archival view, không model summary hoặc import format. Export/delete không áp dụng workspace tool policy vì là lệnh local trực tiếp của user.
 
+## Triển khai đợt 15
+
+- REPL `/retry` và `/edit-last <text>` chỉ replay latest tool-free user turn, bỏ reply cũ; retry giữ attachments, edit thay toàn bộ prompt/attachments. Từ chối mọi tool call/result, kể cả read-only/pending, không undo/replay tool side effects.
+- Failed/cancelled request chưa có tool giữ prompt trong RAM để retry ngay; invalidated bởi prompt mới/slash-command khác, không persist removed prompt. Interrupted tool journal vẫn giữ và retry/edit từ chối.
+- Checkpoint original ID rồi publish branch với prompt dự kiến trước khi đổi RAM/call provider; checkpoint lỗi giữ context và không gọi provider. Private mode không backup, chỉ RAM. Usage process-wide không reset, replay có thể bị billing lần nữa.
+- Test attachments/replacement/empty/no turn/tool guards, failed request retry, successful edit/retry branches, private, checkpoint failure và interrupted write journal không replay. `make check-ai`: **35 PASS, 0 FAIL; 110 regression tests OK**; py_compile/git diff --check pass. Chưa provider thật/CI/full WM suite.
+- Chưa arbitrary turn selection/editor, replay after tool (dù read-only), persistent failed-prompt recovery hoặc stream resume. Checkpoint ID/last vẫn không transaction crash-atomic; nếu publish branch lỗi có thể còn snapshot orphan, RAM giữ nguyên.
+
 ## Kết luận
 
 Nền tảng CLI nhẹ và hardening file/process tốt. Ưu tiên hiện tại không phải thêm thật nhiều tool: cần đóng khoảng trống giữa **thao tác thực tế, lịch sử lưu, project hiện tại và quyền được cấp**. Sau đó tối ưu context/search/provider sẽ mang lại lợi ích lớn hơn micro-optimization renderer hay thêm framework nặng.
