@@ -13,7 +13,8 @@ import urllib.parse
 import urllib.request
 
 BASE = "https://fapi.binance.com"
-SECTIONS = ("ticker", "klines", "funding", "open_interest", "long_short")
+SECTIONS = ("ticker", "klines", "funding", "open_interest", "long_short", "open_interest_history")
+DEFAULT_SECTIONS = SECTIONS[:-1]  # history and multi-timeframe requests are opt-in
 INTERVALS = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "1w"}
 TIMEOUT = 10
 TOTAL_TIMEOUT = 24  # leave room before the manifest's 30s process deadline
@@ -60,6 +61,41 @@ def number(value):
         return None
 
 
+def change_pct(first, last):
+    if first is None or last is None or first <= 0:
+        return None
+    return number(round((last / first - 1) * 100, 4))
+
+
+def candle_data(rows):
+    candles = []
+    now = int(time.time() * 1000)
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 6:
+            continue
+        if number(row[0]) is None or any(number(row[i]) is None for i in (1, 2, 3, 4)):
+            continue
+        close_time = number(row[6]) if len(row) > 6 else None
+        candles.append({
+            "close_time": close_time,
+            "is_closed": close_time < now if close_time is not None else None,
+            "t": number(row[0]), "o": number(row[1]), "h": number(row[2]),
+            "l": number(row[3]), "c": number(row[4]), "v": number(row[5]),
+            "qv": number(row[7]) if len(row) > 7 else None,
+        })
+    return candles
+
+
+def window_stats(candles):
+    if not candles:
+        return None
+    return {"bars": len(candles), "first_close": candles[0]["c"],
+            "last_close": candles[-1]["c"],
+            "high": max(c["h"] for c in candles),
+            "low": min(c["l"] for c in candles),
+            "change_pct": change_pct(candles[0]["c"], candles[-1]["c"])}
+
+
 def main():
     try:
         text = sys.stdin.read(65537)
@@ -69,13 +105,14 @@ def main():
     except ValueError as e:
         print(json.dumps({"error": "invalid JSON arguments: %s" % e}))
         return 2
-    if not isinstance(args, dict) or set(args) - {"symbol", "interval", "limit", "include"}:
+    if not isinstance(args, dict) or set(args) - {"symbol", "interval", "intervals", "limit", "include"}:
         print(json.dumps({"error": "arguments must be an object"}))
         return 2
     symbol = args.get("symbol", "BTCUSDT")
     interval = args.get("interval", "1h")
     limit = args.get("limit", 60)
-    include = args.get("include", list(SECTIONS))
+    include = args.get("include", list(DEFAULT_SECTIONS))
+    intervals = args.get("intervals", [interval])
     if not isinstance(symbol, str) or not symbol.isalnum() or not 3 <= len(symbol) <= 24:
         print(json.dumps({"error": "symbol must be alphanumeric (e.g. BTCUSDT)"}))
         return 2
@@ -86,6 +123,12 @@ def main():
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
         print(json.dumps({"error": "limit must be an integer 1..200"}))
         return 2
+    if (not isinstance(intervals, list) or not 1 <= len(intervals) <= 4
+            or any(not isinstance(i, str) or i not in INTERVALS for i in intervals)
+            or len(set(intervals)) != len(intervals) or interval not in intervals
+            or len(intervals) * limit > 400):
+        print(json.dumps({"error": "intervals must contain interval, 1..4 unique supported frames; total candles <= 400"}))
+        return 2
     if not isinstance(include, list) or not include or len(include) > len(SECTIONS) or any(s not in SECTIONS for s in include):
         print(json.dumps({"error": "include must be a non-empty subset of %s" % list(SECTIONS)}))
         return 2
@@ -93,7 +136,8 @@ def main():
     now = int(time.time() * 1000)
     result = {"symbol": symbol, "source": "binance-usdm-public",
               "fetched_at": now, "timestamp_unit": "unix milliseconds",
-              "warnings": ["Latest candle may be incomplete; OI is a snapshot, not an OI trend.",
+              "warnings": ["Latest candle may be incomplete; snapshot OI alone is not an OI trend.",
+                           "Historical OI is sampled (last month only); changes are descriptive, not trade signals.",
                            "Annualized funding assumes 8-hour intervals and a constant rate; not a forecast."],
               "errors": []}
     deadline = time.monotonic() + TOTAL_TIMEOUT
@@ -107,7 +151,9 @@ def main():
             raise ValueError("unexpected Binance response shape")
         return raw
 
-    for section in include:
+    jobs = [(section, frame) for section in include
+            for frame in (intervals if section == "klines" else [interval])]
+    for section, frame in jobs:
         try:
             if section == "ticker":
                 raw = fetch("/fapi/v1/ticker/24hr", {"symbol": symbol}, dict)
@@ -123,37 +169,18 @@ def main():
                     "time": number(raw.get("closeTime")),
                 }
             elif section == "klines":
-                rows = fetch("/fapi/v1/klines", {"symbol": symbol, "interval": interval,
+                rows = fetch("/fapi/v1/klines", {"symbol": symbol, "interval": frame,
                                                  "limit": limit}, list)
-                candles = []
-                for row in rows:
-                    if not isinstance(row, list) or len(row) < 6:
-                        continue
-                    if number(row[0]) is None or any(number(row[i]) is None for i in (1, 2, 3, 4)):
-                        continue
-                    close_time = number(row[6]) if len(row) > 6 else None
-                    candles.append({
-                        "close_time": close_time,
-                        "is_closed": close_time < int(time.time() * 1000) if close_time is not None else None,
-                        "t": number(row[0]), "o": number(row[1]), "h": number(row[2]),
-                        "l": number(row[3]), "c": number(row[4]),
-                        "v": number(row[5]), "qv": number(row[7]) if len(row) > 7 else None,
-                    })
-                result["klines"] = {"interval": interval, "count": len(candles),
-                                    "candles": candles}
-                closes = [c["c"] for c in candles if c["c"] is not None]
-                highs = [c["h"] for c in candles if c["h"] is not None]
-                lows = [c["l"] for c in candles if c["l"] is not None]
-                if closes:
-                    result["window"] = {
-                        "bars": len(candles),
-                        "first_close": closes[0],
-                        "last_close": closes[-1],
-                        "high": max(highs) if highs else None,
-                        "low": min(lows) if lows else None,
-                        "change_pct": number(round((closes[-1] / closes[0] - 1) * 100, 4))
-                        if closes[0] else None,
-                    }
+                candles = candle_data(rows[:limit])
+                data = {"interval": frame, "count": len(candles), "candles": candles,
+                        "window": window_stats(candles),
+                        "closed_window": window_stats([c for c in candles if c["is_closed"]])}
+                if len(intervals) > 1:
+                    result.setdefault("timeframes", {})[frame] = data
+                if frame == interval:
+                    result["klines"] = data
+                    if data["window"] is not None:
+                        result["window"] = data["window"]
             elif section == "funding":
                 raw = fetch("/fapi/v1/premiumIndex", {"symbol": symbol}, dict)
                 rate = number(raw.get("lastFundingRate"))
@@ -173,6 +200,29 @@ def main():
                 raw = fetch("/fapi/v1/openInterest", {"symbol": symbol}, dict)
                 result["open_interest"] = {"contracts": number(raw.get("openInterest")),
                                            "time": number(raw.get("time"))}
+            elif section == "open_interest_history":
+                period = LONG_SHORT_PERIODS.get(interval, interval)
+                raw = fetch("/futures/data/openInterestHist",
+                            {"symbol": symbol, "period": period, "limit": limit}, list)
+                samples = []
+                for row in raw[:limit]:
+                    if not isinstance(row, dict):
+                        raise ValueError("unexpected OI history row shape")
+                    timestamp = number(row.get("timestamp"))
+                    contracts = number(row.get("sumOpenInterest"))
+                    value = number(row.get("sumOpenInterestValue"))
+                    if (timestamp is None or timestamp <= 0 or contracts is None or contracts < 0
+                            or value is None or value < 0):
+                        raise ValueError("invalid OI history sample")
+                    if samples and timestamp <= samples[-1]["time"]:
+                        raise ValueError("OI history timestamps must increase")
+                    samples.append({"time": timestamp, "contracts": contracts, "value": value})
+                result[section] = {
+                    "period": period, "count": len(samples), "samples": samples,
+                    "contracts_change_pct": change_pct(samples[0]["contracts"], samples[-1]["contracts"]) if len(samples) >= 2 else None,
+                    "value_change_pct": change_pct(samples[0]["value"], samples[-1]["value"]) if len(samples) >= 2 else None,
+                    "age_seconds": max(0, (time.time() * 1000 - samples[-1]["time"]) / 1000) if samples else None,
+                }
             elif section == "long_short":
                 period = LONG_SHORT_PERIODS.get(interval, interval)
                 raw = fetch("/futures/data/globalLongShortAccountRatio",
@@ -197,10 +247,10 @@ def main():
                 }
         except urllib.error.HTTPError as e:
             e.close()
-            result["errors"].append({"section": section, "http": e.code,
+            result["errors"].append({"section": section, "interval": frame, "http": e.code,
                                      "message": "request rejected by Binance"})
         except (urllib.error.URLError, OSError, ValueError, TypeError, KeyError, IndexError) as e:
-            result["errors"].append({"section": section, "message": str(e)[:200]})
+            result["errors"].append({"section": section, "interval": frame, "message": str(e)[:200]})
     result["partial"] = bool(result["errors"])
     for key in ("ticker", "funding", "open_interest"):
         if key in result:

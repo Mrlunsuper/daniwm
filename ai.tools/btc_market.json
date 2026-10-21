@@ -1,9 +1,12 @@
 {
   "name": "btc_market",
-  "description": "Read public Binance USD-M futures market data (no API key): 24h ticker, klines/OHLCV, funding rate, open interest and long/short ratio for a symbol such as BTCUSDT. Returns JSON with derived window stats (high/low/change) for analysis. Read-only: never places orders.",
-  "command": ["python3", "{manifest_dir}/btc_market.py"],
+  "description": "Read public Binance USD-M futures ticker, candles (optional multi-timeframe), funding, snapshot or historical OI, and long/short ratio. Descriptive window statistics, not trade signals. Read-only; no orders.",
+  "command": [
+    "python3",
+    "{manifest_dir}/btc_market.py"
+  ],
   "timeout": 30,
-  "output_limit": 131072,
+  "output_limit": 262144,
   "confirm": false,
   "parameters": {
     "type": "object",
@@ -16,7 +19,20 @@
       },
       "interval": {
         "type": "string",
-        "enum": ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "1w"],
+        "enum": [
+          "1m",
+          "5m",
+          "15m",
+          "30m",
+          "1h",
+          "2h",
+          "4h",
+          "6h",
+          "8h",
+          "12h",
+          "1d",
+          "1w"
+        ],
         "description": "Kline interval; long/short uses 5m for 1m, 6h for 8h, and 1d for 1w, reported as long_short.period. long_pct/short_pct are percentages (0..100)."
       },
       "limit": {
@@ -27,12 +43,43 @@
       },
       "include": {
         "type": "array",
-        "description": "Sections to fetch",
+        "description": "Sections to fetch; OI history is opt-in, other sections default on.",
         "items": {
           "type": "string",
-          "enum": ["ticker", "klines", "funding", "open_interest", "long_short"]
+          "enum": [
+            "ticker",
+            "klines",
+            "funding",
+            "open_interest",
+            "long_short",
+            "open_interest_history"
+          ]
         },
-        "maxItems": 5
+        "maxItems": 6,
+        "minItems": 1
+      },
+      "intervals": {
+        "type": "array",
+        "description": "Optional 1..4 unique kline intervals, must include interval (default 1h). Total intervals * limit <= 400. OI/ratio use primary interval only.",
+        "items": {
+          "type": "string",
+          "enum": [
+            "1m",
+            "5m",
+            "15m",
+            "30m",
+            "1h",
+            "2h",
+            "4h",
+            "6h",
+            "8h",
+            "12h",
+            "1d",
+            "1w"
+          ]
+        },
+        "minItems": 1,
+        "maxItems": 4
       }
     },
     "required": [],

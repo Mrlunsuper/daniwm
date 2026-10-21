@@ -235,6 +235,22 @@ Giới hạn còn lại: chưa có checkpoint rollback/undo, trust theo domain/p
 - Test đủ 2050 files qua match/entry budgets, same-file 240 matches + long line, single-use/expiry/policy invalidation/eviction/cleanup. `make check-ai`: **35 PASS, 0 FAIL; 100 regression tests OK**; py_compile và git diff --check pass.
 - Cursor không snapshot filesystem, thứ tự vẫn theo filesystem, concurrent changes/rename có thể gây stale/missing results. Chưa full gitignore semantics hoặc stable sorted snapshot; chỉ mock/local tests, chưa CI/full WM suite/provider/Binance thật.
 
+## Triển khai đợt 13
+
+- BTC tool thêm `intervals` opt-in (1..4 unique frames, chứa primary interval, tổng <=400 candles). `timeframes` có window/all-candle và closed_window; giữ klines/window primary tương thích. Các frame lỗi độc lập, trả partial cùng interval và dùng chung budget 24s.
+- `open_interest_history` opt-in gọi Binance openInterestHist, period mapping như long/short. Samples contracts/value/time, age và % thay đổi đầu-cuối; thiếu hai mẫu/zero baseline trả null. Reject non-finite/bool/âm/missing hoặc timestamp không tăng; không suy diễn trend từ snapshot, không tạo tín hiệu trade/SMC.
+- Default vẫn năm sections cũ; manifest tăng output_limit 256 KiB, kiểm tra fixture 400 candles với primary alias. README mô tả schema, giới hạn OI tháng gần nhất và cập nhật cả script/manifest khi cài tool.
+- `make check-ai`: **35 PASS, 0 FAIL; 103 regression tests OK**; py_compile và git diff --check pass. Chỉ mock/local tests; chưa Binance/provider thật, GitHub CI hay full WM suite.
+- Chưa tự động align/so sánh price-OI, BOS/CHoCH/FVG hoặc phân tích đa khung SMC. OI history chỉ theo primary period, không nhiều period đồng thời; không retry market requests, vẫn cooperative deadline với hạn chế DNS/connect/header cũ.
+
+## Triển khai đợt 14
+
+- Local CLI `history export NAME json|md PATH` và `history delete NAME CONFIRM` dispatch trước provider/key/tools, không cần API key/network. REPL `/export json|md PATH` xuất current RAM, `/delete NAME` yêu cầu gõ lại tên. Private mode chặn cả hai.
+- Export giữ metadata/messages/tool payloads, Markdown dùng indented JSON blocks; private 0600, same-directory temp + atomic create-only hardlink publication, không chmod parent/overwrite file/symlink. Không scrub dữ liệu nhạy cảm, không stdout export.
+- Delete một snapshot theo stem validated dưới advisory history lock; từ chối symlink/hardlink/non-regular hoặc object thiếu messages list. Session reads cũng bounded nofollow/regular-singlelink. Không xóa alias cùng ID/last/readline/exports/workspace; active writers có thể recreate checkpoint. Không secure erase/bulk retention/undo-delete.
+- Test CLI keyless dispatch/roundtrip JSON/Markdown/permissions/no overwrite/private/explicit confirmation, path/symlink/hardlink/malformed guards và REPL export/cancel/delete/private. `make check-ai`: **35 PASS, 0 FAIL; 106 regression tests OK**; py_compile và git diff --check pass. Chưa provider/Binance thật, GitHub CI hoặc full WM suite.
+- Lock chỉ serialize cooperating history writers; không chống hostile external writer/race hay hostile destination-directory owner. Markdown là archival view, không model summary hoặc import format. Export/delete không áp dụng workspace tool policy vì là lệnh local trực tiếp của user.
+
 ## Kết luận
 
 Nền tảng CLI nhẹ và hardening file/process tốt. Ưu tiên hiện tại không phải thêm thật nhiều tool: cần đóng khoảng trống giữa **thao tác thực tế, lịch sử lưu, project hiện tại và quyền được cấp**. Sau đó tối ưu context/search/provider sẽ mang lại lợi ích lớn hơn micro-optimization renderer hay thêm framework nặng.

@@ -178,13 +178,87 @@ def save_session(path, model, messages, context=None, turn_state="complete", ses
         return False
 
 
+def read_session_object(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as f:
+        info = os.fstat(f.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("session must be a regular, single-link file")
+        data = f.read(MAX_SESSION_BYTES + 1)
+    if len(data) > MAX_SESSION_BYTES:
+        raise ValueError("session exceeds size limit")
+    obj = json.loads(data)
+    if not isinstance(obj, dict) or not isinstance(obj.get("messages"), list):
+        raise ValueError("session must contain an object and messages list")
+    return obj
+
+
+def session_path(directory, name):
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise ValueError("invalid session name; use letters, numbers, _ or - (without .json)")
+    return os.path.join(directory, name + ".json")
+
+
+def export_session(obj, destination, fmt):
+    """Publish a private, create-only export; never chmod the user's directory."""
+    if fmt not in ("json", "md"):
+        raise ValueError("export format must be json or md")
+    text = json.dumps(obj, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    if fmt == "md":
+        # Indented JSON keeps arbitrary prompts/tool payloads literal, including fences.
+        metadata = {k: v for k, v in obj.items() if k != "messages"}
+        blocks = ["# dani-ai session export\n\nIncludes system prompts, tool results and attachments; treat as private.\n",
+                  "## Metadata\n\n" + "\n".join("    " + line for line in
+                    json.dumps(metadata, ensure_ascii=False, indent=2).splitlines())]
+        for i, message in enumerate(obj["messages"], 1):
+            blocks.append("## Message %d\n\n%s" % (i, "\n".join(
+                "    " + line for line in json.dumps(message, ensure_ascii=False, indent=2).splitlines())))
+        text = "\n\n".join(blocks) + "\n"
+    data = text.encode("utf-8")
+    if len(data) > MAX_SESSION_BYTES * 4:
+        raise ValueError("export exceeds size limit")
+    destination = os.path.abspath(os.path.expanduser(destination))
+    fd, temporary = tempfile.mkstemp(prefix=".dani-ai-export-", dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            os.fchmod(f.fileno(), 0o600)
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.link(temporary, destination)  # atomic no-clobber, including symlink destinations
+    finally:
+        os.unlink(temporary)
+
+
+def delete_session(directory, name):
+    path = session_path(directory, name)
+    with history_lock(directory):
+        # Do not open symlinks/devices or remove malformed/non-session files.
+        read_session_object(path)
+        os.unlink(path)
+
+
+def session_history_command(words, directory, private=False):
+    """Local commands run before provider/key/tool configuration."""
+    if private:
+        raise AIError("session export/delete disabled in private mode")
+    if len(words) == 5 and words[:2] == ["history", "export"]:
+        _, _, name, fmt, destination = words
+        with history_lock(directory):
+            obj = read_session_object(session_path(directory, name))
+        export_session(obj, destination, fmt)
+        print("(exported; contains private conversation data)")
+        return 0
+    if len(words) == 4 and words[:2] == ["history", "delete"] and words[3] == "CONFIRM":
+        delete_session(directory, words[2])
+        print("(deleted snapshot only; other aliases, exports and active sessions are unchanged)")
+        return 0
+    raise AIError("usage: history export NAME json|md PATH  |  history delete NAME CONFIRM")
+
+
 def load_session(path, expected_context=None, allow_mismatch=False):
     try:
-        with open(path, "rb") as f:
-            data = f.read(MAX_SESSION_BYTES + 1)
-        if len(data) > MAX_SESSION_BYTES:
-            raise ValueError("session exceeds size limit")
-        obj = json.loads(data)
+        obj = read_session_object(path)
         if not isinstance(obj, dict) or not isinstance(obj.get("model", ""), str):
             raise ValueError("session must contain an object and a string model")
         if expected_context is not None and not allow_mismatch:
@@ -2766,6 +2840,7 @@ def input_boxed(color=True):
 COMMANDS = [
     "/base", "/clear", "/color", "/compact", "/context", "/diff", "/undo", "/usage", "/exit", "/help", "/model",
     "/new", "/q", "/quit", "/reset", "/resume", "/root", "/save", "/shell", "/stream", "/system",
+    "/export", "/delete",
 ]
 
 
@@ -2784,7 +2859,7 @@ def suggest_command(text):
 
 def complete_token(hist_dir, buf, text, state):
     """Pure completer core (testable without a live readline session)."""
-    if buf.startswith(("/save ", "/resume ")):
+    if buf.startswith(("/save ", "/resume ", "/delete ")):
         try:
             names = [f[:-5] for f in os.listdir(hist_dir)
                      if f.endswith(".json")]
@@ -2922,8 +2997,10 @@ def run_repl(base, api_key, model, system, timeout, temp, max_tok, stream, color
                 if length and _rl.get_history_item(length) == line:
                     _rl.remove_history_item(length - 1)
             if no_history and (s == "/save" or s.startswith("/save ") or
-                               s == "/resume" or s.startswith("/resume ")):
-                print("(save/resume disabled in private mode)")
+                               s == "/resume" or s.startswith("/resume ") or
+                               s == "/export" or s.startswith("/export ") or
+                               s == "/delete" or s.startswith("/delete ")):
+                print("(save/resume/export/delete disabled in private mode)")
                 continue
             if not s:
                 continue
@@ -3014,10 +3091,41 @@ def run_repl(base, api_key, model, system, timeout, temp, max_tok, stream, color
                 print("/reset clear history  /system <text> set system  /model select model  /base <url>")
                 print("/clear clear terminal + new session  /new new session")
                 print("/save [name] (no name = AI title)  /resume [name] (no name = picker)")
+                print("/export json|md PATH (current chat, create-only)  /delete NAME (confirm snapshot deletion)")
                 print("/stream on|off  /color on|off  /context size  /usage provider counts  /compact [keep=4]  /diff  /undo  /quit")
                 print("/root [directory] show/change tool root (supports ~; no shell needed)")
                 print("/shell on|off enable/disable UNSANDBOXED shell for this session (allows Git commit/push)")
                 print("Commands: /reset /system /model /base /root /save /resume /stream /color /quit")
+                continue
+            if s == "/export" or s.startswith("/export "):
+                try:
+                    parts = s.split(maxsplit=2)
+                    if len(parts) != 3:
+                        raise ValueError("usage: /export json|md PATH (current conversation)")
+                    obj = {"version": 2, "model": model, "messages": messages,
+                           "context": session_context(base, runner.root if runner else Path.cwd()),
+                           "turn_state": turn_state, "session_id": store.session_id,
+                           "updated_at": time.time()}
+                    export_session(obj, parts[2], parts[1])
+                    print("(exported current conversation; contains private data)")
+                except (OSError, ValueError) as e:
+                    print("(export failed: %s)" % safe_terminal(str(e)))
+                continue
+            if s == "/delete" or s.startswith("/delete "):
+                try:
+                    name = s[len("/delete"):].strip()
+                    session_path(hist_dir, name)
+                    print("(deletes only this disk snapshot; aliases/exports remain; active sessions may recreate it)")
+                    answer = input("Type %s to delete (Enter = cancel): " % name).strip()
+                    if answer != name:
+                        print("(delete cancelled)")
+                        continue
+                    delete_session(hist_dir, name)
+                    print("(deleted %s)" % name)
+                except (EOFError, KeyboardInterrupt):
+                    print("\n(delete cancelled)")
+                except (OSError, ValueError) as e:
+                    print("(delete failed: %s)" % safe_terminal(str(e)))
                 continue
             if s == "/save" or s.startswith("/save "):
                 name = s[len("/save"):].strip()
@@ -3318,6 +3426,12 @@ def configured_main(argv=None):
     if args.version:
         print("dani-ai " + VERSION)
         return 0
+    words = list(args.prompt)
+    if len(words) > 1 and words[0] == "history":
+        try:
+            return session_history_command(words, history_dir(), args.no_history)
+        except (OSError, ValueError) as e:
+            raise AIError(str(e)) from e
     api_key, key_source = resolve_key(args.api_key)
     file_base, file_model = "", ""
     if key_source and key_source != "--api-key" and key_source not in KEY_ENVS:

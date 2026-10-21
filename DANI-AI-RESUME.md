@@ -31,9 +31,13 @@ User đã yêu cầu commit và push phần dani-ai sau đợt 12. Chỉ đưa c
 
 16. Scan cursor/pagination find_files/search_files: next_cursor/single-use opaque process-only, resume fd-relative DFS, 2000 entries/100 matches/16000 chars mỗi page, long lines clip. Max 4 active, lazy idle TTL 120s, parameter/policy invalidation; reset/resume/root/exit đóng fd. Không snapshot FS/sorted order/full gitignore.
 
+17. BTC OI history + klines multi-timeframe opt-in: `intervals` 1..4, chứa primary, tổng <=400 candles; per-frame partial errors/shared budget, window/closed_window, giữ primary aliases. `open_interest_history` sampled contracts/value/time/age/change, strict finite/nonnegative/increasing timestamps, default sections giữ nguyên; manifest output 256 KiB. Chưa price/OI alignment hay SMC signals.
+
+18. Session export/delete UX: keyless local `history export NAME json|md PATH`, `history delete NAME CONFIRM`; REPL `/export json|md PATH` current RAM, `/delete NAME` gõ lại tên. Create-only 0600 export không overwrite/chmod parent; delete exact snapshot under lock, nofollow/regular-singlelink bounded session reads. Private chặn cả hai. Không scrub secrets/alias cascade/secure erase; active checkpoints có thể recreate.
+
 ## Kiểm tra gần nhất
 
-- `make check-ai`: **35 PASS, 0 FAIL; 100 Python regression tests OK**.
+- `make check-ai`: **35 PASS, 0 FAIL; 106 Python regression tests OK**.
 - `python3 -m py_compile dani-ai ai.tools/btc_market.py test/test-ai-regression.py`: pass.
 - `git diff --check`: pass.
 - Chỉ mock/local HTTP, chưa dùng provider hay Binance thật. CI matrix chưa chạy trên GitHub. Chưa chạy full WM suite.
@@ -41,7 +45,7 @@ User đã yêu cầu commit và push phần dani-ai sau đợt 12. Chỉ đưa c
 ## Các file thuộc công việc AI
 
 - `dani-ai`
-- `ai.tools/btc_market.py`
+- `ai.tools/btc_market.py`, `ai.tools/btc_market.json`
 - `test/test-ai-regression.py`, `test/test-ai.sh`
 - `README.md`, `ai.system.example`
 - `Makefile`
@@ -55,15 +59,15 @@ Working tree từ trước có thay đổi WM/launcher: `run.config`, `src/clien
 
 ## Phần còn lại / thứ tự đề xuất
 
-Đã hoàn thành session ID + concurrency locking, provider profiles/capabilities, context compaction/usage, builtin path/domain policy, `/diff`/`/undo` RAM-only và cooperative turn deadline/retry opt-in. Đã thêm scan cursor/pagination. Ưu tiên tiếp theo đề xuất: **OI history/multi-timeframe** hoặc session export/delete UX. User chưa chọn cụ thể bước tiếp theo.
+Đã hoàn thành session ID + concurrency locking, provider profiles/capabilities, context compaction/usage, builtin path/domain policy, `/diff`/`/undo` RAM-only và cooperative turn deadline/retry opt-in. Đã thêm scan cursor/pagination. Đã bổ sung OI history/klines multi-timeframe opt-in (đợt 13). Session export/delete UX đã hoàn thành đợt 14 theo yêu cầu user. Ưu tiên tiếp theo đề xuất: phân tích price/OI deterministic có alignment/test hoặc session retention; user chưa chọn bước tiếp theo. User đã yêu cầu commit/push đợt 13–14; xem git log và remote để kiểm tra trạng thái publish. Các lần commit tiếp theo vẫn cần user yêu cầu.
 
-- Session ID + advisory locking đã có; `last.json` cố ý là latest snapshot chung, không phải identity. Cần retention/cleanup/export/delete nếu tiếp tục mở rộng session UX.
+- Session ID + advisory locking đã có; `last.json` cố ý là latest snapshot chung, không phải identity. Export/delete một snapshot đã có; còn retention/bulk cleanup nếu tiếp tục mở rộng session UX.
 - Path/domain policy CLI đã có; chưa policy file riêng hay URL path rules. Không coi policy/prompt là sandbox hay DLP; shell/custom và git_status metadata không được lọc theo deny-path.
 - `/diff`/`/undo` đã có RAM-only latest turn; chưa persistent journal/crash recovery, mkdir undo hoặc multi-file transaction. Không reset toàn repo; tránh writer ngoài sửa đồng thời lúc undo.
 - Cooperative total-turn deadline và bounded retry đã có; DNS/connect/response-header/fs/lock/approval chưa có hard wall-clock deadline. Retry chỉ opt-in HTTP transient status, không transport ambiguity.
 - Compaction đã có dạng bỏ nguyên lượt cũ; chưa model summary/auto-threshold. Usage đã có process-only provider counts; chưa persistent ledger/cost có bảng giá cấu hình. Profile đã có base/key_env/model/capabilities cố định; chưa auto-discovery hay switch trong REPL.
 - Scan cursor/pagination đã có; chưa đầy đủ `.gitignore` (hiện chỉ `.aiignore` glob đơn giản) hoặc stable FS snapshot/sorted scan.
-- OI history/multi-timeframe market analysis.
+- OI history/multi-timeframe data đã có; chưa align price/OI hoặc phân tích SMC/BOS/CHoCH/FVG deterministic.
 - `/retry`, `/edit-last`, branching, export/delete, attach/editor, JSONL, read-only parallelism nếu có nhu cầu.
 
 ## Ghi chú khi rà soát tiếp

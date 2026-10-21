@@ -738,6 +738,81 @@ for i in range(12):
             runner.include_ignored = False
             self.assertIn('error', json.loads(runner.execute('find_files', args)))
 
+    def test_session_export_delete_local_cli(self):
+        with tempfile.TemporaryDirectory() as d:
+            hist = Path(d) / 'history'
+            hist.mkdir()
+            messages = [{'role': 'system', 'content': 'private'},
+                        {'role': 'user', 'content': 'hello ```\n# heading'}]
+            m.save_session(str(hist / 'demo.json'), 'm', messages, {'root': '/tmp'})
+            with patch.object(m, 'history_dir', return_value=str(hist)), \
+                 patch.object(m, 'resolve_key', side_effect=AssertionError('must remain local')), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                for fmt in ('json', 'md'):
+                    target = Path(d) / ('export.' + fmt)
+                    self.assertEqual(m.main(['history', 'export', 'demo', fmt, str(target)]), 0)
+                    self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+                    self.assertIn('private', target.read_text())
+                    if fmt == 'json':
+                        self.assertEqual(m.load_session(str(target))[1], messages)
+                    with self.assertRaises(m.AIError):
+                        m.configured_main(['history', 'export', 'demo', fmt, str(target)])
+                with self.assertRaises(m.AIError):
+                    m.configured_main(['history', 'delete', 'demo'])
+                self.assertTrue((hist / 'demo.json').exists())
+                for command in (['history', 'delete', 'demo', 'CONFIRM'],
+                                ['history', 'export', 'demo', 'json', str(Path(d) / 'blocked')]):
+                    with self.assertRaises(m.AIError):
+                        m.configured_main(['--no-history'] + command)
+                self.assertEqual(m.main(['history', 'delete', 'demo', 'CONFIRM']), 0)
+            self.assertFalse((hist / 'demo.json').exists())
+            self.assertTrue((Path(d) / 'export.json').exists())
+
+    def test_session_export_delete_file_guards(self):
+        with tempfile.TemporaryDirectory() as d:
+            obj = {'model': 'm', 'messages': []}
+            target = Path(d) / 'target'
+            target.write_text('keep')
+            link = Path(d) / 'link.json'
+            link.symlink_to(target)
+            with self.assertRaises(OSError):
+                m.export_session(obj, str(link), 'json')
+            with self.assertRaises(OSError):
+                m.delete_session(d, 'link')
+            self.assertEqual(target.read_text(), 'keep')
+            for name in ('../target', '/tmp/x', '', 'a.json'):
+                with self.assertRaises(ValueError):
+                    m.delete_session(d, name)
+            (Path(d) / 'bad.json').write_text('{}')
+            with self.assertRaises(ValueError):
+                m.delete_session(d, 'bad')
+            self.assertTrue((Path(d) / 'bad.json').exists())
+            os.link(target, Path(d) / 'hard.json')
+            with self.assertRaises(ValueError):
+                m.delete_session(d, 'hard')
+            self.assertFalse(any(p.name.startswith('.dani-ai-export-') for p in Path(d).iterdir()))
+
+    def test_session_export_delete_repl(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / 'current.json'
+            m.save_session(str(Path(d) / 'saved.json'), 'm', [])
+            out = io.StringIO()
+            with patch.object(m, 'input_boxed', side_effect=[
+                    '/export json ' + str(target), '/delete saved', '/delete saved', '/q']), \
+                 patch('builtins.input', side_effect=['no', 'saved']), \
+                 contextlib.redirect_stdout(out):
+                m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d,
+                       initial=('m', [{'role': 'user', 'content': 'hello'}]))
+            self.assertEqual(m.load_session(str(target))[1][0]['content'], 'hello')
+            self.assertFalse((Path(d) / 'saved.json').exists())
+            self.assertIn('delete cancelled', out.getvalue())
+            target.unlink()
+            with patch.object(m, 'input_boxed', side_effect=[
+                    '/export json ' + str(target), '/delete last', '/q']), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                m.repl('x', 'fake', 'm', '', 1, None, None, False, False, d, no_history=True)
+            self.assertFalse(target.exists())
+
     def test_private_repl_never_persists(self):
         with tempfile.TemporaryDirectory() as d, \
              patch.object(m, 'setup_readline') as setup, \
@@ -748,7 +823,7 @@ for i in range(12):
             setup.assert_not_called()
             save.assert_not_called()
             self.assertFalse(list(Path(d).iterdir()))
-            self.assertIn('save/resume disabled', out.getvalue())
+            self.assertIn('save/resume/export/delete disabled', out.getvalue())
         # Restore normal history behavior for subsequent tests in this process.
         if m._rl is not None and hasattr(m._rl, 'set_auto_history'):
             m._rl.set_auto_history(True)
@@ -1625,6 +1700,83 @@ for i in range(12):
              patch('sys.stdin', io.StringIO('{}')), contextlib.redirect_stdout(io.StringIO()):
             btc.main()
             get.assert_not_called()
+
+    def test_btc_multiframe_partial_and_closed_windows(self):
+        btc = load_source('btc_multiframe', AI.parent / 'ai.tools/btc_market.py')
+        rows = [[1000, '10', '12', '9', '10', '5', 2000],
+                [2001, '10', '22', '9', '20', '5', 9000]]
+        args = {'include': ['klines'], 'interval': '1h', 'intervals': ['4h', '1h', '15m']}
+        out = io.StringIO()
+        with patch.object(btc, 'get', side_effect=[TimeoutError('budget'), rows, rows]) as get, \
+             patch.object(btc.time, 'time', return_value=3), \
+             patch('sys.stdin', io.StringIO(json.dumps(args))), contextlib.redirect_stdout(out):
+            self.assertEqual(btc.main(), 0)
+        result = json.loads(out.getvalue())
+        self.assertTrue(result['partial'])
+        self.assertEqual(result['errors'][0]['interval'], '4h')
+        self.assertEqual(set(result['timeframes']), {'1h', '15m'})
+        self.assertEqual(result['window']['change_pct'], 100)
+        self.assertEqual(result['klines']['closed_window']['change_pct'], 0)
+        self.assertEqual(result['klines'], result['timeframes']['1h'])
+        self.assertEqual(len({c.kwargs['deadline'] for c in get.call_args_list}), 1)
+        for bad in ([], ['1h', '1h'], ['4h'], ['1h', []], '1h',
+                    ['1h', '4h', '1d', '1w', '15m']):
+            with patch.object(btc, 'get') as get, \
+                 patch('sys.stdin', io.StringIO(json.dumps({'intervals': bad}))), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(btc.main(), 2)
+                get.assert_not_called()
+        with patch.object(btc, 'get') as get, \
+             patch('sys.stdin', io.StringIO('{"intervals":["1h","4h","1d"],"limit":200}')), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(btc.main(), 2)
+            get.assert_not_called()
+
+    def test_btc_oi_history_validation_and_changes(self):
+        btc = load_source('btc_oi_history', AI.parent / 'ai.tools/btc_market.py')
+        def run(rows, interval='1h'):
+            out = io.StringIO()
+            with patch.object(btc, 'get', return_value=rows) as get, \
+                 patch.object(btc.time, 'time', return_value=5), \
+                 patch('sys.stdin', io.StringIO(json.dumps({
+                     'include': ['open_interest_history'], 'interval': interval}))), \
+                 contextlib.redirect_stdout(out):
+                self.assertEqual(btc.main(), 0)
+            self.assertEqual(get.call_args.args[0], '/futures/data/openInterestHist')
+            self.assertEqual(get.call_args.args[1]['period'], btc.LONG_SHORT_PERIODS.get(interval, interval))
+            return json.loads(out.getvalue())
+        rows = [{'timestamp': 1000, 'sumOpenInterest': '100', 'sumOpenInterestValue': '1000'},
+                {'timestamp': 3000, 'sumOpenInterest': '110', 'sumOpenInterestValue': '1210'}]
+        for interval in sorted(btc.INTERVALS):
+            result = run(rows, interval)['open_interest_history']
+            self.assertEqual(result['contracts_change_pct'], 10)
+            self.assertEqual(result['value_change_pct'], 21)
+            self.assertEqual(result['age_seconds'], 2)
+        for empty in ([], rows[:1]):
+            self.assertIsNone(run(empty)['open_interest_history']['contracts_change_pct'])
+        for field in ('sumOpenInterest', 'sumOpenInterestValue', 'timestamp'):
+            for value in (None, True, 'NaN', 'Infinity', '-1'):
+                bad = dict(rows[0], **{field: value})
+                self.assertTrue(run([bad])['partial'])
+        for bad in ({}, [42], rows[::-1], [rows[0], rows[0]]):
+            self.assertTrue(run(bad)['partial'])
+        self.assertIsNone(btc.change_pct(0, 10))
+        self.assertIsNone(btc.change_pct(1e-308, 1e308))
+
+    def test_btc_multiframe_manifest_output_budget(self):
+        btc = load_source('btc_output_budget', AI.parent / 'ai.tools/btc_market.py')
+        manifest = json.loads((AI.parent / 'ai.tools/btc_market.json').read_text())
+        rows = [[i * 1000, '123456.12345678', '123457.12345678', '123455.12345678',
+                 '123456.12345678', '123456.12345678', i * 1000 + 999, '123456789.12345678']
+                for i in range(200)]
+        out = io.StringIO()
+        with patch.object(btc, 'get', return_value=rows), \
+             patch('sys.stdin', io.StringIO('{"include":["klines"],"intervals":["1h","4h"],"limit":200}')), \
+             contextlib.redirect_stdout(out):
+            self.assertEqual(btc.main(), 0)
+        self.assertLess(len(out.getvalue().encode()), manifest['output_limit'])
+        self.assertEqual(json.loads(out.getvalue())['klines']['count'], 200)
+        self.assertNotIn('open_interest_history', btc.DEFAULT_SECTIONS)
 
     def test_btc_response_size_limit(self):
         btc = load_source('btc_limit', AI.parent / 'ai.tools/btc_market.py')

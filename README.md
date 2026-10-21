@@ -304,10 +304,39 @@ dani-ai --profile openai-mini chat
   ben ngoai. Hai file ID/last khong phai mot transaction crash-atomic:
   neu publish last loi, ban theo ID van con. Chua co retention/cleanup tu dong.
 
+### Session export/delete (local, khong can API key)
+
+```sh
+dani-ai history                                      # xem ten snapshot
+dani-ai history export TEN json ~/chat-backup.json   # JSON giu metadata/messages
+dani-ai history export TEN md ~/chat-backup.md       # Markdown de doc/luu tru
+dani-ai history delete TEN CONFIRM                  # xoa dung snapshot TEN
+```
+
+- TEN la stem khong co `.json`, chi gom chu/so/`_`/`-`; co the dung `last`,
+  ten `/save` hoac `session-<uuid>`. Sai cu phap/khong co `CONFIRM` khong xoa.
+- Trong REPL: `/export json|md PATH` xuat **conversation hien tai trong RAM**,
+  khong can `/save` hay goi model; PATH la phan con lai cua dong, ho tro space
+  va `~` (khong them shell quotes). `/delete TEN` yeu cau nhap lai TEN de xac nhan.
+- Export create-only, atomic publish, mode `0600`; parent phai ton tai va
+  khong bi chmod. Tu choi ghi de file/symlink. JSON giu nguyen fields cua
+  snapshot; Markdown giu message JSON trong indented blocks (gom tool calls,
+  results va image payload), khong phai dinh dang import rieng.
+- **Export chua du lieu rieng tu**: system prompt, context root/provider,
+  toan bo tool output va attachments; khong scrub secrets. Khong in noi dung
+  export ra terminal; user tu chon noi luu. Khong export stdout/overwrite.
+- Delete chi unlink mot snapshot duoi history lock, tu choi symlink,
+  hardlink/non-regular va JSON khong co messages list. Khong xoa alias/`last`
+  theo session_id, exports, readline history hay workspace. Khong secure erase.
+  Session dang chay van giu RAM va co the tao lai ID/last o checkpoint tiep;
+  thoat cac phien truoc neu muon cleanup. Chua bulk delete/retention/undo-delete.
+- `--no-history` chan export/delete, ke ca CLI local. Cac lenh CLI nay chay
+  truoc provider/key/tool configuration, khong goi network hay model.
+
 ### Private mode va local history
 
 - `dani-ai chat --no-history`: khong doc/ghi readline history, khong autosave,
-  khong ghi tool checkpoint; `/save` va `/resume` bi tat, khong dung chung
+  khong ghi tool checkpoint; `/save`, `/resume`, `/export`, `/delete` bi tat, khong dung chung
   `--continue`. Single-shot cung ton trong flag nay.
 - Tool call/result van giu trong bo nho khi loi, nhung crash/kill se khong co
   journal tren dia de phuc hoi. Day KHONG phai che do offline hay sandbox:
@@ -653,8 +682,35 @@ BTC tool gioi han 2 MiB/response, budget doc du lieu 24s trong process timeout
 Timestamp dung unix milliseconds; ticker/funding/OI co `age_seconds` khi nguon
 tra timestamp. Nen co `close_time`/`is_closed`; nen cuoi co the chua dong.
 `annualized_pct` chi la phep ngoai suy gia dinh funding 8 gio va rate khong doi,
-KHONG phai lich funding da xac minh, du bao hay loi nhuan. OI hien la snapshot,
-chua co OI history. DNS/connect/header van theo gioi han timeout nen tang.
+KHONG phai lich funding da xac minh, du bao hay loi nhuan.
+DNS/connect/header van theo gioi han timeout nen tang.
+
+BTC multi-timeframe va OI history la opt-in:
+
+- `intervals`: 1..4 khung duy nhat, phai chua `interval` chinh (mac dinh `1h`);
+  tong `len(intervals) * limit <= 400`. Chi klines lay nhieu khung; funding,
+  OI va long/short van lay mot lan, theo interval chinh khi can period.
+- Khi co nhieu khung, `timeframes[interval]` chua candles, `window` (gom nen
+  chua dong) va `closed_window` (chi nen da dong). `klines`/`window` top-level
+  van la khung chinh de tuong thich. Loi tung khung ghi `errors[].interval`,
+  giu cac khung thanh cong; moi request dung chung budget 24s, khong retry.
+- Them `open_interest_history` vao `include` de goi `openInterestHist`;
+  mac dinh van chi co nam section cu. Period mapping giong long/short.
+  Binance chi cung cap lich su OI trong thang gan nhat. Tra samples timestamp,
+  contracts/value, age va % thay doi dau-cuoi; duoi hai mau hoac mau dau bang
+  zero thi change la null. Mau OI loi/non-finite/am hoac timestamp khong tang
+  lam section loi thay vi am tham suy dien xu huong.
+- OI snapshot khong the ket luan OI trend. OI value con phu thuoc gia;
+  % thay doi chi mo ta cua so mau, khong la tin hieu mua/ban, BOS/CHoCH hay
+  cam ket loi nhuan. Chua tu dong phoi hop price/OI hoac phat hien SMC.
+- Manifest mau tang output budget len 256 KiB de chua nhieu khung;
+  copy lai ca `.py` va `.json` neu da cai tool cu.
+
+Vi du tool arguments:
+
+```json
+{"interval":"1h","intervals":["4h","1h","15m"],"limit":100,"include":["klines","open_interest_history"]}
+```
 
 Tool mau: `ai.tools/btc_market.json` + `ai.tools/btc_market.py` lay du lieu
 cong khai Binance USD-M futures (ticker 24h, klines OHLCV + thong ke cua so,
