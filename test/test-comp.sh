@@ -11,7 +11,7 @@ export DISPLAY=$D
 fail=0
 trap 'kill $WM $COMP $XVFB 2>/dev/null; rm -rf "$CFG"' EXIT INT TERM
 
-Xvfb $D -screen 0 1280x800x24 +extension COMPOSITE +extension DAMAGE +extension RENDER +extension FIXES &
+Xvfb $D -screen 0 1280x800x24 +extension COMPOSITE +extension DAMAGE +extension RENDER +extension XFIXES &
 XVFB=$!
 sleep 1
 CFG=$(mktemp -d)

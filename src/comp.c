@@ -94,6 +94,7 @@ static int present_event = 0;      /* event base (chỉ để log) */
 static XID present_eid = None;     /* event ID từ XPresentSelectInput */
 static uint32_t present_serial = 0; /* serial cho XPresentPixmap */
 static int present_pending = 0;    /* có present đang chờ complete? */
+static int present_idle = 1;       /* back_buf đã idle, có thể ghi lại */
 static long long present_sent_ms = 0; /* thời điểm gửi present */
 #define PRESENT_TIMEOUT_MS 200     /* fallback nếu complete không về */
 #endif
@@ -222,7 +223,8 @@ static double alpha_val[ALPHA_SLOTS] = { -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.
 static unsigned alpha_next = 0;
 /* cache stacking order: frame content-only reuse, khỏi QueryTree mỗi frame */
 static Window *stack_cache = NULL;
-static unsigned stack_nk = 0;
+static unsigned stack_cap = 0;
+static unsigned stack_nk = 0; /* số phần tử hợp lệ trong stack_cache */
 static XWindowAttributes root_cache; /* attrs root cho frame content-only */
 static int have_root = 0;
 static int opt_debug = 0;  /* DANI_COMP_DEBUG=1: log event/paint ra stderr */
@@ -253,15 +255,17 @@ static int xerror_trapped(Display *d, XErrorEvent *e) {
 
 static void trap_errors(void) {
     if (trap_depth++ == 0) {
+        /* Drain errors from requests issued before this operation. */
+        XSync(dpy, False);
         trapped_err = 0;
         trapped_code = 0;
         XSetErrorHandler(xerror_trapped);
     }
 }
 
-static void untrap_errors(void) {
-    if (trap_depth <= 0) return;
-    if (--trap_depth > 0) return;
+static int untrap_errors(void) {
+    if (trap_depth <= 0) return 0;
+    if (--trap_depth > 0) return trapped_err;
     XSync(dpy, False);
     if (trapped_err) {
         char msg[128] = "";
@@ -270,6 +274,7 @@ static void untrap_errors(void) {
         fprintf(stderr, "dani-comp: trapped X error code=%d (%s)\n", trapped_code, msg);
     }
     XSetErrorHandler(xerror_ignore);
+    return trapped_err;
 }
 
 static long long now_ms(void) {
@@ -288,16 +293,18 @@ static int repaint_due(void) {
     if (!dirty && !fading) return 0;
     if (now_ms() - last_paint < 16) return 0;
 #ifdef WITH_XPRESENT
-    if (present_pending) {
-        if (now_ms() - present_sent_ms > PRESENT_TIMEOUT_MS) {
-            present_ok = 0;
-            present_pending = 0;
-            if (opt_debug)
-                fprintf(stderr, "dani-comp: XPresent timeout, fallback to XCopyArea\n");
-        } else {
-            return 0; /* flip đang chờ PresentCompleteNotify */
-        }
+    if ((present_pending || !present_idle) &&
+        now_ms() - present_sent_ms > PRESENT_TIMEOUT_MS) {
+        present_ok = 0;
+        present_pending = 0;
+        present_idle = 1;
+        if (opt_debug)
+            fprintf(stderr, "dani-comp: XPresent timeout, fallback to XCopyArea\n");
     }
+    if (present_ok && !present_idle)
+        return 0; /* không ghi vào pixmap đang được scanout */
+    if (present_pending)
+        return 0; /* chờ CompleteNotify trước khi submit frame kế */
 #endif
     return 1;
 }
@@ -328,24 +335,29 @@ static int read_shape(Win *w) {
     w->shaped = 0;
     if (!shape_ok) return 0;
     if (!w->w || !w->h) return 0; /* ensure_win_pict gọi sau khi biết size */
+    Bool bounding_shaped = False, clip_shaped = False;
+    int bx = 0, by = 0, cx = 0, cy = 0;
+    unsigned bw = 0, bh = 0, cw = 0, ch = 0;
+    if (!XShapeQueryExtents(dpy, w->id, &bounding_shaped,
+            &bx, &by, &bw, &bh, &clip_shaped, &cx, &cy, &cw, &ch))
+        return 0;
+    if (!bounding_shaped) return 0;
     int n = 0, ord = 0;
     XRectangle *rects = XShapeGetRectangles(dpy, w->id, ShapeBounding, &n, &ord);
-    if (!rects || n <= 0) { if (rects) XFree(rects); return 0; }
-    /* bao thủ: 1 rect chi coi la shaped khi ro rang nho hon footprint.
-     * w/h từ attrs có thể stale so với rects (race resize) — so area
-     * tuyệt đối tránh false-shaped (clip stale làm mất nội dung). */
-    if (n == 1) {
-        long long rect_area = (long long)rects[0].width * rects[0].height;
-        long long full_area = (long long)(w->w + 2 * w->bw) * (w->h + 2 * w->bh);
-        if (rect_area * 2 >= full_area) { XFree(rects); return 0; }
-    }
+    if (n < 0) { if (rects) XFree(rects); return 0; }
+    /* n == 0 is a valid explicit empty shape, not an unshaped window. */
     w->clip_rects = rects; /* giữ nguyên để dịch lúc vẽ */
     w->n_clip = n;
     w->shaped = 1;
     if (opt_debug) {
-        fprintf(stderr, "dani-comp: shaped 0x%lx rects=%d first=%d,%d %ux%u\n",
-            (unsigned long)w->id, n, rects[0].x, rects[0].y,
-            rects[0].width, rects[0].height);
+        if (n > 0) {
+            fprintf(stderr, "dani-comp: shaped 0x%lx rects=%d first=%d,%d %ux%u\n",
+                (unsigned long)w->id, n, rects[0].x, rects[0].y,
+                rects[0].width, rects[0].height);
+        } else {
+            fprintf(stderr, "dani-comp: shaped 0x%lx rects=0 (empty)\n",
+                (unsigned long)w->id);
+        }
     }
     return 1;
 }
@@ -407,6 +419,8 @@ static void win_refresh_flags(Win *w) {
     w->wintype = read_wintype(w->id);
 }
 
+static void win_del(Window id);
+
 static Win *win_add(Window id) {
     Win *w = win_get(id);
     if (w) { win_refresh_flags(w); return w; }
@@ -435,7 +449,11 @@ static Win *win_add(Window id) {
         XShapeSelectInput(dpy, id, ShapeNotifyMask); /* bounding shape đổi */
     trap_errors();
     w->damage = XDamageCreate(dpy, id, XDamageReportNonEmpty);
-    untrap_errors();
+    if (untrap_errors()) {
+        w->damage = None;
+        win_del(id);
+        return NULL;
+    }
     win_refresh_flags(w);
     /* override_redirect (bar của daniwm, menu...) không fade: hiện ngay */
     if (w->override) w->born = 0;
@@ -686,14 +704,14 @@ static int ensure_win_pict(Win *w) {
     /* cửa sổ vừa unmap/map lại: pixmap cũ vô nghĩa */
     trap_errors();
     Pixmap pm = XCompositeNameWindowPixmap(dpy, w->id);
-    untrap_errors();
-    if (!pm) return 0;
+    int pm_error = untrap_errors();
+    if (pm_error || !pm) return 0;
     XRenderPictFormat *fmt = XRenderFindVisualFormat(dpy, a.visual);
     if (!fmt) { XFreePixmap(dpy, pm); return 0; }
     trap_errors();
     Picture pict = XRenderCreatePicture(dpy, pm, fmt, 0, NULL);
-    untrap_errors();
-    if (!pict) { XFreePixmap(dpy, pm); return 0; }
+    int pict_error = untrap_errors();
+    if (pict_error || !pict) { XFreePixmap(dpy, pm); return 0; }
     w->pixmap = pm; w->pict = pict;
     w->w = a.width; w->h = a.height;
     read_shape(w); /* shape tương thích với geometry mới */
@@ -734,7 +752,7 @@ static int shape_poll(long long now) {
     for (Win *w = wins; w; w = w->next) {
         if (!w->mapped || w->shaped || w->born <= 0 || w->shape_checked >= 2)
             continue;
-        if (w->pict == None) continue; /* chưa realize: chờ frame vẽ pixmap */
+        if (w->pict == None) continue; /* chưa realize: không poll/busy-loop */
         long long age = now - w->born;
         if (age >= SHAPE_THR[w->shape_checked]) {
             if (read_shape(w)) changed = 1;
@@ -751,6 +769,7 @@ static long long shape_next_wake(long long now) {
     for (Win *w = wins; w; w = w->next) {
         if (!w->mapped || w->shaped || w->born <= 0 || w->shape_checked >= 2)
             continue;
+        if (w->pict == None) continue; /* khớp shape_poll(): chưa có lịch */
         long long due = w->born + SHAPE_THR[w->shape_checked] - now;
         if (due < 0) due = 0;
         if (next < 0 || due < next) next = due;
@@ -793,18 +812,19 @@ static void repaint(void) {
     if (stack_dirty || !stack_cache) {
         if (!XQueryTree(dpy, root, &r, &p, &kids, &nk)) return;
         if (nk > 0) {
-            if (nk > stack_nk) {
-                free(stack_cache);
-                stack_cache = malloc(nk * sizeof(Window));
-                if (!stack_cache) { XFree(kids); stack_nk = 0; return; }
-                stack_nk = nk;
+            if (nk > stack_cap) {
+                Window *new_cache = realloc(stack_cache, nk * sizeof(Window));
+                if (!new_cache) { XFree(kids); return; }
+                stack_cache = new_cache;
+                stack_cap = nk;
             }
             memcpy(stack_cache, kids, nk * sizeof(Window));
+            stack_nk = nk;
             XFree(kids);
             kids = stack_cache;
         } else {
-            free(stack_cache);
-            stack_cache = NULL; stack_nk = 0;
+            stack_nk = 0;
+            nk = 0;
         }
     } else {
         nk = stack_nk;
@@ -916,6 +936,7 @@ static void repaint(void) {
         int dx = w->x, dy = w->y;
         int dw = w->w, dh = w->h;
         if (dw <= 0 || dh <= 0) continue;
+        if (w->shaped && w->n_clip <= 0) continue; /* empty bounding shape */
         int bw2 = w->bw;
 
         double a = win_alpha(w, now);
@@ -982,14 +1003,16 @@ static void repaint(void) {
      * (= toạ độ pixmap). (Truyền cur_clip vào x_off/y_off từng đặt pixmap
      * (0,0) vào giữa màn hình -> sai nội dung vùng repaint cục bộ.) */
 #ifdef WITH_XPRESENT
-    if (present_ok && present_pending && now_ms() - present_sent_ms > PRESENT_TIMEOUT_MS) {
-        /* timeout: complete không về (Xvfb, driver cũ) -> tắt hẳn */
+    if (present_ok && (present_pending || !present_idle) &&
+        now_ms() - present_sent_ms > PRESENT_TIMEOUT_MS) {
+        /* timeout: complete/idle không về (Xvfb, driver cũ) -> tắt hẳn */
         present_ok = 0;
         present_pending = 0;
+        present_idle = 1;
         if (opt_debug)
             fprintf(stderr, "dani-comp: XPresent timeout, fallback to XCopyArea\n");
     }
-    if (present_ok && !present_pending) {
+    if (present_ok && !present_pending && present_idle) {
         /* A/B: DANI_COMP_NO_PRESENT=1 tắt hẳn XPresent -> fallback XCopyArea.
          * Mẹo chẩn đoán lỗi content-only trên hardware thật (Xvfb không có
          * XPresent nên không test được path này). */
@@ -1008,6 +1031,7 @@ static void repaint(void) {
             PresentOptionNone, 0, 0, 0, NULL, 0);
         if (update != None) XFixesDestroyRegion(dpy, update);
         present_pending = 1;
+        present_idle = 0;
         present_sent_ms = now_ms();
         }
     }
@@ -1064,7 +1088,8 @@ static int xerror_ignore(Display *d, XErrorEvent *e) {
      * chết (RenderBadPicture) và cleanup XDamageDestroy dính BadDamage —
      * server bỏ qua các request này. Chỉ log ở debug mode. Log mọi lỗi
      * khác (BadMatch, BadPictOp... = bug thật). */
-    if (e->error_code != BadWindow && e->error_code != BadDamage &&
+    if (e->error_code != BadWindow &&
+        e->error_code != dmg_error + BadDamage &&
         e->error_code != render_errbase + BadPicture) {
         char msg[128] = "";
         XGetErrorText(dpy, e->error_code, msg, sizeof(msg));
@@ -1235,7 +1260,7 @@ int main(int argc, char **argv) {
     /* XPresent: đăng ký nhận events trên root */
     if (present_ok) {
         present_eid = XPresentSelectInput(dpy, root,
-            PresentCompleteNotifyMask);
+            PresentCompleteNotifyMask | PresentIdleNotifyMask);
         present_ok = (present_eid != None);
     }
 #endif
@@ -1292,7 +1317,10 @@ int main(int argc, char **argv) {
 #ifdef WITH_XPRESENT
             if (present_pending &&
                 now_ms() - present_sent_ms <= PRESENT_TIMEOUT_MS) {
-                budget = -1; /* flip đang chờ: đừng poll 0us — đợi complete về */
+                budget = (long)((PRESENT_TIMEOUT_MS -
+                    (now_ms() - present_sent_ms)) * 1000);
+            } else if (present_ok && !present_idle) {
+                budget = -1; /* chờ IdleNotify, không ghi đè back_buf */
             } else
 #endif
             budget = (elapsed >= 16) ? 0 : (long)((16 - elapsed) * 1000);
@@ -1492,16 +1520,21 @@ int main(int argc, char **argv) {
                  * present_event + ... kiểu ShapeNotify là dead code. */
                 XGenericEventCookie *cook = &ev.xcookie;
                 if (present_ok && cook->extension == present_opcode &&
-                    cook->evtype == PresentCompleteNotify &&
                     XGetEventData(dpy, cook)) {
-                    XPresentCompleteNotifyEvent *pe =
-                        (XPresentCompleteNotifyEvent *)cook->data;
-                    /* frame đã hiển thị: sẵn sàng cho frame tiếp */
-                    present_pending = 0;
-                    if (opt_debug >= 2)
-                        fprintf(stderr, "dani-comp: present complete serial=%u ust=%llu msc=%llu mode=%u\n",
-                            pe->serial_number, (unsigned long long)pe->ust,
-                            (unsigned long long)pe->msc, pe->mode);
+                    if (cook->evtype == PresentCompleteNotify) {
+                        XPresentCompleteNotifyEvent *pe =
+                            (XPresentCompleteNotifyEvent *)cook->data;
+                        present_pending = 0;
+                        if (opt_debug >= 2)
+                            fprintf(stderr, "dani-comp: present complete serial=%u ust=%llu msc=%llu mode=%u\n",
+                                pe->serial_number, (unsigned long long)pe->ust,
+                                (unsigned long long)pe->msc, pe->mode);
+                    } else if (cook->evtype == PresentIdleNotify) {
+                        XPresentIdleNotifyEvent *pe =
+                            (XPresentIdleNotifyEvent *)cook->data;
+                        if (pe->pixmap == back_buf)
+                            present_idle = 1;
+                    }
                     XFreeEventData(dpy, cook);
                 }
 #endif
