@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>daniwm — minimal X11 tiling WM</title>
+<meta name="description" content="daniwm: tiling + monocle X11 window manager thuần C/Xlib, bar có tasklist + system tray, EWMH, multi-monitor, kèm dani-comp (compositor) và dani-run (launcher).">
+<meta name="color-scheme" content="dark">
+<style>
+  :root{
+    /* gruvbox dark aqua */
+    --bg:#1d2021; --bg2:#282828; --fg:#ebe5c5; --dim:#b0a99b;
+    --aqua:#a9d17f; --blue:#8fc7bd; --yellow:#e8bd63; --red:#fb7b72;
+    --purple:#e39cb1; --border:#504945; --glow:0 0 0 rgba(0,0,0,0);
+    --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth; scroll-padding-top:60px}
+  body{
+    margin:0; background:var(--bg); color:var(--fg); text-shadow:var(--glow);
+    font-family:var(--mono); font-size:15px; line-height:1.6;
+  }
+  /* CRT scanlines + vignette, purely decorative and click-through */
+  body::before{
+    content:""; position:fixed; inset:0; z-index:99; pointer-events:none;
+    background:repeating-linear-gradient(to bottom,
+      rgba(0,0,0,0) 0 2px, rgba(0,0,0,.28) 2px 4px);
+    opacity:.18;
+  }
+  body::after{
+    content:""; position:fixed; inset:0; z-index:98; pointer-events:none;
+    background:radial-gradient(ellipse at center, rgba(0,0,0,0) 65%, rgba(0,0,0,.4) 100%);
+  }
+  ::selection{background:var(--fg); color:#000; text-shadow:none}
+  a{color:var(--fg); text-decoration:none; border-bottom:1px dashed var(--dim)}
+  a:hover{background:var(--fg); color:#000; text-shadow:none; border-bottom-color:transparent}
+  a:hover *{color:#000 !important}
+  .wrap{max-width:960px; margin:0 auto; padding:0 20px}
+  code,kbd,pre{font-family:var(--mono)}
+  code{background:var(--bg2); border:1px solid var(--border); border-radius:0; padding:.1em .35em; font-size:.92em; color:var(--aqua)}
+  pre{
+    position:relative;
+    background:var(--bg2); border:1px solid var(--border); border-left:3px solid var(--fg);
+    border-radius:0; padding:26px 16px 14px; overflow-x:auto;
+    font-size:13.5px; line-height:1.55; color:var(--fg);
+  }
+  /* fake title bar: [ █▓▒░ daniwm@daniwm ] */
+  pre::before{
+    content:"[ \2588\2593\2592\2591 daniwm@daniwm ]";
+    position:absolute; top:0; left:0; right:0;
+    padding:1px 10px; background:var(--border); color:#000;
+    font-size:11px; letter-spacing:.08em; text-shadow:none;
+  }
+  pre code{background:none; border:0; padding:0; color:var(--fg)}
+  /* terminal command examples get a simulated prompt */
+  pre.cmds code{counter-reset:cmdline}
+  pre.cmds code::before{
+    content:"user@daniwm:~$"; display:inline-block; margin-right:.6em;
+    color:var(--aqua); font-weight:600;
+  }
+  .c{color:var(--dim)}
+  .g{color:var(--aqua)}
+  .y{color:var(--yellow)}
+  .p{color:var(--purple)}
+  .blink{animation:blink 1.05s steps(2,start) infinite}
+
+  .nav{position:sticky; top:0; z-index:10; background:rgba(29,32,33,.95);
+       backdrop-filter:blur(6px); border-bottom:1px solid var(--border); font-size:13px}
+  .nav .wrap{display:flex; align-items:center; gap:14px; height:44px; overflow-x:auto; white-space:nowrap}
+  .nav .brand{color:var(--aqua); font-weight:600}
+  .nav .brand::before{content:"root@daniwm:"; color:var(--dim); font-weight:400}
+  .nav .brand::after{content:"#"; margin-left:2px; color:var(--aqua)}
+  .nav a{color:var(--dim); border-bottom:0}
+  .nav a::before{content:"./"; color:var(--border)}
+  .nav a:hover{color:var(--aqua); background:none; text-shadow:var(--glow)}
+
+  header{padding:64px 0 40px; border-bottom:1px solid var(--border)}
+  .badge{display:inline-block; font-size:12px; color:var(--fg); border:1px solid var(--border);
+         border-radius:0; padding:2px 10px; margin-bottom:18px; background:var(--bg2)}
+  .badge::before{content:"[ "; color:var(--dim)}
+  .badge::after{content:" ]"; color:var(--dim)}
+  h1{font-size:clamp(28px,5vw,44px); margin:0 0 12px; letter-spacing:-.5px; color:var(--fg)}
+  h1 .prompt{color:var(--aqua); user-select:none}
+  h1 .cursor{display:inline-block; width:.55ch; background:var(--fg); box-shadow:var(--glow); animation:blink 1.1s steps(2,start) infinite}
+  @keyframes blink{to{visibility:hidden}}
+  .lead{color:var(--dim); max-width:64ch; margin:0 0 24px}
+  .lead::before{content:"> "; color:var(--aqua)}
+  .btns{display:flex; flex-wrap:wrap; gap:10px}
+  .btn{display:inline-block; padding:8px 16px; border-radius:0; border:1px solid var(--border);
+       color:var(--fg); background:var(--bg2); font-size:14px}
+  .btn::before{content:"[ "}
+  .btn::after{content:" ]"}
+  .btn:hover{border-color:var(--fg); color:var(--aqua); background:var(--bg2);
+             box-shadow:var(--glow); text-shadow:var(--glow)}
+  .btn.primary{background:var(--fg); color:#000; border-color:var(--fg); font-weight:600; text-shadow:none}
+  .btn.primary:hover{background:var(--aqua); color:#000; text-shadow:none}
+
+  section{padding:48px 0; border-bottom:1px dashed var(--border)}
+  h2{font-size:22px; margin:0 0 8px; color:var(--fg)}
+  h2::before{content:"## "; color:var(--dim)}
+  h2::after{content:" _"; color:var(--fg)}
+  h3{font-size:16px; margin:28px 0 8px; color:var(--yellow)}
+  h3::before{content:"### "; color:var(--dim)}
+  h4.t{font-size:14px; margin:22px 0 6px; color:var(--purple)}
+  .sub{color:#c4bdaf; margin:0 0 22px}
+  .sub::before{content:"# "; color:var(--border)}
+
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px}
+  .card{background:var(--bg2); border:1px solid var(--border); border-radius:0; padding:16px 18px;
+        position:relative; transition:border-color .15s, box-shadow .15s}
+  .card::before{content:"+-"; position:absolute; top:0; left:0; color:var(--border); font-size:12px}
+  .card:hover{border-color:var(--fg); box-shadow:var(--glow)}
+  .card h4{margin:0 0 6px; font-size:14px; color:var(--yellow)}
+  .card h4::before{content:"$ "; color:var(--dim)}
+  .card p{margin:0; color:#dcd5c2; font-size:13.5px}
+
+  table{width:100%; border-collapse:collapse; font-size:13.5px; margin-top:6px}
+  th,td{text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top}
+  th{color:var(--aqua); font-weight:600; text-transform:uppercase; letter-spacing:.06em; font-size:12px}
+  tbody tr:hover{background:var(--bg2)}
+  td code{font-size:.95em; white-space:nowrap}
+  kbd{background:var(--bg2); border:1px solid var(--border); border-bottom-width:2px;
+      border-radius:0; padding:1px 6px; font-size:12.5px; color:var(--fg)}
+
+  .warn{border-left:3px solid var(--red); background:#3a1f1c; padding:12px 16px; border-radius:0;
+        color:#e6dcc8; font-size:13.5px; margin:16px 0}
+  .warn strong{color:var(--red); text-shadow:none}
+  .note{border-left:3px solid var(--fg); background:var(--bg2); padding:12px 16px; border-radius:0;
+        color:#dcd5c2; font-size:13.5px; margin:16px 0}
+  .note strong{color:var(--aqua)}
+
+  ul.tight{margin:6px 0 0; padding-left:22px; color:#dcd5c2; font-size:13.5px; list-style:none}
+  ul.tight li::before{content:"- "; color:var(--dim)}
+  ul.tight li{margin:3px 0}
+  ul.tight code{font-size:.95em}
+  ol{color:#dcd5c2; font-size:13.5px}
+  ol li::marker{color:var(--aqua)}
+
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto}
+    h1 .cursor,.blink{animation:none}
+    .card{transition:none}
+  }
+  @media (max-width:600px){
+    body::before{opacity:.35}
+    body::after{display:none}
+    table{font-size:12px}
+    th,td{padding:7px 5px; overflow-wrap:anywhere}
+    td code{white-space:normal; overflow-wrap:anywhere}
+    header{padding-top:40px}
+    pre{font-size:12px; padding-top:24px}
+  }
+
+  footer{padding:32px 0 56px; color:var(--dim); font-size:13px; text-align:center}
+  footer::before{content:"\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591"; margin:0 auto 15px; max-width:960px; overflow:hidden;
+                 white-space:nowrap; color:var(--border); letter-spacing:0}
+  footer .end::after{content:" _"; color:var(--fg); animation:blink 1.1s steps(2,start) infinite}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap">
+    <span class="brand">daniwm</span>
+    <a href="#features">Tính năng</a>
+    <a href="#build">Build</a>
+    <a href="#keys">Phím tắt</a>
+    <a href="#config">Config</a>
+    <a href="#compositor">Compositor</a>
+    <a href="#launcher">Launcher</a>
+    <a href="#verify">Kiểm thử</a>
+    <a href="dani-ai.html">dani-ai</a>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <span class="badge">X11 · C + Xlib · Xinerama · Xft · XEmbed tray</span>
+    <h1><span class="prompt">user@daniwm:~$</span> daniwm<span class="cursor">&nbsp;</span></h1>
+    <p class="lead">
+      Tiling + monocle window manager cho X11, viết thuần C trên Xlib. Kèm bar có
+      tasklist kiểu Awesome, system tray, compositor nhẹ và launcher thay rofi —
+      tất cả trong một repo, không dependency ngoài X headers.
+    </p>
+    <div class="btns">
+      <a class="btn primary" href="#build">Build</a>
+      <a class="btn" href="#keys">Phím tắt</a>
+      <a class="btn" href="#config">Config</a>
+      <a class="btn" href="dani-ai.html">dani-ai</a>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Tính năng</h2>
+    <p class="sub">Layout, bar, tray, rules, scratchpad — cấu hình bằng một file text.</p>
+    <div class="grid">
+      <div class="card"><h4>Tiling + monocle</h4><p>Master/stack với <code>mfact</code>/<code>nmaster</code> mỗi workspace, gaps trong/ngoài, drag-drop đổi chỗ kiểu bspwm.</p></div>
+      <div class="card"><h4>5 workspace mặc định</h4><p>Cấu hình 1–10; tên workspace, icon Nerd Font, style pill/underline/block. Workspace là global trên mọi monitor.</p></div>
+      <div class="card"><h4>Bar + tasklist</h4><p>CPU/MEM/BAT/VOL/clock qua Xft (UTF-8, tiếng Việt), task button click được, overflow gộp thành chip <code>+N</code>.</p></div>
+      <div class="card"><h4>System tray</h4><p>XEmbed <code>_NET_SYSTEM_TRAY_Sn</code>: nm-applet, volumeicon, cbatticon dock tự động; tự lấy lại selection khi owner thoát.</p></div>
+      <div class="card"><h4>Multi-monitor</h4><p>Xinerama per-monitor tiling, cửa sổ mới vào monitor con trỏ; RandR hotplug re-tile trực tiếp, không cần restart.</p></div>
+      <div class="card"><h4>EWMH</h4><p><code>_NET_*</code> đầy đủ: client list, desktop, active window, struts, fullscreen, pager requests, <code>_NET_WM_PID</code>.</p></div>
+      <div class="card"><h4>Rules &amp; scratchpad</h4><p><code>rule = class:title:float:ws[:layout]</code>; <kbd>Super</kbd>+<kbd>s</kbd> bật terminal nổi giữa màn hình.</p></div>
+      <div class="card"><h4>Restart tại chỗ</h4><p><kbd>Super</kbd>+<kbd>Ctrl</kbd>+<kbd>r</kbd> exec binary mới, giữ toàn bộ client, workspace, fullscreen và focus.</p></div>
+      <div class="card"><h4>Compositor riêng</h4><p><code>dani-comp</code>: bóng đổ 7 lớp, fade-in 160ms, dim cửa sổ không focus, tôn trọng <code>_NET_WM_WINDOW_OPACITY</code>.</p></div>
+      <div class="card"><h4>Launcher riêng</h4><p><code>dani-run</code>: drun fuzzy, favorite grid, power menu, calculator — thay rofi không cần config riêng.</p></div>
+      <div class="card"><h4>HiDPI</h4><p><code>scale = 1.5</code> nhân bar/border/gap/font, áp dụng live khi reload config.</p></div>
+      <div class="card"><h4>Test headless</h4><p>Hơn 35 suite Xvfb + xdotool trong <code>test/</code>: geometry, click delivery, focus model, strut, tray, compositor…</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="build">
+  <div class="wrap">
+    <h2>Build &amp; cài</h2>
+    <p class="sub">Một <code>make</code> ra <code>./daniwm</code>, build với warning strict và fortified.</p>
+<pre class="cmds"><code>make                <span class="c"># build ./daniwm, ./dani-comp, ./dani-run</span>
+make check          <span class="c"># build + mọi suite headless (cần Xvfb, xterm, xdotool)</span>
+sudo make install   <span class="c"># /usr/local/bin + xsessions entry + share/daniwm/*.example</span>
+make install-user   <span class="c"># chỉ copy config + autostart.sh + run.config vào ~/.config/daniwm/</span></code></pre>
+    <p><code>make install</code> <strong>không ghi đè</strong> <code>~/.config/daniwm/config</code> / <code>autostart.sh</code> / <code>run.config</code> — file đã có được giữ nguyên.
+      Với <code>DESTDIR</code> (đóng gói) bước user-config bị bỏ qua; example nằm ở <code>$(PREFIX)/share/daniwm/config.example</code>, <code>run.config.example</code>, <code>autostart.sh.example</code>.</p>
+    <h3>Phụ thuộc</h3>
+    <p>X11 + Xinerama + Xrandr + Xft headers (Fedora: <code>libX11-devel libXinerama-devel libXrandr-devel libXft-devel</code>).
+      <code>dani-comp</code> thêm Composite/Damage/Render/Fixes (<code>libXcomposite-devel libXdamage-devel libXrender-devel libXfixes-devel</code>, thường có sẵn cùng libX11-devel).</p>
+    <h3>Chạy</h3>
+<pre class="cmds"><code>Xephyr :1 &amp; DISPLAY=:1 ./daniwm        <span class="c"># thử trong cửa sổ Xephyr</span>
+echo 'exec ~/daniwm/daniwm' &gt;&gt; ~/.xinitrc   <span class="c"># phiên thật</span></code></pre>
+    <div class="note"><strong>Autostart:</strong> daniwm chạy <code>~/.config/daniwm/autostart.sh</code> nếu file đó có quyền thực thi.</div>
+  </div>
+</section>
+
+<section id="keys">
+  <div class="wrap">
+    <h2>Phím tắt</h2>
+    <p class="sub">Mặc định <kbd>Super</kbd> = Mod4; <code>mod</code> đổi được trong config.</p>
+    <table>
+      <thead><tr><th>Phím</th><th>Hành động</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Super</kbd>+<kbd>j</kbd> / <kbd>k</kbd></td><td>Focus cửa sổ kế / trước.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>z</kbd></td><td>Zoom: cửa sổ focus → master (master → đổi với cửa sổ thứ 2).</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>Tab</kbd></td><td>Về workspace trước.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>t</kbd> / <kbd>m</kbd>, <kbd>Super</kbd>+<kbd>Space</kbd></td><td>Layout tiling / monocle / toggle.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>Enter</kbd> / <kbd>p</kbd></td><td>Terminal / <code>dani-run</code> (drun).</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>q</kbd></td><td>Đóng cửa sổ.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>h</kbd> / <kbd>l</kbd>, <kbd>u</kbd> / <kbd>i</kbd></td><td>Master size −/+ ; nmaster −/+.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>g</kbd>, <kbd>Super</kbd>+<kbd>-</kbd> / <kbd>=</kbd></td><td>Gaps toggle / nhỏ lại / lớn ra.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>b</kbd></td><td>Ẩn/hiện bar.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>1..9</kbd>, <kbd>0</kbd></td><td>Xem workspace (tới <code>workspaces</code>).</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>1..9</kbd>, <kbd>0</kbd></td><td>Chuyển cửa sổ sang workspace (follow).</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd></td><td>Toggle floating.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>f</kbd></td><td>Fullscreen (EWMH).</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>s</kbd></td><td>Toggle scratchpad.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>r</kbd></td><td>Reload file config.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>Ctrl</kbd>+<kbd>r</kbd></td><td>Restart WM tại chỗ (giữ client, xem mục Restart).</td></tr>
+        <tr><td><kbd>Super</kbd>+kéo chuột trái</td><td>Move — tiled: thả lên tile khác để đổi chỗ (target highlight viền dày); thả chỗ khác thành float, thả sang monitor khác thì re-tile.</td></tr>
+        <tr><td><kbd>Super</kbd>+kéo chuột phải</td><td>Resize — tiling: ngang = <code>mfact</code>, dọc = <code>cfact</code>; floating: đổi geometry.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>Ctrl</kbd>+<kbd>h/j/k/l</kbd></td><td>Move — tiled: đổi với hàng xóm; floating: 20px (giữ phím = mượt).</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>h/l</kbd>, <kbd>k/j</kbd></td><td>Resize floating: rộng / cao ±20px.</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>p</kbd></td><td>Power menu (<code>dani-run --power</code>).</td></tr>
+        <tr><td><kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>e</kbd></td><td>Thoát WM.</td></tr>
+      </tbody>
+    </table>
+    <h3>Chuột trên bar</h3>
+    <ul class="tight">
+      <li>Click <code>1..N</code>: đổi workspace (active = pill + chữ sáng, occupied = sáng + dot, urgent = rose).</li>
+      <li>Task button: trái = focus, giữa = đóng; cửa sổ urgent phát màu urgent.</li>
+      <li>Scroll trên workspace = ws trước/sau (wrap); scroll chỗ khác = volume; click trái module volume = mute (giữa/phải bất kỳ trên bar cũng mute).</li>
+    </ul>
+    <h3>Focus &amp; stacking</h3>
+    <p>Hover (sloppy) focus: rê chuột qua cửa sổ là activate mà không restack, nên cửa sổ float nhỏ lồng trong cửa sổ lớn vẫn với tới được.
+      Click thường không bị WM ăn: WM quan sát qua XI2 raw events, nên click vào cửa sổ float đưa nó lên trước (click-to-raise) trong khi app vẫn nhận đủ press/release.
+      <kbd>Super</kbd>+click vẫn là move/resize; <kbd>Super</kbd>+<kbd>j</kbd>/<kbd>k</kbd> cycle focus có raise.</p>
+    <p>Backend volume tự chọn: <code>amixer</code> → <code>wpctl</code> → <code>pactl</code>; phím laptop <code>XF86Audio*</code> dùng được ngay. Bar dùng Xft với per-glyph fallback (tiếng Việt, ký hiệu).
+      Bên phải bar: icon Nerd Font + giá trị (<code>CPU MEM BAT VOL DD/MM HH:MM</code>), không có Nerd Font thì fallback <code>C/M/B/V</code>; battery/MUTE/CPU≥80%/MEM≥80% dùng màu urgent.</p>
+  </div>
+</section>
+
+<section id="config">
+  <div class="wrap">
+    <h2>Config</h2>
+    <p class="sub"><code>~/.config/daniwm/config</code> (hoặc <code>$XDG_CONFIG_HOME/daniwm/config</code>), dạng <code>key = value</code>, <code>#</code> là comment.</p>
+    <p>Thiếu file → dùng mặc định. Dòng sai → in stderr và bỏ qua, WM vẫn chạy. Reload (<kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>r</kbd>) áp dụng live các giá trị như <code>scale</code>, tên workspace, tray, màu bar.</p>
+    <h3>Scalar chính</h3>
+    <table>
+      <thead><tr><th>Key</th><th>Ý nghĩa</th></tr></thead>
+      <tbody>
+        <tr><td><code>mod</code></td><td><code>super</code> | <code>alt</code> | <code>ctrl</code>.</td></tr>
+        <tr><td><code>workspaces</code></td><td>1–10, mặc định 5.</td></tr>
+        <tr><td><code>mfact</code>, <code>nmaster</code></td><td>Tỉ lệ master (0.1–0.9), số cửa sổ master.</td></tr>
+        <tr><td><code>gap_outer</code>, <code>gap_inner</code></td><td>Khoảng cách ngoài màn hình và giữa các tile.</td></tr>
+        <tr><td><code>border</code>, <code>border_focus</code>, <code>border_normal</code></td><td>Độ dày viền và màu viền (hex, <code>#</code> tuỳ chọn).</td></tr>
+        <tr><td><code>scale</code></td><td>0.5–3.0, mặc định 1.0 — nhân HiDPI cho chrome của WM (bar_h, ws_w, border, gaps, bước float/drag, font size).</td></tr>
+        <tr><td><code>focus</code></td><td><code>hover</code> (mặc định) | <code>click</code> | <code>both</code>.</td></tr>
+        <tr><td><code>compositor</code>, <code>shadow</code>, <code>fade</code>, <code>inactive_dim</code></td><td><code>compositor = 1</code> để daniwm tự spawn dani-comp; <code>inactive_dim</code> 0.5–1.0 (mặc định 0.92).</td></tr>
+        <tr><td><code>tray</code>, <code>tray_gap</code></td><td>Bật/tắt system tray (mặc định on), khoảng cách icon 0–32.</td></tr>
+        <tr><td><code>bar_on</code>, <code>bar_h</code>, <code>bar_bg/fg/acc/dim</code></td><td>Bar bật/tắt, chiều cao, 4 màu nền.</td></tr>
+        <tr><td><code>bar_modules</code></td><td>Mặc định <code>cpu mem bat vol clock</code> — thứ tự và ẩn/hiện module.</td></tr>
+        <tr><td><code>bar_ws_style</code>, <code>bar_ws_pad</code>, <code>ws_w</code></td><td><code>pill</code> | <code>underline</code> | <code>block</code>, padding chữ, độ rộng cell.</td></tr>
+        <tr><td><code>bar_show_tasks</code>, <code>bar_task_w</code>, <code>bar_task_pad</code>, <code>bar_task_style</code></td><td>Tasklist kiểu Awesome: bật/tắt, độ rộng (0 = chia đều), padding, style <code>follow</code>|pill|underline|block|none.</td></tr>
+        <tr><td><code>bar_ws_task_gap</code></td><td>0–64, mặc định 12 — khoảng chết giữa block ws/layout và tasklist (có divider); click vào đó là no-op.</td></tr>
+        <tr><td><code>ws_names</code>, <code>ws_name_N</code>, <code>ws_icon_N</code></td><td>Tên workspace (positional hoặc <code>1:Web 2:Code</code>), override từng ws, icon Nerd Font.</td></tr>
+        <tr><td><code>font</code></td><td>Fontconfig pattern, vd <code>monospace:size=11</code>; fallback built-in Nerd Fonts rồi Noto/DejaVu/Sans.</td></tr>
+        <tr><td><code>term</code>, <code>menu</code>, <code>scratch</code></td><td>Lệnh spawn (tách bằng <code>wordexp</code>, quote được).</td></tr>
+        <tr><td><code>rename_cmd</code></td><td>Lệnh đổi tên workspace (mặc định <code>rofi -dmenu -i -p rename</code>); có env <code>DANIWM_WS_CUR</code>/<code>DANIWM_WS_NUM</code>.</td></tr>
+      </tbody>
+    </table>
+    <p>Màu bar: <code>bar_bg/fg/acc/dim</code> phủ mọi thứ; các override <code>bar_ws_active</code>, <code>bar_ws_active_text</code>, <code>bar_ws_occ</code>, <code>bar_ws_empty</code>,
+      <code>bar_urgent</code>, <code>bar_sep</code>, <code>bar_mode</code>, <code>bar_title</code>, <code>bar_sys</code>, <code>bar_task_*</code> chỉ ghi đè phần tương ứng.
+      Icon: <code>ico_cpu/ico_mem/ico_bat/ico_vol/ico_mute/ico_clk</code> (để trống = không icon).</p>
+
+    <h3>Rules và binds</h3>
+<pre><code>workspaces = 3
+ws_names = Web Code Chat
+rule = Gimp:*:float:*
+bind = mod+3:ws3
+bind+ = mod+a:spawn_menu</code></pre>
+    <ul class="tight">
+      <li><code>rule = class:title:float:ws[:layout]</code> — <code>*</code> = bất kỳ, float = <code>float</code>|<code>tile</code>, ws 1-based ≤ <code>workspaces</code>, layout tuỳ chọn <code>tile</code>|<code>monocle</code>.</li>
+      <li><code>bind = mod+key:action</code> — modifier <code>mod/super/alt/ctrl/shift</code> + X keysym. Hành động: <code>focus_next/prev</code>, <code>zoom</code>, <code>ws_toggle</code>, <code>kill</code>, <code>tile/monocle/toggle</code>, <code>spawn_term/menu</code>, <code>mfact_dec/inc</code>, <code>nmaster_dec/inc</code>, <code>gap/gap_dec/gap_inc</code>, <code>bar</code>, <code>move_*</code>, <code>resize_w_dec/inc</code>, <code>resize_h_dec/inc</code>, <code>vol_up/down/mute</code>, <code>wsN</code>, <code>mvN</code>, <code>float</code>, <code>fullscreen</code>, <code>scratch</code>, <code>ws_rename</code>, <code>reload_config</code>, <code>restart</code>, <code>compositor</code>, <code>quit</code>.</li>
+      <li>Dòng <code>rule</code>/<code>bind</code> đầu tiên <strong>thay</strong> bộ mặc định; <code>bind+</code> để thêm. Bind <code>wsN</code>/<code>mvN</code> thiếu được tự điền theo <code>workspaces</code> (trừ khi combo đã bị bind khác chiếm).</li>
+      <li>Reload giữ <code>mfact</code>/<code>nmaster</code> live của từng workspace (giá trị trong config chỉ là mặc định lúc khởi động); giảm <code>workspaces</code> thì workspace dư gộp vào cái cuối.</li>
+    </ul>
+
+    <h3>Rule mặc định &amp; scratchpad</h3>
+    <p>Mặc định scratchpad, Gimp và mpv float. <kbd>Super</kbd>+<kbd>s</kbd> toggle <code>xterm -name scratchpad</code> (2/3 màn hình, giữa, lần đầu thì spawn).
+      Lệnh <code>scratch =</code> tự đặt phải tạo cửa sổ có <code>scratchpad</code> trong class/name (vd <code>alacritty --class scratchpad</code>), nếu không toggle sẽ spawn liên tục thay vì toggle.</p>
+  </div>
+</section>
+
+<section id="compositor">
+  <div class="wrap">
+    <h2>Compositor: dani-comp</h2>
+    <p class="sub">Thay thế picom nếu bạn thích; cùng style với bar.</p>
+<pre class="cmds"><code>./dani-comp                             <span class="c"># bóng đổ + fade + dim mặc định</span>
+./dani-comp --no-shadow --no-fade
+./dani-comp --dim 0.5                   <span class="c"># 0.5..1</span>
+<span class="c"># hoặc trong ~/.config/daniwm/config:</span>
+compositor = 1                          <span class="c"># daniwm tự spawn</span>
+<span class="c"># bind = mod+c:compositor               # toggle live</span>
+./test/test-comp.sh</code></pre>
+    <ul class="tight">
+      <li>Bóng đổ mềm 7 lớp kiểu picom, fade-in 160ms, làm mờ (dim) cửa sổ không focus qua <code>inactive_dim</code> (mặc định 0.92).</li>
+      <li>Tôn trọng <code>_NET_WM_WINDOW_OPACITY</code> (dùng được với <code>transset</code>), quảng bá <code>_NET_WM_CM_Sn</code>, tự nhường nếu picom đang chạy.</li>
+      <li>Giới hạn: double-buffered (không nháy), snapshot nền từ <code>_XROOTPMAP_ID</code> (root màu đơn sắc chỉ clear 1 lần khi nền đổi), cửa sổ shaped bị clip ở back buffer, không có vsync thật.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="launcher">
+  <div class="wrap">
+    <h2>Launcher: dani-run</h2>
+    <p class="sub">Thay rofi: drun fuzzy, favorite grid, power menu, calculator.</p>
+<pre class="cmds"><code>dani-run                <span class="c"># drun list dọc, fuzzy</span>
+dani-run --fav          <span class="c"># grid icon ứng dụng yêu thích (lọc được)</span>
+dani-run --power        <span class="c"># power menu (dùng lại UI fav)</span>
+dani-run --calc         <span class="c"># máy tính, Enter copy kết quả + in stdout</span></code></pre>
+    <ul class="tight">
+      <li>Quét <code>/usr/share/applications</code> + <code>~/.local/share/applications</code>; <code>Terminal=true</code> được bọc bằng <code>${TERMINAL:-alacritty} -e</code>.</li>
+      <li>Sắp xếp fuzzy + history ở <code>~/.cache/dani-run/history</code>; hiện icon thật từ icon theme (PNG qua cairo nếu có, fallback glyph Nerd Font/chữ cái đầu; <code>drun_icons = 0</code> để tắt).</li>
+      <li>Calculator hỗ trợ <code>+ - * / % ^</code>, ngoặc, <code>sqrt/sin/cos/tan/exp/abs/ln/log</code>, <code>pi</code>/<code>e</code>.</li>
+      <li>Config <code>~/.config/daniwm/run.config</code> (<code>app = icon;name;cmd</code>, <code>power = ...</code>, <code>cols</code>/<code>lines</code>/<code>font</code>; dòng <code>app</code>/<code>power</code> đầu tiên xoá mặc định). Phím: <kbd>↑↓←→</kbd>/<kbd>Ctrl</kbd>+<kbd>hjkl</kbd>, <kbd>Enter</kbd>, <kbd>Esc</kbd>; scroll = trước/sau. Input drun không khớp app sẽ chạy như lệnh.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="ewmh">
+  <div class="wrap">
+    <h2>EWMH, monitor và restart</h2>
+    <h3>EWMH</h3>
+    <p><code>_NET_SUPPORTED/CLIENT_LIST/ACTIVE_WINDOW</code>, <code>_NET_WM_PID</code> (PID của WM trên supporting window, cũng quảng bá trong <code>_NET_SUPPORTED</code>),
+      fullscreen qua <code>_NET_WM_STATE</code>, window-type float (dialog/utility/toolbar/splash/menu/dropdown/popup/tooltip/notification/combo/dnd + modal),
+      dock (<code>_NET_WM_WINDOW_TYPE_DOCK</code>), struts (<code>_NET_WM_STRUT</code>/<code>_NET_WM_STRUT_PARTIAL</code>/<code>_NET_WORKAREA</code>) cho bar ngoài như Polybar/Tint2/Lemonbar,
+      <code>_NET_ACTIVE/CLOSE_WINDOW</code>, workspace (<code>_NET_NUMBER_OF_DESKTOPS</code>/<code>_NET_CURRENT_DESKTOP</code>/<code>_NET_WM_DESKTOP</code>/<code>_NET_DESKTOP_NAMES</code>, kể cả pager <code>view</code> + <code>move_to</code>).
+      Client message được xử lý trust-based theo spec: mọi client có thể yêu cầu close/move/focus (pager và <code>wmctrl</code> dựa vào điều này), daniwm không kiểm tra sender.</p>
+    <h3>Monitor</h3>
+    <p>Tiling theo từng monitor qua Xinerama (fallback: toàn màn hình); cửa sổ mới vào monitor có con trỏ; bar ở monitor 0; workspace là global; margin strut từng monitor tính tự động.</p>
+    <h3>Restart</h3>
+    <p><kbd>Super</kbd>+<kbd>Ctrl</kbd>+<kbd>r</kbd> (action <code>restart</code>) exec binary mới đè lên process đang chạy — mọi client sống sót, giữ workspace (<code>_NET_WM_DESKTOP</code>),
+      fullscreen, desktop hiện tại, focus và scratchpad đang park. Trạng thái float và layout/<code>mfact</code>/<code>nmaster</code> theo workspace reset về mặc định.
+      Watcher bên ngoài phát hiện re-exec qua stamp <code>_DANIWM_HEARTBEAT</code> trên root (PID giữ nguyên qua exec, X server có thể tái dùng window ID).</p>
+    <h3>Tray</h3>
+    <p>XEmbed (<code>_NET_SYSTEM_TRAY_Sn</code>) ở cạnh phải bar — <code>nm-applet --indicator</code>, <code>volumeicon</code>, <code>cbatticon</code> tự dock;
+      divider dọc tách tray khỏi clock; click vào vùng tray không lọt sang workspace; selection bị bỏ trống sẽ được lấy lại tự động. <code>tray = 0</code> để tắt (reload live).
+      Chỉ XEmbed cổ điển — app StatusNotifier/AppIndicator cần cầu <code>snixembed</code>.</p>
+  </div>
+</section>
+
+<section id="verify">
+  <div class="wrap">
+    <h2>Kiểm thử headless</h2>
+    <p class="sub">Chạy được từ Wayland; cần <code>xorg-x11-server-Xvfb</code> (+ xterm, xdotool).</p>
+<pre class="cmds"><code>./test/verify.sh     <span class="c"># một suite</span>
+./test/run-all.sh    <span class="c"># tất cả suite</span>
+make check           <span class="c"># build + check-ai + toàn bộ suite</span></code></pre>
+    <p>Dựng Xvfb 1280x800, spawn 3 xterm qua <kbd>Super</kbd>+<kbd>Return</kbd>, assert geometry bằng <code>xdotool</code>
+      (master <code>14,38,681x744</code>, stack <code>x=707</code>, monocle <code>14,38,1248x744</code>, fullscreen <code>0,0,1280x800</code>),
+      đi qua gaps/ws/move-fullscreen/scratchpad và chụp từng bước vào <code>test/shots/</code>.</p>
+    <p><code>test/run-all.sh</code> chạy ~38 suite: <code>verify config kill mouse workspaces strut randr tray restart tasklist comp nested-float
+      click-delivery click-raise-float focus-steal ghost-unmap wm-state focus-model noinput takefocus remap-steal xerr direct-state urgency ws-storm
+      kill-stamp clamp-float reload-hidden supported focus-time click-focus restart-withdrawn fs-offws vol-hang gap-cap rename-stuck tiled-restack
+      scratch-focus transient-parent run</code>.
+      <code>make check-ai</code> chạy riêng suite của dani-ai, không cần X server hay API key thật.</p>
+    <div class="note"><strong>Danh sách suite:</strong> lấy trực tiếp từ <code>test/run-all.sh</code> trong repo. Chạy <code>./test/run-all.sh</code> để xem kết quả PASS/FAIL thực tế trên máy bạn — trang này không tự chạy test.</div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="end">daniwm · X11 · C + Xlib · <a href="#features">Về đầu trang ↑</a></div>
+  </div>
+</footer>
+</body>
+</html>

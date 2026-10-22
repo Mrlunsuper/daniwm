@@ -26,6 +26,7 @@ jobs:
         run: |
           mkdir -p _site
           cp index.html _site/index.html
+          if [ -d pages ]; then cp -r pages _site/pages; fi
           touch _site/.nojekyll
       - name: Upload site
         uses: actions/upload-pages-artifact@v3

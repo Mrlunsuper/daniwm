@@ -94,7 +94,7 @@ bar_mode           = DADADA   # số cửa sổ (icon tile/monocle dùng bar_acc
 bar_title          = A8AFB2   # tiêu đề cửa sổ trái, chìm để nhường sysmon
 bar_sys            = DADADA   # giá trị sysmon sáng dễ đọc (icon dùng bar_acc)
 # font bar: fontconfig pattern. bar_h=36 hợp với size=11.
-font = SpaceMono Nerd Font:size=9
+font = JetBrainsMono Nerd Font:size=9
 # Không có Nerd Font vẫn đẹp (tự rớt về chữ C/M/B/V).
 
 # ---------- rules ----------

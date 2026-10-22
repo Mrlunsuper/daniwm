@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dani-ai — AI chat trong terminal</title>
+<meta name="description" content="dani-ai: chat AI (BYOK, OpenAI-compatible) chạy trong terminal, Python stdlib, không phụ thuộc, có tool use, profile provider, session/undo và paste ảnh.">
+<meta name="color-scheme" content="dark">
+<style>
+  :root{
+    /* gruvbox dark aqua */
+    --bg:#1d2021; --bg2:#282828; --fg:#ebe5c5; --dim:#b0a99b;
+    --aqua:#a9d17f; --blue:#8fc7bd; --yellow:#e8bd63; --red:#fb7b72;
+    --purple:#e39cb1; --border:#504945; --glow:0 0 0 rgba(0,0,0,0);
+    --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth; scroll-padding-top:60px}
+  body{
+    margin:0; background:var(--bg); color:var(--fg); text-shadow:var(--glow);
+    font-family:var(--mono); font-size:15px; line-height:1.6;
+  }
+  /* CRT scanlines + vignette, purely decorative and click-through */
+  body::before{
+    content:""; position:fixed; inset:0; z-index:99; pointer-events:none;
+    background:repeating-linear-gradient(to bottom,
+      rgba(0,0,0,0) 0 2px, rgba(0,0,0,.28) 2px 4px);
+    opacity:.18;
+  }
+  body::after{
+    content:""; position:fixed; inset:0; z-index:98; pointer-events:none;
+    background:radial-gradient(ellipse at center, rgba(0,0,0,0) 65%, rgba(0,0,0,.4) 100%);
+  }
+  ::selection{background:var(--fg); color:#000; text-shadow:none}
+  a{color:var(--fg); text-decoration:none; border-bottom:1px dashed var(--dim)}
+  a:hover{background:var(--fg); color:#000; text-shadow:none; border-bottom-color:transparent}
+  a:hover *{color:#000 !important}
+  .wrap{max-width:960px; margin:0 auto; padding:0 20px}
+  code,kbd,pre{font-family:var(--mono)}
+  code{background:var(--bg2); border:1px solid var(--border); border-radius:0; padding:.1em .35em; font-size:.92em; color:var(--aqua)}
+  pre{
+    position:relative;
+    background:var(--bg2); border:1px solid var(--border); border-left:3px solid var(--fg);
+    border-radius:0; padding:26px 16px 14px; overflow-x:auto;
+    font-size:13.5px; line-height:1.55; color:var(--fg);
+  }
+  /* fake title bar: [ █▓▒░ dani-ai@daniwm ] */
+  pre::before{
+    content:"[ \2588\2593\2592\2591 dani-ai@daniwm ]";
+    position:absolute; top:0; left:0; right:0;
+    padding:1px 10px; background:var(--border); color:#000;
+    font-size:11px; letter-spacing:.08em; text-shadow:none;
+  }
+  pre code{background:none; border:0; padding:0; color:var(--fg)}
+  /* terminal command examples get a simulated prompt */
+  pre.cmds code{counter-reset:cmdline}
+  pre.cmds code::before{
+    content:"user@daniwm:~$"; display:inline-block; margin-right:.6em;
+    color:var(--aqua); font-weight:600;
+  }
+  .c{color:var(--dim)}
+  .g{color:var(--aqua)}
+  .y{color:var(--yellow)}
+  .p{color:var(--purple)}
+  .blink{animation:blink 1.05s steps(2,start) infinite}
+
+  .nav{position:sticky; top:0; z-index:10; background:rgba(29,32,33,.95);
+       backdrop-filter:blur(6px); border-bottom:1px solid var(--border); font-size:13px}
+  .nav .wrap{display:flex; align-items:center; gap:14px; height:44px; overflow-x:auto; white-space:nowrap}
+  .nav .brand{color:var(--aqua); font-weight:600}
+  .nav .brand::before{content:"root@daniwm:"; color:var(--dim); font-weight:400}
+  .nav .brand::after{content:"#"; margin-left:2px; color:var(--aqua)}
+  .nav a{color:var(--dim); border-bottom:0}
+  .nav a::before{content:"./"; color:var(--border)}
+  .nav a:hover{color:var(--aqua); background:none; text-shadow:var(--glow)}
+
+  header{padding:64px 0 40px; border-bottom:1px solid var(--border)}
+  .badge{display:inline-block; font-size:12px; color:var(--fg); border:1px solid var(--border);
+         border-radius:0; padding:2px 10px; margin-bottom:18px; background:var(--bg2)}
+  .badge::before{content:"[ "; color:var(--dim)}
+  .badge::after{content:" ]"; color:var(--dim)}
+  h1{font-size:clamp(28px,5vw,44px); margin:0 0 12px; letter-spacing:-.5px; color:var(--fg)}
+  h1 .prompt{color:var(--aqua); user-select:none}
+  h1 .cursor{display:inline-block; width:.55ch; background:var(--fg); box-shadow:var(--glow); animation:blink 1.1s steps(2,start) infinite}
+  @keyframes blink{to{visibility:hidden}}
+  .lead{color:var(--dim); max-width:64ch; margin:0 0 24px}
+  .lead::before{content:"> "; color:var(--aqua)}
+  .btns{display:flex; flex-wrap:wrap; gap:10px}
+  .btn{display:inline-block; padding:8px 16px; border-radius:0; border:1px solid var(--border);
+       color:var(--fg); background:var(--bg2); font-size:14px}
+  .btn::before{content:"[ "}
+  .btn::after{content:" ]"}
+  .btn:hover{border-color:var(--fg); color:var(--aqua); background:var(--bg2);
+             box-shadow:var(--glow); text-shadow:var(--glow)}
+  .btn.primary{background:var(--fg); color:#000; border-color:var(--fg); font-weight:600; text-shadow:none}
+  .btn.primary:hover{background:var(--aqua); color:#000; text-shadow:none}
+
+  section{padding:48px 0; border-bottom:1px dashed var(--border)}
+  h2{font-size:22px; margin:0 0 8px; color:var(--fg)}
+  h2::before{content:"## "; color:var(--dim)}
+  h2::after{content:" _"; color:var(--fg)}
+  h3{font-size:16px; margin:28px 0 8px; color:var(--yellow)}
+  h3::before{content:"### "; color:var(--dim)}
+  h4.t{font-size:14px; margin:22px 0 6px; color:var(--purple)}
+  .sub{color:#c4bdaf; margin:0 0 22px}
+  .sub::before{content:"# "; color:var(--border)}
+
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px}
+  .card{background:var(--bg2); border:1px solid var(--border); border-radius:0; padding:16px 18px;
+        position:relative; transition:border-color .15s, box-shadow .15s}
+  .card::before{content:"+-"; position:absolute; top:0; left:0; color:var(--border); font-size:12px}
+  .card:hover{border-color:var(--fg); box-shadow:var(--glow)}
+  .card h4{margin:0 0 6px; font-size:14px; color:var(--yellow)}
+  .card h4::before{content:"$ "; color:var(--dim)}
+  .card p{margin:0; color:#dcd5c2; font-size:13.5px}
+
+  table{width:100%; border-collapse:collapse; font-size:13.5px; margin-top:6px}
+  th,td{text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top}
+  th{color:var(--aqua); font-weight:600; text-transform:uppercase; letter-spacing:.06em; font-size:12px}
+  tbody tr:hover{background:var(--bg2)}
+  td code{font-size:.95em; white-space:nowrap}
+  kbd{background:var(--bg2); border:1px solid var(--border); border-bottom-width:2px;
+      border-radius:0; padding:1px 6px; font-size:12.5px; color:var(--fg)}
+
+  .warn{border-left:3px solid var(--red); background:#3a1f1c; padding:12px 16px; border-radius:0;
+        color:#e6dcc8; font-size:13.5px; margin:16px 0}
+  .warn strong{color:var(--red); text-shadow:none}
+  .note{border-left:3px solid var(--fg); background:var(--bg2); padding:12px 16px; border-radius:0;
+        color:#dcd5c2; font-size:13.5px; margin:16px 0}
+  .note strong{color:var(--aqua)}
+
+  ul.tight{margin:6px 0 0; padding-left:22px; color:#dcd5c2; font-size:13.5px; list-style:none}
+  ul.tight li::before{content:"- "; color:var(--dim)}
+  ul.tight li{margin:3px 0}
+  ul.tight code{font-size:.95em}
+  ol{color:#dcd5c2; font-size:13.5px}
+  ol li::marker{color:var(--aqua)}
+
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto}
+    h1 .cursor,.blink{animation:none}
+    .card{transition:none}
+  }
+  @media (max-width:600px){
+    body::before{opacity:.35}
+    body::after{display:none}
+    table{font-size:12px}
+    th,td{padding:7px 5px; overflow-wrap:anywhere}
+    td code{white-space:normal; overflow-wrap:anywhere}
+    header{padding-top:40px}
+    pre{font-size:12px; padding-top:24px}
+  }
+
+  footer{padding:32px 0 56px; color:var(--dim); font-size:13px; text-align:center}
+  footer::before{content:"\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591\2591"; margin:0 auto 15px; max-width:960px; overflow:hidden;
+                 white-space:nowrap; color:var(--border); letter-spacing:0}
+  footer .end::after{content:" _"; color:var(--fg); animation:blink 1.1s steps(2,start) infinite}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap">
+    <span class="brand">dani-ai</span>
+    <a href="#features">Tính năng</a>
+    <a href="#install">Cài đặt</a>
+    <a href="#config">Cấu hình</a>
+    <a href="#usage">Cách dùng</a>
+    <a href="#repl">REPL</a>
+    <a href="#session">Session</a>
+    <a href="#tools">Tool use</a>
+    <a href="#policy">Chính sách</a>
+    <a href="#custom">Custom tools</a>
+    <a href="#images">Paste ảnh</a>
+    <a href="#flags">Flags</a>
+    <a href="#safety">Bảo mật</a>
+    <a href="#troubleshoot">Sự cố</a>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <span class="badge">BYOK · Python stdlib · OpenAI-compatible</span>
+    <h1><span class="prompt">user@daniwm:~$</span> dani-ai<span class="cursor">&nbsp;</span></h1>
+    <p class="lead">
+      Chat AI ngay trong terminal. Không framework, không dependency, không GUI —
+      một file Python, một API key, và tool use để đọc file / chạy lệnh.
+      Bạn có thể tắt hoặc chặn từng tool khi cần.
+    </p>
+    <div class="btns">
+      <a class="btn primary" href="#install">Bắt đầu</a>
+      <a class="btn" href="#usage">Cách dùng</a>
+      <a class="btn" href="#tools">Tool use</a>
+      <a class="btn" href="#safety">Bảo mật</a>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Tính năng</h2>
+    <p class="sub">Nhỏ, nhanh, chạy ở đâu có Python 3 là chạy được.</p>
+    <div class="grid">
+      <div class="card"><h4>Stream mặc định</h4><p>Token hiện ngay khi tới, markdown có màu trong TTY, giữ text thô khi pipe. Stream phải kết thúc bằng <code>[DONE]</code>.</p></div>
+      <div class="card"><h4>BYOK</h4><p>Mang key của bạn: OpenAI, DeepSeek, Ollama, LM Studio, FreeLLMAPI, Vilao… mọi endpoint OpenAI-compatible.</p></div>
+      <div class="card"><h4>Profile provider</h4><p><code>--profile</code> pin base/model + khai báo capability (<code>tools</code>, <code>vision</code>, <code>stream</code>, token parameter). Không lưu key trong JSON.</p></div>
+      <div class="card"><h4>Paste ảnh</h4><p><kbd>Ctrl</kbd>+<kbd>V</kbd> đọc clipboard: ảnh PNG/JPEG/WebP/GIF thành <code>[Ảnh 1]</code>, text chèn tại con trỏ (bracketed paste).</p></div>
+      <div class="card"><h4>Tool use</h4><p>Đọc/tìm/ghi/sửa file, tạo thư mục, đọc URL và Git status; chặn theo tên/glob, deny-path, write-path. <code>run_command</code> cần opt-in.</p></div>
+      <div class="card"><h4>Session &amp; history</h4><p>Mỗi phiên một ID <code>session-&lt;uuid&gt;.json</code>, autosave, <code>--continue</code>, <code>/save</code>, ghi atomic</p><p>quyền <code>0600</code>, khoá bằng <code>flock</code>.</p></div>
+      <div class="card"><h4>Diff &amp; undo</h4><p><code>/diff</code> xem thay đổi file của lượt gần nhất, <code>/undo</code> khôi phục có preflight (từ chối nếu bạn đã sửa file).</p></div>
+      <div class="card"><h4>Chế độ pipe</h4><p><code>cat f | dani-ai "tóm tắt"</code> — đọc stdin, không cần file tạm.</p></div>
+      <div class="card"><h4>Tích hợp daniwm</h4><p>Mở bằng <kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>a</kbd> trong bộ WM <code>daniwm</code>.</p></div>
+      <div class="card"><h4>Một file, không cài</h4><p>Chỉ Python 3 stdlib: <code>readline</code>, <code>urllib</code>, <code>json</code>. Không pip, không venv.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Cài đặt</h2>
+    <p class="sub">Chỉ cần Python 3. Muốn paste ảnh thì thêm <code>xclip</code> (X11) hoặc <code>wl-paste</code> (Wayland).</p>
+<pre><code><span class="c"># trong repo daniwm</span>
+chmod +x dani-ai
+mkdir -p ~/.local/bin
+ln -s "$PWD/dani-ai" ~/.local/bin/dani-ai   <span class="c"># hoặc copy thẳng</span>
+
+<span class="c"># key: 3 dòng — key, base URL, model (dòng 2, 3 tuỳ chọn)</span>
+mkdir -p ~/.config/daniwm
+cat &gt; ~/.config/daniwm/ai.key &lt;&lt;'K'
+sk-...
+https://api.deepseek.com/v1
+deepseek-chat
+K
+chmod 600 ~/.config/daniwm/ai.key</code></pre>
+
+    <h3>Kiểm tra nhanh</h3>
+<pre class="cmds"><code>dani-ai --version
+dani-ai --show-config          <span class="c"># in ra cấu hình đã resolve (tools, root, lỗi manifest)</span>
+dani-ai models                 <span class="c"># danh sách model từ /models</span>
+dani-ai tools                  <span class="c"># liệt kê tool builtin + custom</span>
+dani-ai "xin chao"              <span class="c"># thử request đầu tiên</span></code></pre>
+
+    <p class="sub" style="margin-top:16px">
+      Đặt dani-ai ở đâu cũng được — nó chỉ dùng module chuẩn, không import gì trong repo.
+      Nếu <code>~/.local/bin</code> chưa có trong <code>PATH</code>: <code>export PATH="$HOME/.local/bin:$PATH"</code>.
+    </p>
+  </div>
+</section>
+
+<section id="config">
+  <div class="wrap">
+    <h2>Cấu hình</h2>
+    <p class="sub">Dùng file cấu hình, biến môi trường, flag hoặc profile. Flags có ưu tiên cao nhất.</p>
+    <h3>API key, endpoint và model</h3>
+    <ul class="tight">
+      <li>Key: <code>--api-key</code> → <code>DANI_AI_API_KEY</code> → <code>OPENAI_API_KEY</code> → <code>DEEPSEEK_API_KEY</code> → <code>FREELLMAPI_API_KEY</code> → <code>VILAO_API_KEY</code> → dòng 1 của <code>ai.key</code>.</li>
+      <li>Endpoint: <code>--api-base</code> → <code>DANI_AI_API_BASE</code> → <code>OPENAI_API_BASE</code> → dòng 2 của <code>ai.key</code> → mặc định.</li>
+      <li>Model: <code>--model</code> → <code>DANI_AI_MODEL</code> → dòng 3 của <code>ai.key</code> → mặc định.</li>
+    </ul>
+    <p>Mặc định dùng <code>https://api.openai.com/v1</code> và <code>gpt-4o-mini</code>.
+      Key lấy từ <code>DEEPSEEK_API_KEY</code> tự chọn endpoint DeepSeek nếu chưa đặt endpoint;
+      endpoint DeepSeek mặc định chọn <code>deepseek-chat</code> nếu chưa đặt model.</p>
+<pre><code>export DANI_AI_API_BASE="https://api.deepseek.com/v1"
+export DANI_AI_MODEL="deepseek-chat"
+<span class="c"># Lưu key trong ai.key như phần Cài đặt, tránh ghi key vào lịch sử shell.</span>
+dani-ai --show-config</code></pre>
+    <h3>System prompt</h3>
+    <p>Thứ tự: <code>--system</code> → <code>--system-file</code> → <code>DANI_AI_SYSTEM_FILE</code> → <code>~/.config/daniwm/ai.system</code>.</p>
+<pre><code><span class="c"># Chạy trong repo daniwm</span>
+cp ai.system.example ~/.config/daniwm/ai.system
+dani-ai --system "Trả lời ngắn gọn bằng tiếng Việt." "Giải thích X11"</code></pre>
+    <h3>Profile provider và capabilities</h3>
+    <p>Profile là opt-in: không dùng <code>--profile</code> thì key/base/model vẫn resolve như trên.
+      Tạo <code>~/.config/daniwm/ai.profiles.json</code> (nên <code>chmod 600</code>):</p>
+<pre><code>{
+  "version": 1,
+  "profiles": {
+    "openai-mini": {
+      "base": "https://api.openai.com/v1",
+      "model": "gpt-4o-mini",
+      "key_env": "OPENAI_API_KEY",
+      "capabilities": {
+        "tools": true,
+        "vision": true,
+        "stream": true,
+        "token_parameter": "max_completion_tokens"
+      }
+    }
+  }
+}</code></pre>
+<pre class="cmds"><code>export OPENAI_API_KEY='...'
+dani-ai --profile openai-mini --show-config
+dani-ai --profile openai-mini chat
+dani-ai --profile openai-mini --profiles-file /path/to/profiles.json chat</code></pre>
+    <ul class="tight">
+      <li>Profile pin endpoint, model và tên biến môi trường chứa key; không fallback sang key env/`ai.key` khác. Không lưu key trong JSON.</li>
+      <li><code>--api-base</code>/<code>--api-key</code> bị từ chối khi dùng profile; <code>--model</code> chỉ chấp nhận nếu trùng model profile.</li>
+      <li>Capabilities khai báo thủ công, không tự probe: <code>tools:false</code> tắt runner, <code>stream:false</code> chọn non-stream, <code>vision:false</code> từ chối ảnh kể cả ảnh trong session resume.</li>
+      <li>Token parameter: <code>max_tokens</code>, <code>max_completion_tokens</code> hoặc <code>null</code> (không hỗ trợ <code>--max-tokens</code>).</li>
+      <li><code>/model</code> bị khoá trong profile; session context ghi profile/model/capabilities (không có key), mismatch cần <code>--trust-session</code>.</li>
+      <li>Request bị ràng buộc trong base của profile; redirect khác origin luôn bị chặn. Chưa có auto-discovery hay đổi profile giữa REPL.</li>
+    </ul>
+    <div class="note"><strong>Đường dẫn:</strong> <code>DANI_AI_KEY_FILE</code> đổi vị trí file key.
+      Các đường dẫn cấu hình mặc định dùng <code>$XDG_CONFIG_HOME/daniwm</code> nếu biến này được đặt, thay cho <code>~/.config/daniwm</code>.</div>
+  </div>
+</section>
+
+<section id="usage">
+  <div class="wrap">
+    <h2>Cách dùng</h2>
+    <p class="sub">Hỏi một lần, chat tương tác hoặc đưa nội dung qua stdin.</p>
+<pre class="cmds"><code><span class="c"># Hỏi một lần</span>
+dani-ai "Giải thích sự khác nhau giữa X11 và Wayland"
+
+<span class="c"># Chat tương tác</span>
+dani-ai chat
+
+<span class="c"># Tóm tắt stdin, không cho model gọi tool</span>
+cat README.md | dani-ai --no-tools "Tóm tắt nội dung này"
+
+<span class="c"># Lưu câu trả lời dạng text, không màu</span>
+dani-ai --no-tools "Viết checklist cài Linux" &gt; checklist.txt
+
+<span class="c"># Danh sách và tiếp tục hội thoại</span>
+dani-ai history
+dani-ai chat --continue
+dani-ai chat --continue ten-phien
+dani-ai --continue last "câu hỏi tiếp"   <span class="c"># single-shot, gửi cả context đã lưu</span>
+
+<span class="c"># Chạy như một lệnh khác dùng key/endpoint nào</span>
+dani-ai --check            <span class="c"># (xem --help)</span></code></pre>
+    <div class="note"><strong>daniwm:</strong> dùng <kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>a</kbd> để mở AI theo cấu hình WM. Trong terminal bất kỳ, chạy <code>dani-ai chat</code>.</div>
+  </div>
+</section>
+
+<section id="repl">
+  <div class="wrap">
+    <h2>REPL</h2>
+    <p class="sub">Trong <code>dani-ai chat</code>, dùng lệnh bắt đầu bằng dấu <code>/</code>.</p>
+    <table>
+      <thead><tr><th>Lệnh</th><th>Chức năng</th></tr></thead>
+      <tbody>
+        <tr><td><code>/help</code></td><td>Hiện hướng dẫn lệnh.</td></tr>
+        <tr><td><code>/model [tên]</code></td><td>Đặt model; không có tên thì lấy danh sách để chọn. Bị khoá khi chạy profile.</td></tr>
+        <tr><td><code>/base [url]</code></td><td>Đổi hoặc xem endpoint hiện tại. Không đổi provider giữa chat.</td></tr>
+        <tr><td><code>/system [nội dung]</code></td><td>Đặt system prompt; không có nội dung thì xoá prompt.</td></tr>
+        <tr><td><code>/save [tên]</code></td><td>Lưu phiên; bỏ tên để AI gợi ý tên. Từ chối tên đã tồn tại thay vì ghi đè.</td></tr>
+        <tr><td><code>/resume [tên]</code></td><td>Mở phiên đã lưu (tạo nhánh ID mới, không sửa phiên nguồn); bỏ tên để chọn từ danh sách.</td></tr>
+        <tr><td><code>/reset</code>, <code>/new</code></td><td>Xoá ngữ cảnh hội thoại hiện tại, giữ system prompt, bắt đầu ID mới.</td></tr>
+        <tr><td><code>/clear</code></td><td>Xoá màn hình và bắt đầu hội thoại mới.</td></tr>
+        <tr><td><code>/retry</code></td><td>Chạy lại lượt user gần nhất, bỏ câu trả lời cũ; chỉ khi lượt đó chưa chạy tool nào.</td></tr>
+        <tr><td><code>/edit-last &lt;text&gt;</code></td><td>Thay toàn bộ prompt gần nhất, bỏ attachments cũ; không hỗ trợ multiline.</td></tr>
+        <tr><td><code>/compact [N]</code></td><td>Giữ N lượt user gần nhất (mặc định 4) + system + tool của các lượt đó; bỏ trọn lượt cũ, không tạo summary.</td></tr>
+        <tr><td><code>/context</code></td><td>Số message, tool result và dung lượng JSON — không phải token usage.</td></tr>
+        <tr><td><code>/usage</code></td><td>Token do provider trả về (prompt/completion/total) trong process hiện tại.</td></tr>
+        <tr><td><code>/diff</code>, <code>/undo</code></td><td>Diff lượt gần nhất; undo có preview + confirm, khôi phục nội dung/mode cũ, xoá file mới do AI tạo.</td></tr>
+        <tr><td><code>/export json|md PATH</code></td><td>Xuất conversation trong RAM, không cần <code>/save</code>; file create-only, <code>0600</code>.</td></tr>
+        <tr><td><code>/delete TÊN</code></td><td>Xoá một snapshot (phải nhập lại tên để xác nhận).</td></tr>
+        <tr><td><code>/root [path]</code></td><td>Xem/đổi tool root; đổi root sẽ xoá hội thoại để tránh trộn nội dung.</td></tr>
+        <tr><td><code>/shell on|off</code>, <code>/shell</code></td><td>Bật/tắt/xem quyền shell ĐẦY ĐỦ cho phiên hiện tại (không sandbox, không tự lưu).</td></tr>
+        <tr><td><code>/stream on|off</code></td><td>Bật/tắt streaming.</td></tr>
+        <tr><td><code>/color on|off</code></td><td>Bật/tắt màu markdown.</td></tr>
+        <tr><td><code>/quit</code>, <code>/exit</code>, <code>/q</code></td><td>Thoát chat.</td></tr>
+      </tbody>
+    </table>
+    <p><kbd>Tab</kbd> hoàn thành lệnh, phím <kbd>↑</kbd> gọi lại dòng đã nhập, <kbd>Ctrl</kbd>+<kbd>D</kbd> thoát khi dòng nhập trống.
+      Terminal hiện spinner <code>Đang chờ phản hồi…</code> cho tới khi có nội dung trả lời; pipe không có spinner.</p>
+    <p>Lỗi API/timeout hoặc <kbd>Ctrl</kbd>+<kbd>C</kbd> khi đang request không đóng REPL. Lượt lỗi chưa chạy tool bị loại khỏi context
+      (nhưng giữ trong RAM để <code>/retry</code>); nếu đã có tool call thì journal được giữ và cần kiểm tra workspace trước khi thử lại.</p>
+  </div>
+</section>
+
+<section id="session">
+  <div class="wrap">
+    <h2>Session, export và private mode</h2>
+    <p class="sub">Mỗi hội thoại một file riêng; <code>last.json</code> chỉ là checkpoint publish gần nhất.</p>
+    <h3>Session ID và nhiều phiên cùng lúc</h3>
+    <ul class="tight">
+      <li>Mỗi REPL / cơ chế tool checkpoint dùng <code>session-&lt;uuid&gt;.json</code> riêng. ID in ra khi thoát, dùng với <code>--continue ID</code>.</li>
+      <li><code>last.json</code> là bản sao checkpoint vừa publish gần nhất, không phải ID cố định của một REPL: khi chạy nhiều phiên, <code>--continue</code> có thể mở phiên khác — dùng ID cụ thể để chọn đúng.</li>
+      <li>Ghi checkpoint/<code>last</code> và <code>/save</code> được serialize bằng <code>flock</code> trên <code>.history.lock</code>; lock tự nhả khi process thoát/crash.</li>
+      <li>Lock là advisory cho các process dani-ai hợp tác trên filesystem hỗ trợ <code>flock</code> (Linux/local), không chống chương trình sửa file bên ngoài. Chưa có retention/cleanup tự động.</li>
+    </ul>
+    <h3>Export / delete (local, không cần API key)</h3>
+<pre class="cmds"><code>dani-ai history                                      <span class="c"># xem tên snapshot</span>
+dani-ai history export TEN json ~/chat-backup.json    <span class="c"># JSON giữ metadata/messages</span>
+dani-ai history export TEN md ~/chat-backup.md        <span class="c"># Markdown để đọc/lưu trữ</span>
+dani-ai history delete TEN CONFIRM                    <span class="c"># xoá đúng snapshot TEN</span></code></pre>
+    <ul class="tight">
+      <li>TÊN là stem không có <code>.json</code>, chỉ chữ/số/<code>_</code>/<code>-</code>; dùng được <code>last</code>, tên <code>/save</code> hoặc <code>session-&lt;uuid&gt;</code>. Thiếu <code>CONFIRM</code> thì không xoá.</li>
+      <li>Export create-only, publish atomic, mode <code>0600</code>; từ chối ghi đè file/symlink. Markdown giữ message JSON trong indented blocks (gồm tool call/result và image payload), không phải định dạng import.</li>
+      <li>Export chứa dữ liệu riêng tư: system prompt, context root/provider, toàn bộ tool output và attachments — không scrub secret.</li>
+      <li>Delete chỉ unlink một snapshot dưới history lock, từ chối symlink/hardlink/JSON không có <code>messages</code>. Không xoá alias/<code>last</code> theo session_id, exports, readline history hay workspace. Không secure erase.</li>
+    </ul>
+    <h3>Private mode</h3>
+    <ul class="tight">
+      <li><code>dani-ai chat --no-history</code>: không đọc/ghi readline history, không autosave, không ghi tool checkpoint; <code>/save</code>, <code>/resume</code>, <code>/export</code>, <code>/delete</code> bị tắt và không dùng chung với <code>--continue</code>.</li>
+      <li>Tool call/result vẫn giữ trong bộ nhớ khi lỗi, nhưng crash/kill sẽ không có journal trên đĩa để phục hồi.</li>
+      <li>Đây <strong>KHÔNG</strong> phải chế độ offline hay sandbox: provider vẫn nhận prompt, tool vẫn có thể ghi workspace theo permission policy, shell/terminal bên ngoài vẫn có thể lưu log.</li>
+      <li>File session là plaintext (<code>0600</code>), không mã hoá. Readline history cũ không tự được scrub.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="tools">
+  <div class="wrap">
+    <h2>Tool use</h2>
+    <p class="sub">Bật mặc định. Endpoint và model cần hỗ trợ function calling.</p>
+    <table>
+      <thead><tr><th>Tool</th><th>Chức năng và giới hạn</th></tr></thead>
+      <tbody>
+        <tr><td><code>list_files</code></td><td>Liệt kê thư mục, không đệ quy, tối đa 200 mục.</td></tr>
+        <tr><td><code>read_file</code></td><td>Đọc file UTF-8 tối đa 2 MiB; phân trang offset/limit (tối đa 64.000 ký tự), báo <code>truncated</code> và <code>next_offset</code>.</td></tr>
+        <tr><td><code>search_text</code></td><td>Tìm chuỗi nguyên văn trong một file, tối đa 100 dòng khớp.</td></tr>
+        <tr><td><code>find_files</code></td><td>Tìm đệ quy theo glob tên file (vd <code>*.py</code>); tôn trọng ignore mặc định và <code>.aiignore</code>; báo số entry <code>ignored</code>.</td></tr>
+        <tr><td><code>search_files</code></td><td>Tìm chuỗi literal đệ quy, trả <code>path:line:text</code>; mỗi trang tối đa 2.000 entry / 100 kết quả / 16.000 ký tự, có <code>next_cursor</code>.</td></tr>
+        <tr><td><code>make_directory</code></td><td>Tạo thư mục và các cha còn thiếu (mode 700) trong tool root; từ chối symlink.</td></tr>
+        <tr><td><code>write_file</code></td><td>Tạo file mới, không ghi đè; thư mục cha phải có sẵn; mode 600.</td></tr>
+        <tr><td><code>edit_file</code></td><td>Thay đoạn text khớp chính xác <strong>một lần</strong>; ghi atomic, giữ quyền file.</td></tr>
+        <tr><td><code>fetch_url</code></td><td>GET link công khai http(s), trả text + title + status (20 giây, 2 MiB, 16.000 ký tự); chặn host private/loopback/link-local, URL có credential, file binary; kiểm tra lại mỗi redirect.</td></tr>
+        <tr><td><code>git_status</code></td><td>Branch và trạng thái repo chứa tool root; không cần shell, không ghi index/commit, bỏ qua submodule.</td></tr>
+        <tr><td><code>run_command</code></td><td>Tắt mặc định; bật bằng <code>--allow-shell</code> hoặc <code>/shell on</code>. Shell toàn quyền user, không sandbox; timeout 30 giây, đầu ra tối đa 64 KiB.</td></tr>
+      </tbody>
+    </table>
+    <p>Cả hai tool scan (<code>find_files</code>/<code>search_files</code>) trả <code>next_cursor</code>: khi khác <code>null</code>, gọi lại cùng tool/path/pattern (hoặc query) kèm <code>cursor: "..."</code> để tiếp tục.
+      Cursor là opaque, single-use, chỉ trong process, tối đa 4 scan đang dở, idle TTL 120 giây; reset/new/clear, resume/đổi root và thoát REPL đều đóng cursor.
+      Đây không phải snapshot: filesystem thay đổi giữa các trang có thể làm kết quả thiếu/thừa/stale.</p>
+    <p>Search bỏ qua file &gt; 64 KiB, file binary/không phải UTF-8, không theo symlink, không đọc hardlink hay đường dẫn ẩn/nhạy cảm.
+      Ghi/sửa/search giới hạn 64 KiB UTF-8/file; <code>read_file</code> tới 2 MiB; mọi đường dẫn tính từ tool root.</p>
+<pre class="cmds"><code><span class="c"># Chỉ đọc project, chặn shell và không nạp custom tools</span>
+dani-ai --tool-root "$PWD" --block-tool run_command --no-custom-tools chat
+
+<span class="c"># Chỉ đọc file/search/git status</span>
+dani-ai --permissions read-only chat
+
+<span class="c"># Tắt toàn bộ tools</span>
+dani-ai --no-tools "Giải thích tiling WM"
+
+<span class="c"># Chặn theo tên hoặc glob (quote để shell không tự mở rộng)</span>
+dani-ai --block-tool 'btc_*' chat
+
+<span class="c"># Shell opt-in (KHÔNG sandbox)</span>
+dani-ai chat --allow-shell</code></pre>
+    <h3>Blocklist</h3>
+    <p>File <code>~/.config/daniwm/ai.tools.blocklist</code> chứa mỗi dòng một tên hoặc glob; dùng <code>#</code> để ghi chú.
+      Chọn file khác bằng <code>--tool-blocklist</code>, thêm bằng <code>--block-tool</code> (lặp lại được, cộng dồn). Blocklist đọc khi khởi động — sửa xong phải mở lại CLI.
+      Tool bị chặn không xuất hiện trong request; nếu model vẫn gọi thì executor từ chối.</p>
+<pre><code># Tắt shell trước khi giới hạn truy cập file
+run_command
+read_file
+search_*
+# Dùng * để chặn tất cả</code></pre>
+    <div class="warn"><strong>Không phải sandbox:</strong> <code>--tool-root</code> và các tool file không cho đường dẫn tuyệt đối, <code>..</code>, symlink, hardlink, file ẩn và một số tên secret/key phổ biến — nhưng <code>run_command</code> và custom tools vẫn truy cập được ngoài root.
+      Shell chạy bằng quyền của bạn; API key và biến môi trường có tên secret/token/password không được truyền cho shell, nhưng shell vẫn đọc được file của bạn. Chặn <code>run_command</code> hoặc dùng <code>--no-tools</code> khi không tin nội dung đầu vào.</div>
+  </div>
+</section>
+
+<section id="policy">
+  <div class="wrap">
+    <h2>Quyền và chính sách</h2>
+    <p class="sub">Permission mode, giới hạn path/domain, budget và deadline của một lượt.</p>
+    <h3>Permission mode</h3>
+    <table>
+      <thead><tr><th>Mode</th><th>Hành vi</th></tr></thead>
+      <tbody>
+        <tr><td><code>ask</code> (mặc định)</td><td>Hiện diff trước khi ghi file; hỏi trước mkdir/network/shell/custom tool. Đọc file local không hỏi. Không có TTY thì tự từ chối.</td></tr>
+        <tr><td><code>read-only</code></td><td>Chỉ đọc file/search/git status; chặn cả <code>fetch_url</code>, shell và custom tool.</td></tr>
+        <tr><td><code>workspace-write</code></td><td>Ghi trong workspace và fetch URL không hỏi; custom tool vẫn tôn trọng <code>confirm</code>.</td></tr>
+      </tbody>
+    </table>
+    <p><code>--yes-tools</code> tự đồng ý prompt nhưng <strong>không</strong> vượt blocklist/read-only và không bật shell.</p>
+
+    <h3>Path / domain policy</h3>
+<pre class="cmds"><code>dani-ai chat --deny-path 'private' --deny-path '*backup*' \
+  --write-path 'src' --write-path 'src/*' --allow-domain docs.python.org</code></pre>
+    <ul class="tight">
+      <li><code>--deny-path GLOB</code>: chặn đọc/ghi và ẩn entry khỏi list/find/search; thắng cả write allowlist, áp dụng cả với <code>--include-ignored</code> và <code>--yes-tools</code>.</li>
+      <li>Glob là fnmatch case-sensitive trên path root-relative đã normalize; <code>*</code> match được cả <code>/</code> (không phải gitignore). Ancestor bị deny thì cả cây con bị deny.</li>
+      <li><code>--write-path</code>: write/edit/mkdir chỉ được ghi path khớp glob; <code>make_directory</code> kiểm tra từng parent.</li>
+      <li><code>--allow-domain HOST</code>: so khớp chính xác hostname (IDNA/case normalized), không scheme/port/wildcard, không tự cho subdomain; kiểm tra trước DNS và mỗi redirect.</li>
+      <li>Preset <code>ask</code> hỏi một lần cho mỗi web origin trong session (kể cả origin mới qua redirect). Approval mất khi new/reset/clear/resume hoặc đổi root.</li>
+      <li>Đây không phải sandbox/DLP: process shell/custom vẫn ra ngoài policy; <code>git_status</code> là metadata repo, không lọc theo deny (chặn bằng <code>--block-tool git_status</code>).</li>
+    </ul>
+
+    <h3>Budget của một lượt</h3>
+    <ul class="tight">
+      <li>Mặc định tối đa <strong>64 tool call</strong> và <strong>1 MiB tool-result UTF-8</strong> mỗi lượt; đổi bằng <code>--max-tool-calls N</code> / <code>--max-tool-output BYTES</code>.</li>
+      <li>Batch vượt call budget sẽ không chạy. Output chỉ biết sau khi tool chạy: nếu vượt, ghi lại tool đã chạy, dừng các call còn lại, không tự retry, không rollback file.</li>
+      <li><code>--turn-timeout SECONDS</code> (mặc định 300) là budget cooperative chung cho API/tool rounds, retry sleeps và thời gian chờ approval. Không phải hard wall-clock: DNS/connect/header, filesystem I/O, history lock và approval prompt có thể giữ process quá hạn.</li>
+      <li><code>--http-retries N</code> (0..3, mặc định <strong>0</strong>) chỉ retry 429/502/503/504 trước khi đọc body; backoff 1/2/4s hoặc <code>Retry-After</code>. Không retry transport error, body/JSON lỗi, partial stream, tool/custom/web.</li>
+    </ul>
+
+    <h3>Giới hạn transport</h3>
+    <ul class="tight">
+      <li>API JSON/stream tối đa 16 MiB; mỗi dòng SSE 1 MiB, tối đa 100.000 dòng; nội dung answer 2.097.152 ký tự; request/session 32 MiB; stdin 2.097.152 ký tự. Vượt budget báo lỗi, không lưu partial answer.</li>
+      <li><code>--timeout</code> là budget tính từ lúc bắt đầu request, đọc body theo thời gian còn lại (chặn server nhỏ giọt). DNS và pha kết nối/header vẫn phụ thuộc timeout nền tảng.</li>
+      <li>Redirect khác origin (kể cả HTTPS → HTTP) bị chặn để tránh gửi API key sang endpoint khác. HTTP vẫn hỗ trợ cho local server; remote nên dùng HTTPS.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="custom">
+  <div class="wrap">
+    <h2>Custom tools</h2>
+    <p class="sub">Mỗi tool = 1 manifest <code>&lt;tên&gt;.json</code> + 1 script bất kỳ trong <code>~/.config/daniwm/ai.tools/</code>.</p>
+<pre class="cmds"><code>dani-ai tools                       <span class="c"># liệt kê tool builtin + custom</span>
+dani-ai --tools-dir ./ai.tools tools
+dani-ai --no-custom-tools chat      <span class="c"># chỉ dùng builtin</span>
+dani-ai --yes-tools chat            <span class="c"># tự đồng ý tool có confirm</span></code></pre>
+<pre><code>{
+  "name": "btc_market",
+  "description": "Read public Binance USD-M futures data (ticker, klines, funding, OI, long/short). Read-only.",
+  "command": ["python3", "{manifest_dir}/btc_market.py"],
+  "timeout": 30,
+  "output_limit": 131072,
+  "confirm": false,
+  "parameters": {
+    "type": "object",
+    "properties": {"symbol": {"type": "string"}},
+    "required": [],
+    "additionalProperties": false
+  }
+}</code></pre>
+    <ul class="tight">
+      <li>Arguments được validate theo <code>parameters</code> (JSON Schema con) rồi gửi qua <strong>stdin</strong> dạng JSON — không qua shell, không interpolate. Sai schema thì không chạy lệnh.</li>
+      <li><code>command</code> là argv list, chạy trực tiếp (không qua <code>/bin/sh</code>) với cwd = tool root; <code>{manifest_dir}</code> được thay bằng thư mục chứa manifest.</li>
+      <li>Tool in JSON/text ra stdout; stderr giữ riêng (tối đa 4 KiB). Exit code ≠ 0 hoặc stdout rỗng → trả <code>error</code>.</li>
+      <li>Biến môi trường khớp <code>*API_KEY*</code>, <code>*TOKEN*</code>, <code>*SECRET*</code>, <code>*PASSWORD*</code>, <code>*CREDENTIAL*</code> không được truyền; có thêm <code>DANI_TOOL_NAME</code>, <code>DANI_TOOL_ROOT</code>.</li>
+      <li><code>timeout</code> mặc định 30s (tối đa 120s), <code>output_limit</code> 256..262144 bytes; vượt thì kill process group và trả <code>error</code>.</li>
+      <li><code>confirm: true</code> hỏi <code>y/N</code> trên TTY trước khi chạy; không có TTY thì từ chối (hoặc tự đồng ý với <code>--yes-tools</code>).</li>
+      <li>Tên tool khớp <code>^[a-z][a-z0-9_]{1,40}$</code>, không trùng builtin, tối đa 32 custom tool. Manifest lỗi bị bỏ qua và báo trong <code>--show-config</code> (<code>tool_manifest_error</code>).</li>
+      <li><code>--block-tool</code>/blocklist áp dụng cho cả custom tool (glob theo tên).</li>
+    </ul>
+
+    <h3>Tool mẫu: <code>btc_market</code></h3>
+<pre class="cmds"><code>mkdir -p ~/.config/daniwm/ai.tools
+cp ~/daniwm/ai.tools/* ~/.config/daniwm/ai.tools/
+dani-ai "Lay du lieu BTC 4h va nhan xet xu huong"   <span class="c"># model tự gọi btc_market</span></code></pre>
+    <ul class="tight">
+      <li>Dữ liệu công khai Binance USD-M futures: ticker 24h, klines OHLCV + thống kê cửa sổ, funding rate, open interest, long/short ratio. Chỉ đọc, không cần API key, không đặt lệnh.</li>
+      <li><code>long_pct</code>/<code>short_pct</code> theo phần trăm (0..100). Long/short period khác kline interval: <code>1m</code> → <code>5m</code>, <code>8h</code> → <code>6h</code>, <code>1w</code> → <code>1d</code>; period thực tế nằm trong <code>long_short.period</code>.</li>
+      <li>Giới hạn 2 MiB/response, budget đọc 24s trong process timeout 30s; trả <code>partial</code> + <code>errors</code> nếu một section lỗi/hết budget, giữ section đã lấy.</li>
+      <li>Timestamp là unix milliseconds; ticker/funding/OI có <code>age_seconds</code> khi nguồn trả timestamp; nến có <code>close_time</code>/<code>is_closed</code>, nến cuối có thể chưa đóng.</li>
+      <li><code>annualized_pct</code> chỉ là ngoại suy giả định funding 8 giờ và rate không đổi — không phải lịch funding đã xác minh, dự báo hay lợi nhuận.</li>
+      <li>Multi-timeframe opt-in: <code>intervals</code> 1..4 khung duy nhất phải chứa <code>interval</code> chính, tổng <code>len(intervals)*limit ≤ 400</code>; <code>timeframes[i]</code> có <code>candles</code>/<code>window</code>/<code>closed_window</code>, lỗi từng khung nằm trong <code>errors[].interval</code>.</li>
+      <li><code>open_interest_history</code> (opt-in) lấy lịch sử OI tháng gần nhất, trả samples + % thay đổi đầu-cuối; dưới hai mẫu hoặc mẫu đầu bằng 0 thì change là <code>null</code>.</li>
+    </ul>
+<pre><code>{"interval":"1h","intervals":["4h","1h","15m"],"limit":100,"include":["klines","open_interest_history"]}</code></pre>
+    <div class="note"><strong>Đọc số liệu:</strong> OI snapshot không kết luận được xu hướng OI; % thay đổi chỉ mô tả cửa sổ mẫu, không phải tín hiệu mua/bán hay cam kết lợi nhuận.</div>
+
+    <h3>Tool mẫu: <code>xauusd_market</code></h3>
+    <p>Lấy quote và OHLCV từ Yahoo Finance <strong>GC=F (COMEX gold futures)</strong>. Đây <strong>KHÔNG phải XAUUSD spot</strong>: giá có thể trễ, chênh basis và chịu ảnh hưởng futures roll. Không đặt lệnh, không funding/OI; Yahoo có thể rate-limit/block.</p>
+<pre class="cmds"><code>mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/daniwm/ai.tools"
+cp ai.tools/xauusd_market.* "${XDG_CONFIG_HOME:-$HOME/.config}/daniwm/ai.tools/"
+dani-ai "Dung xauusd_market lay 100 nen 1h, nhan xet vang va ghi ro day la futures proxy"</code></pre>
+    <p>Intervals: <code>1m</code>, <code>5m</code>, <code>15m</code>, <code>30m</code>, <code>1h</code>, <code>1d</code>, <code>1wk</code>, <code>1mo</code>; <code>limit</code> 1..200 (mặc định 60). Nến cuối có thể chưa đóng; volume là futures.</p>
+  </div>
+</section>
+
+<section id="images">
+  <div class="wrap">
+    <h2>Paste ảnh</h2>
+    <p class="sub">Dán ảnh clipboard trực tiếp vào dòng nhập REPL bằng <kbd>Ctrl</kbd>+<kbd>V</kbd>.</p>
+    <ol>
+      <li>Cài <code>xclip</code> trên X11 hoặc công cụ <code>wl-paste</code> (gói <code>wl-clipboard</code>) trên Wayland.</li>
+      <li>Chạy <code>dani-ai chat</code> với model có hỗ trợ vision (hoặc profile khai báo <code>"vision": true</code>).</li>
+      <li>Copy ảnh, nhấn <kbd>Ctrl</kbd>+<kbd>V</kbd>: dòng nhập hiện placeholder như <code>[Ảnh 1]</code> — có thể paste nhiều ảnh.</li>
+      <li>Nhập câu hỏi về ảnh rồi nhấn <kbd>Enter</kbd> để gửi. Xoá marker ảnh trước khi Enter để bỏ đính kèm.</li>
+    </ol>
+    <p>Hỗ trợ PNG, JPEG, WebP và GIF; mỗi ảnh tối đa 10 MiB; model/API phải hỗ trợ vision và <code>image_url</code> kiểu OpenAI.
+      Nếu clipboard là text, nội dung được chèn tại con trỏ — GNU readline bật bracketed paste nên text nhiều dòng (kể cả newline cuối) chỉ để xem/sửa, không tự gửi.</p>
+    <div class="note"><strong>Lưu ý:</strong> <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> vẫn là paste text của terminal, không phải phím paste ảnh.
+      Ảnh được gửi đến API khi Enter và lưu trong session (base64, file <code>0600</code>); không gửi ảnh chứa thông tin nhạy cảm nếu chưa kiểm tra nhà cung cấp.</div>
+  </div>
+</section>
+
+<section id="flags">
+  <div class="wrap">
+    <h2>Flags</h2>
+    <p class="sub">Tra cứu nhanh; chạy <code>dani-ai --help</code> để xem trợ giúp CLI.</p>
+    <table>
+      <thead><tr><th>Flag</th><th>Ý nghĩa</th></tr></thead>
+      <tbody>
+        <tr><td><code>--chat</code></td><td>Buộc chế độ chat tương tác.</td></tr>
+        <tr><td><code>--api-key KEY</code></td><td>Đặt API key (bị từ chối khi dùng <code>--profile</code>; nên dùng file/biến môi trường).</td></tr>
+        <tr><td><code>--api-base URL</code></td><td>Endpoint OpenAI-compatible (bị từ chối khi dùng <code>--profile</code>).</td></tr>
+        <tr><td><code>--model NAME</code></td><td>Chọn model (với profile: phải trùng model profile).</td></tr>
+        <tr><td><code>--profile NAME</code></td><td>Dùng profile trong <code>ai.profiles.json</code>: pin base/model + capabilities.</td></tr>
+        <tr><td><code>--profiles-file PATH</code></td><td>Đọc profiles từ file khác.</td></tr>
+        <tr><td><code>--system TEXT</code></td><td>Đặt system prompt trực tiếp.</td></tr>
+        <tr><td><code>--system-file PATH</code></td><td>Đọc system prompt từ file.</td></tr>
+        <tr><td><code>--temperature N</code></td><td>Gửi tham số temperature cho API.</td></tr>
+        <tr><td><code>--max-tokens N</code></td><td>Mapping sang token parameter mà provider hỗ trợ; lỗi nếu provider không có.</td></tr>
+        <tr><td><code>--timeout N</code></td><td>Budget thời gian cho một request (giây).</td></tr>
+        <tr><td><code>--turn-timeout SECONDS</code></td><td>Budget cooperative cho cả một lượt, mặc định 300.</td></tr>
+        <tr><td><code>--http-retries N</code></td><td>Retry 429/502/503/504, 0..3, mặc định 0.</td></tr>
+        <tr><td><code>--stream</code> / <code>--no-stream</code></td><td>Bật (mặc định) hoặc tắt streaming.</td></tr>
+        <tr><td><code>--stream-usage</code></td><td>Gửi <code>stream_options.include_usage</code> (chỉ khi provider hỗ trợ).</td></tr>
+        <tr><td><code>--no-color</code></td><td>Tắt màu; tự tắt khi pipe đầu ra (hoặc <code>NO_COLOR</code>).</td></tr>
+        <tr><td><code>--continue [NAME]</code></td><td>Nạp phiên đã lưu, mặc định phiên <code>last</code>.</td></tr>
+        <tr><td><code>--trust-session</code></td><td>Chấp nhận session khác root/provider/metadata (chỉ sau khi đã kiểm tra).</td></tr>
+        <tr><td><code>--no-history</code></td><td>Private mode: không readline history/autosave/checkpoint, tắt export/delete/save.</td></tr>
+        <tr><td><code>--show-config</code></td><td>In cấu hình đã resolve (kể cả lỗi manifest) rồi thoát.</td></tr>
+        <tr><td><code>--no-tools</code></td><td>Tắt mọi tool.</td></tr>
+        <tr><td><code>--permissions MODE</code></td><td><code>ask</code> (mặc định) | <code>read-only</code> | <code>workspace-write</code>.</td></tr>
+        <tr><td><code>--tool-root PATH</code></td><td>Gốc cho tool đọc file, mặc định thư mục hiện tại.</td></tr>
+        <tr><td><code>--block-tool NAME</code></td><td>Chặn tên/glob, có thể lặp lại.</td></tr>
+        <tr><td><code>--tool-blocklist PATH</code></td><td>Đọc danh sách chặn từ file.</td></tr>
+        <tr><td><code>--deny-path GLOB</code></td><td>Chặn đọc/ghi + ẩn entry khỏi list/find/search (lặp lại được).</td></tr>
+        <tr><td><code>--write-path GLOB</code></td><td>Giới hạn write/edit/mkdir vào path khớp glob.</td></tr>
+        <tr><td><code>--allow-domain HOST</code></td><td>Chỉ cho <code>fetch_url</code> tới hostname chính xác này.</td></tr>
+        <tr><td><code>--include-ignored</code></td><td>Bỏ qua ignore mặc định và <code>.aiignore</code> (không bỏ sensitive/symlink rules).</td></tr>
+        <tr><td><code>--max-tool-calls N</code></td><td>Giới hạn tool call mỗi lượt, mặc định 64.</td></tr>
+        <tr><td><code>--max-tool-output BYTES</code></td><td>Giới hạn tổng tool output mỗi lượt, mặc định 1 MiB.</td></tr>
+        <tr><td><code>--tools-dir PATH</code></td><td>Thư mục manifest custom tools.</td></tr>
+        <tr><td><code>--no-custom-tools</code></td><td>Không nạp custom tools.</td></tr>
+        <tr><td><code>--yes-tools</code></td><td>Tự chấp thuận prompt; không vượt blocklist/read-only, không bật shell.</td></tr>
+        <tr><td><code>--allow-shell</code></td><td>Bật <code>run_command</code> (shell toàn quyền, không sandbox).</td></tr>
+        <tr><td><code>--version</code></td><td>In phiên bản rồi thoát.</td></tr>
+        <tr><td><code>--help</code></td><td>Hiện hướng dẫn CLI.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="safety">
+  <div class="wrap">
+    <h2>Bảo mật</h2>
+    <p class="sub">Key của bạn, dữ liệu của bạn — kiểm tra quyền truy cập trước khi bật tools.</p>
+    <ul class="tight">
+      <li>Đặt quyền <code>600</code> cho <code>ai.key</code> và <code>ai.profiles.json</code>; không commit key hoặc file lịch sử vào Git.</li>
+      <li>Nội dung chat, ảnh và kết quả tool được gửi đến nhà cung cấp API đang cấu hình. Ưu tiên HTTPS cho endpoint từ xa; redirect khác origin bị chặn.</li>
+      <li>History/readline history/session ghi atomic (thư mục <code>0700</code>, file <code>0600</code>) nhưng là plaintext, không mã hoá. Xoá hoặc bảo vệ file nếu chứa dữ liệu nhạy cảm.</li>
+      <li>Nội dung file, trang web hoặc đầu ra lệnh có thể chứa chỉ dẫn độc hại (prompt injection). Không coi chúng là chỉ dẫn đáng tin.</li>
+      <li><code>fetch_url</code> chỉ GET, không gửi API key; chặn host private/loopback/link-local/reserved và kiểm tra lại từng redirect (tối đa 5), HTTPS → HTTP bị từ chối. Không có JavaScript/cookie/đăng nhập.</li>
+      <li><code>run_command</code> có thể sửa/xoá file và truy cập mạng. Không chạy dani-ai bằng root; dùng <code>--no-tools</code> khi chỉ cần hỏi đáp.</li>
+      <li>Chỉ cài custom tools đã kiểm tra mã nguồn; tránh <code>--yes-tools</code> với tool chưa tin cậy. File profile là cấu hình tin cậy: người sửa file có thể đổi nơi nhận key.</li>
+      <li>Control sequence từ API bị lọc khi hiển thị TTY; pipe giữ raw text. <code>--no-color</code>/<code>NO_COLOR</code> chỉ tắt màu, không tắt bộ lọc TTY.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="troubleshoot">
+  <div class="wrap">
+    <h2>Sự cố</h2>
+    <p class="sub">Bắt đầu với <code>dani-ai --show-config</code> để kiểm tra endpoint, model, tools và nguồn cấu hình.</p>
+    <h3>Không tìm thấy lệnh dani-ai</h3>
+    <p>Kiểm tra symlink, quyền thực thi và thêm <code>~/.local/bin</code> vào <code>PATH</code>. Trong repo có thể chạy trực tiếp <code>./dani-ai --version</code>.</p>
+    <h3>Thiếu key hoặc lỗi 401 / 403</h3>
+    <p>Kiểm tra dòng đầu của <code>ai.key</code>, key còn hiệu lực và quyền truy cập model. Biến môi trường hoặc flags có thể đang ghi đè file key.
+      Khi dùng <code>--profile</code>, key chỉ lấy từ biến mà profile chỉ định trong <code>key_env</code> — không fallback sang <code>ai.key</code>.</p>
+    <h3>Lỗi 404 hoặc model không tồn tại</h3>
+    <p>Kiểm tra base URL (thường kết thúc bằng <code>/v1</code>, không thêm <code>/chat/completions</code>). Chạy <code>dani-ai models</code> để lấy tên model nếu provider hỗ trợ.</p>
+    <h3>API không hỗ trợ tools hoặc streaming</h3>
+    <p>Thử <code>dani-ai --no-tools --no-stream "Xin chào"</code>, hoặc khai báo <code>"tools": false</code> / <code>"stream": false</code> trong profile. Không phải endpoint OpenAI-compatible nào cũng hỗ trợ đủ.</p>
+    <h3>Stream bị lỗi hoặc cắt giữa chừng</h3>
+    <p>Stream phải kết thúc bằng <code>[DONE]</code>. JSON lỗi, error event hoặc stream bị cắt sẽ báo lỗi; text đã hiện không được lưu như câu trả lời hoàn chỉnh. <code>finish_reason: length</code>/<code>content_filter</code> cũng báo lỗi, không lưu vào history.</p>
+    <h3>Session không resume được</h3>
+    <p>Session v2 ghi project root và API base. Resume khác project/provider, hoặc phiên cũ thiếu metadata, sẽ bị từ chối — chỉ dùng <code>--trust-session</code> sau khi đã kiểm tra nội dung và nguồn gốc. <code>/base</code> không đổi provider giữa chat; hãy khởi động lại với endpoint và key tương ứng.</p>
+    <h3>Timeout hoặc lỗi 429</h3>
+    <p>Tăng <code>--timeout</code> nếu API chậm, tăng <code>--turn-timeout</code> nếu lượt có nhiều tool; bật <code>--http-retries 1..3</code> nếu gặp 429/502/503/504 (lưu ý provider có thể vẫn tính phí cho POST retry).</p>
+    <h3><code>/undo</code> bị từ chối</h3>
+    <p>Undo preflight đòi nội dung và identity khớp trạng thái AI để lại, không symlink/hardlink. Nếu bạn đã sửa file sau đó, hoặc trong lượt đã có shell/custom tool, undo bị từ chối để không ghi đè — hãy dùng Git/backup.</p>
+    <h3>Không paste được ảnh</h3>
+    <p>Kiểm tra <code>xclip</code> / <code>wl-paste</code>, clipboard đang chứa dữ liệu ảnh và terminal không chặn <kbd>Ctrl</kbd>+<kbd>V</kbd>. Cần model hỗ trợ vision (hoặc <code>vision: true</code> trong profile); ảnh quá 10 MiB cần giảm kích thước trước.</p>
+    <h3>Tool không xuất hiện hoặc bị từ chối</h3>
+    <p>Kiểm tra <code>--no-tools</code>, blocklist và thư mục manifest (<code>--show-config</code> in <code>tool_manifest_error</code>). Tool <code>confirm: true</code> bị từ chối khi không có TTY để hỏi; chỉ dùng <code>--yes-tools</code> khi đã kiểm tra tool. Kiểm tra cả <code>--deny-path</code>/<code>--write-path</code> nếu file bị chặn.</p>
+    <h3>Test</h3>
+    <p><code>./test/test-ai.sh</code> (hoặc <code>make check-ai</code>) chạy bộ regression bảo mật/lỗi, không cần API key thật hay X server; <code>make check</code> bao gồm cả suite này.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="end">dani-ai · Python stdlib · BYOK · <a href="#features">Về đầu trang ↑</a></div>
+  </div>
+</footer>
+</body>
+</html>
