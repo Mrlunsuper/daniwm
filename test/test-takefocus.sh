@@ -29,13 +29,13 @@ OUT=$(python3 "$TDIR/takefocus.py" 2>"$H/stderr.log")
 RC=$?
 echo "$OUT"
 [ "$RC" -eq 0 ] || { echo "FAIL: helper failed (rc=$RC)"; cat "$H/stderr.log"; exit 1; }
-GOT=$(echo "$OUT" | sed -n 's/^TAKE_FOCUS_GOT=//p' | tail -n1)
-NOK=$(echo "$OUT" | sed -n 's/^NORMAL_FOCUS_OK=//p' | tail -n1)
-[ -n "${GOT:-}" ] || { echo "FAIL: no TAKE_FOCUS_GOT"; exit 1; }
-[ -n "${NOK:-}" ] || { echo "FAIL: no NORMAL_FOCUS_OK"; exit 1; }
-
-assert "endorser receives WM_TAKE_FOCUS ClientMessage" "$GOT" -eq 1
-assert "non-endorsing path keeps XSetInputFocus" "$NOK" -eq 1
+for key in W1_MESSAGE_OK W1_FOCUS_OK W1_KEY_OK \
+           W2_MESSAGE_OK W2_FOCUS_OK W2_KEY_OK \
+           W1_RETURN_MESSAGE_OK W1_RETURN_FOCUS_OK W1_RETURN_KEY_OK \
+           NORMAL_FOCUS_OK NOINPUT_MESSAGE_OK NOINPUT_FOCUS_OK NOINPUT_ACTIVE_OK; do
+    value=$(printf '%s\n' "$OUT" | sed -n "s/^${key}=//p")
+    assert "$key (required result)" "$value" = 1
+done
 
 [ $fail -eq 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL"
 exit $fail

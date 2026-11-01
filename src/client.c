@@ -124,10 +124,11 @@ int client_wants_input(Window w) {
     }
     return want;
 }
-/* ICCCM WM_TAKE_FOCUS: endorsing clients take input themselves
- * (LocallyActive). Send ClientMessage instead of XSetInputFocus to avoid
- * double-focus. Atoms come from the T-M5A cache (fallback interns once if
- * used before ewmh_init). Timestamp is the last user event (T-M5B). */
+/* ICCCM WM_TAKE_FOCUS: notify endorsing clients independently of InputHint.
+ * Locally Active clients also receive X input focus; Globally Active clients
+ * (InputHint=false) take input themselves. Atoms come from the T-M5A cache
+ * (fallback interns once if used before ewmh_init). Timestamp is the last
+ * user event (T-M5B). */
 static int client_takes_focus(Window w) {
     Atom protos = A_WM_PROTOCOLS != None ? A_WM_PROTOCOLS : XInternAtom(dpy, "WM_PROTOCOLS", False);
     Atom take = A_WM_TAKE_FOCUS != None ? A_WM_TAKE_FOCUS : XInternAtom(dpy, "WM_TAKE_FOCUS", False);
@@ -183,13 +184,8 @@ static void focus_ex(Client *c, int raise) {
         untrap_errors(dpy);
         keep_docks_on_top();
     }
-    if (client_takes_focus(c->win)) {
-        /* LocallyActive/GloballyActive: client takes input itself after
-         * the message; never double-focus with XSetInputFocus. */
+    if (client_takes_focus(c->win))
         send_take_focus(c);
-        ewmh_active();
-        return;
-    }
     if (client_wants_input(c->win)) {
         trap_errors(dpy);
         XSetInputFocus(dpy, c->win, RevertToPointerRoot, wm_time());

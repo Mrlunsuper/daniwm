@@ -2608,19 +2608,85 @@ def render_inline(s):
     return s
 
 
+def _table_cells(line):
+    """Return Markdown table cells, or None for an ordinary text line."""
+    s = line.strip()
+    if s.count("|") < 2:
+        return None
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    cells = [cell.strip() for cell in s.split("|")]
+    return cells if len(cells) >= 2 else None
+
+
+def _table_separator(cells):
+    return bool(cells) and all(re.match(r"^:?-{3,}:?$", cell) for cell in cells)
+
+
+def _visible_len(text):
+    return len(re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text))
+
+
+def _render_table(cells, widths, separator=False, header=False):
+    if separator:
+        parts = []
+        for width, cell in zip(widths, cells):
+            left = cell.startswith(":")
+            right = cell.endswith(":")
+            dash = "-" * max(3, width)
+            if left:
+                dash = ":" + dash[1:]
+            if right:
+                dash = dash[:-1] + ":"
+            parts.append(dash.ljust(width, "-")[:width])
+        return _A_DIM + "├" + "┼".join("─" * width for width in widths) + "┤" + _A_RST
+    rendered = []
+    for cell, width in zip(cells, widths):
+        text = render_inline(cell)
+        visible = _visible_len(text)
+        text += " " * max(0, width - visible)
+        rendered.append((_A_B + " " + text + " " + _A_RST) if header
+                        else " " + text + " ")
+    return _A_DIM + "│" + "│".join(rendered) + "│" + _A_RST
+
+
 class _MdLive:
-    """Stateful line renderer: keeps code-fence state across streamed lines."""
+    """Stateful line renderer: keeps fence and table state across streamed lines."""
 
     def __init__(self):
         self.fence = False
+        self.table_widths = None
 
     def render(self, line):
         s = line
         if s.strip().startswith("```"):
             self.fence = not self.fence
+            self.table_widths = None
             return _A_DIM + ("─" * 24) + _A_RST
         if self.fence:
             return _A_CYAN + s + _A_RST if s else s
+        cells = _table_cells(s)
+        if cells is not None:
+            if _table_separator(cells):
+                if self.table_widths is None:
+                    self.table_widths = [max(3, len(cell)) for cell in cells]
+                return _render_table(cells, self.table_widths, separator=True)
+            if self.table_widths is None:
+                self.table_widths = [min(40, max(1, len(cell))) for cell in cells]
+                self.table_header_pending = True
+            if len(cells) != len(self.table_widths):
+                self.table_widths = [min(40, max(1, len(cell))) for cell in cells]
+            result = _render_table(cells, self.table_widths,
+                                   header=self.table_header_pending)
+            self.table_header_pending = False
+            if not result.endswith(_A_RST):
+                result += _A_RST
+            return result
+        self.table_widths = None
+        if hasattr(self, "_table_seen"):
+            del self._table_seen
         m = re.match(r"^(#{1,6})\s+(.*)$", s)
         if m:
             color = _A_YELLOW if len(m.group(1)) <= 2 else _A_MAG
