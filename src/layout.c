@@ -9,30 +9,36 @@
 
 /* Raise floating/fullscreen clients above tiled ones while preserving
  * their current relative stacking (XQueryTree returns bottom->top).
- * Raising in client-list order would freeze list order as stacking order
- * and instantly undo an explicit click-raise (or windowraise request) on
- * a small floating window nested inside a bigger one. */
+ * Do not raise each float bottom->top: even though the final order matches,
+ * intermediate inversions generate EnterNotify events under a stationary
+ * pointer. In monocle, hover focus calls arrange(), creating a focus loop.
+ * Raise only the highest float, then stack the others below it top->bottom
+ * without ever reversing the relative order of overlapping floats. */
 static void raise_floats(int mon) { /* mon < 0: all monitors */
     Window r, p, *kids = NULL;
     unsigned nk = 0;
     trap_errors(dpy);
     if (XQueryTree(dpy, root, &r, &p, &kids, &nk) && kids) {
+        unsigned nf = 0;
         for (unsigned i = 0; i < nk; i++) {
             Client *c = find(kids[i]);
             if (!c || c->ws != curws) continue;
             if (mon >= 0 && c->mon != mon) continue;
             if (!c->floating && !c->fullscreen) continue;
-            XMapRaised(dpy, c->win);
+            kids[nf++] = c->win;
         }
-        XFree(kids);
-        untrap_errors(dpy);
-        return;
+        for (unsigned i = 0; i < nf / 2; i++) {
+            Window tmp = kids[i];
+            kids[i] = kids[nf - 1 - i];
+            kids[nf - 1 - i] = tmp;
+        }
+        if (nf > 0) {
+            XRaiseWindow(dpy, kids[0]);
+            if (nf > 1) XRestackWindows(dpy, kids, (int)nf);
+        }
     }
-    /* XQueryTree failed: fall back to list order (better than nothing) */
-    for (Client *c = clients; c; c = c->next)
-        if (c->ws == curws && (mon < 0 || c->mon == mon) &&
-            (c->floating || c->fullscreen))
-            XMapRaised(dpy, c->win);
+    if (kids) XFree(kids);
+    /* On query failure, leave stacking alone rather than guess its order. */
     untrap_errors(dpy);
 }
 
