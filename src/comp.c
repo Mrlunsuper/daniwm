@@ -21,8 +21,9 @@
  *   - shaped window (bounding shape): hỗ trợ qua XShape — clip phía đích
  *     (XRenderSetPictureClipRectangles trên back buffer; XFixes clip bị
  *     Xvfb bỏ qua với pixmap redirect). Bóng cửa sổ shaped bị tắt.
- *   - không vsync thật (chỉ gom Damage ~60Hz). Muốn mượt như picom thì
- *     dùng picom; dani-comp là để "có compositor của nhà trồng".
+ *   - XPresent nếu có: pool 3 pixmap, chỉ reuse sau IdleNotify. Buffer
+ *     dựng hình riêng không bao giờ gửi cho scanout; fallback XCopyArea
+ *     khi Present timeout. Nhịp render vẫn giới hạn khoảng 60Hz.
  *
  * Build: `make dani-comp` (xem Makefile).
  */
@@ -92,11 +93,21 @@ static int present_ok = 0;
 static int present_opcode = 0;     /* major opcode, nhận diện XGE cookie */
 static int present_event = 0;      /* event base (chỉ để log) */
 static XID present_eid = None;     /* event ID từ XPresentSelectInput */
-static uint32_t present_serial = 0; /* serial cho XPresentPixmap */
-static int present_pending = 0;    /* có present đang chờ complete? */
-static int present_idle = 1;       /* back_buf đã idle, có thể ghi lại */
-static long long present_sent_ms = 0; /* thời điểm gửi present */
-#define PRESENT_TIMEOUT_MS 200     /* fallback nếu complete không về */
+static uint32_t present_serial = 0;
+static uint32_t present_pending_serial = 0;
+static int present_pending = 0;    /* tối đa 1 request chưa Complete */
+static long long present_sent_ms = 0;
+#define PRESENT_TIMEOUT_MS 200
+#define PRESENT_BUFFERS 3
+/* back_buf là ảnh canonical, KHÔNG gửi cho Present. Mỗi slot giữ một
+ * snapshot đầy đủ; busy chỉ được hạ bởi IdleNotify đúng pixmap/serial.
+ * Complete (kể cả flip) không có nghĩa GPU đã trả pixmap. */
+static struct {
+    Pixmap pixmap;
+    uint32_t serial;
+    int busy;
+    long long sent_ms;
+} present_bufs[PRESENT_BUFFERS];
 #endif
 
 /* render: double-buffer — dựng frame trên back_buf rồi present 1 blit.
@@ -283,30 +294,78 @@ static long long now_ms(void) {
     return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
 }
 
-/* Gate repaint: chặn vẽ khi flip XPresent đang chờ. repaint() dựng lại cả
- * back_buf (chục lệnh XRender) — nếu chạy trong lúc server đang chờ flip
- * pixmap đó thì vblank lấy frame dở dang -> chớp đúng vào lúc mật độ frame
- * cao (cuộn trang, video). Chỉ được vẽ khi present trước đã complete;
- * timeout 200ms thì tắt hẳn XPresent (fallback XCopyArea) để khỏi đứng
- * hình. Với build không XPresent, present_pending luôn 0 -> gate rảnh. */
-static int repaint_due(void) {
-    if (!dirty && !fading) return 0;
-    if (now_ms() - last_paint < 16) return 0;
 #ifdef WITH_XPRESENT
-    if ((present_pending || !present_idle) &&
-        now_ms() - present_sent_ms > PRESENT_TIMEOUT_MS) {
-        present_ok = 0;
+static int present_free_slot(void) {
+    for (int i = 0; i < PRESENT_BUFFERS; i++)
+        if (!present_bufs[i].busy) return i;
+    return -1;
+}
+
+/* Trả deadline còn lại (ms), -1 nếu không cần chờ. Một buffer flip đang
+ * scanout được phép busy vô hạn khi vẫn còn slot khác để render. */
+static long long present_wait_ms(long long now) {
+    if (!present_ok) return -1;
+    long long sent;
+    if (present_pending) {
+        sent = present_sent_ms;
+    } else if ((dirty || fading) && present_free_slot() < 0) {
+        sent = present_bufs[0].sent_ms;
+        for (int i = 1; i < PRESENT_BUFFERS; i++)
+            if (present_bufs[i].sent_ms < sent) sent = present_bufs[i].sent_ms;
+    } else {
+        return -1;
+    }
+    long long left = sent + PRESENT_TIMEOUT_MS - now;
+    return left > 0 ? left : 0;
+}
+
+/* XFreePixmap chỉ bỏ reference của client; server giữ storage nếu còn
+ * scanout. Không bao giờ ghi lại các pixmap retired này, kể cả timeout
+ * hoặc resize. back_buf riêng vẫn an toàn cho fallback XCopyArea. */
+static void present_buffers_retire(void) {
+    for (int i = 0; i < PRESENT_BUFFERS; i++) {
+        if (present_bufs[i].pixmap != None)
+            XFreePixmap(dpy, present_bufs[i].pixmap);
+    }
+    memset(present_bufs, 0, sizeof(present_bufs));
+}
+
+static void present_disable(void) {
+    present_ok = 0;
+    present_pending = 0;
+    present_buffers_retire();
+}
+
+static void present_complete(const XPresentCompleteNotifyEvent *pe) {
+    if (pe->eid == present_eid && pe->window == root &&
+        pe->kind == PresentCompleteKindPixmap && present_pending &&
+        pe->serial_number == present_pending_serial)
         present_pending = 0;
-        present_idle = 1;
+}
+
+static void present_buffer_idle(const XPresentIdleNotifyEvent *pe) {
+    if (pe->eid != present_eid || pe->window != root) return;
+    for (int i = 0; i < PRESENT_BUFFERS; i++) {
+        if (pe->pixmap == present_bufs[i].pixmap &&
+            pe->serial_number == present_bufs[i].serial)
+            present_bufs[i].busy = 0;
+    }
+}
+#endif
+
+static int repaint_due(void) {
+    long long now = now_ms();
+#ifdef WITH_XPRESENT
+    /* Kiểm tra kể cả khi chưa dirty: Complete bị mất cũng phải timeout. */
+    if (present_wait_ms(now) == 0) {
+        present_disable();
         if (opt_debug)
             fprintf(stderr, "dani-comp: XPresent timeout, fallback to XCopyArea\n");
     }
-    if (present_ok && !present_idle)
-        return 0; /* không ghi vào pixmap đang được scanout */
-    if (present_pending)
-        return 0; /* chờ CompleteNotify trước khi submit frame kế */
+    if (present_ok && (present_pending || present_free_slot() < 0)) return 0;
 #endif
-    return 1;
+    if (!dirty && !fading) return 0;
+    return now - last_paint >= 16;
 }
 
 
@@ -570,6 +629,9 @@ static int win_is_opaque(const Win *w, long long now) {
 /* đảm bảo back buffer + snapshot nền đúng size root hiện tại */
 static void ensure_targets(int w, int h, Visual *vis, int depth) {
     if (back_buf != None && w == back_w && h == back_h) return;
+#ifdef WITH_XPRESENT
+    present_buffers_retire(); /* resize: không reuse slot của size cũ */
+#endif
     if (back_pict != None) { XRenderFreePicture(dpy, back_pict); back_pict = None; }
     if (back_buf != None) { XFreePixmap(dpy, back_buf); back_buf = None; }
     if (bg_pix != None) { XFreePixmap(dpy, bg_pix); bg_pix = None; }
@@ -997,42 +1059,36 @@ static void repaint(void) {
         if (had_clip)
             back_clip_reset(); /* trả clip về hộp damage (hoặc None) */
     }
-    /* present: XPresentPixmap (hardware vsync) nếu bật, XCopyArea nếu không.
-     * back_buf cùng cỡ root nên gốc pixmap (0,0) = gốc window (0,0):
-     * x_off/y_off phải là 0, update-area là hộp damage theo toạ độ window
-     * (= toạ độ pixmap). (Truyền cur_clip vào x_off/y_off từng đặt pixmap
-     * (0,0) vào giữa màn hình -> sai nội dung vùng repaint cục bộ.) */
+    /* Mỗi Present slot phải nhận snapshot ĐẦY ĐỦ từ canonical back_buf:
+     * slot idle có thể chứa frame cũ nhiều lượt; chỉ copy bbox sẽ làm các
+     * vùng ngoài damage quay về nội dung cũ khi driver flip cả pixmap.
+     * update vẫn là bbox, offset luôn 0 (root/pixmap cùng hệ toạ độ). */
 #ifdef WITH_XPRESENT
-    if (present_ok && (present_pending || !present_idle) &&
-        now_ms() - present_sent_ms > PRESENT_TIMEOUT_MS) {
-        /* timeout: complete/idle không về (Xvfb, driver cũ) -> tắt hẳn */
-        present_ok = 0;
-        present_pending = 0;
-        present_idle = 1;
-        if (opt_debug)
-            fprintf(stderr, "dani-comp: XPresent timeout, fallback to XCopyArea\n");
-    }
-    if (present_ok && !present_pending && present_idle) {
-        /* A/B: DANI_COMP_NO_PRESENT=1 tắt hẳn XPresent -> fallback XCopyArea.
-         * Mẹo chẩn đoán lỗi content-only trên hardware thật (Xvfb không có
-         * XPresent nên không test được path này). */
-        if (getenv("DANI_COMP_NO_PRESENT")) { present_ok = 0; }
-        else {
-        XserverRegion update = None; /* None = cả window */
-        if (cur_clip_on) {
-            update = XFixesCreateRegion(dpy, NULL, 0);
-            XRectangle upd_r = cur_clip;
-            XFixesSetRegion(dpy, update, &upd_r, 1);
-        }
-        XPresentPixmap(dpy, root, back_buf, present_serial++,
-            None, update,
-            0, 0,
-            0, None, None,
-            PresentOptionNone, 0, 0, 0, NULL, 0);
-        if (update != None) XFixesDestroyRegion(dpy, update);
-        present_pending = 1;
-        present_idle = 0;
-        present_sent_ms = now_ms();
+    if (present_ok) {
+        int slot = present_free_slot(); /* repaint_due đã chờ slot idle */
+        if (slot < 0) return; /* phòng thủ: không ghi vào pixmap busy */
+        if (present_bufs[slot].pixmap == None)
+            present_bufs[slot].pixmap = XCreatePixmap(dpy, root,
+                (unsigned)ra.width, (unsigned)ra.height, (unsigned)ra.depth);
+        if (present_bufs[slot].pixmap == None) {
+            present_disable();
+        } else {
+            Pixmap target = present_bufs[slot].pixmap;
+            XCopyArea(dpy, back_buf, target, present_gc,
+                0, 0, (unsigned)ra.width, (unsigned)ra.height, 0, 0);
+            XserverRegion update = None;
+            if (cur_clip_on)
+                update = XFixesCreateRegion(dpy, &cur_clip, 1);
+            uint32_t serial = present_serial++;
+            XPresentPixmap(dpy, root, target, serial, None, update,
+                0, 0, 0, None, None, PresentOptionNone, 0, 0, 0, NULL, 0);
+            if (update != None) XFixesDestroyRegion(dpy, update);
+            present_pending_serial = serial;
+            present_pending = 1;
+            present_sent_ms = now_ms();
+            present_bufs[slot].serial = serial;
+            present_bufs[slot].busy = 1;
+            present_bufs[slot].sent_ms = present_sent_ms;
         }
     }
 #endif
@@ -1192,6 +1248,7 @@ int main(int argc, char **argv) {
         {
             int err4;
             present_ok = XPresentQueryExtension(dpy, &present_opcode, &present_event, &err4);
+            if (getenv("DANI_COMP_NO_PRESENT")) present_ok = 0;
             if (opt_verbose)
                 fprintf(stderr, "dani-comp: present=%d opcode=%d event=%d\n",
                     present_ok, present_opcode, present_event);
@@ -1315,16 +1372,17 @@ int main(int argc, char **argv) {
         if (dirty || fading) {
             long long elapsed = now_ms() - last_paint;
 #ifdef WITH_XPRESENT
-            if (present_pending &&
-                now_ms() - present_sent_ms <= PRESENT_TIMEOUT_MS) {
-                budget = (long)((PRESENT_TIMEOUT_MS -
-                    (now_ms() - present_sent_ms)) * 1000);
-            } else if (present_ok && !present_idle) {
-                budget = -1; /* chờ IdleNotify, không ghi đè back_buf */
-            } else
+            if (!present_ok || (!present_pending && present_free_slot() >= 0))
 #endif
-            budget = (elapsed >= 16) ? 0 : (long)((16 - elapsed) * 1000);
+                budget = (elapsed >= 16) ? 0 : (long)((16 - elapsed) * 1000);
         }
+#ifdef WITH_XPRESENT
+        /* Complete và thiếu Idle đều có deadline, kể cả khi không dirty.
+         * Không poll 0us trong lúc chờ GPU; event vẫn đánh thức select. */
+        long long pwait = present_wait_ms(now_ms());
+        if (pwait >= 0 && (budget < 0 || pwait * 1000 < budget))
+            budget = (long)(pwait * 1000);
+#endif
         long long swake = shape_next_wake(now_ms());
         if (swake >= 0) {
             long sw_us = (swake > 1000000) ? 1000000 : (long)(swake * 1000);
@@ -1337,7 +1395,11 @@ int main(int argc, char **argv) {
             long g_us = (gdue > 5000000) ? 5000000 : (long)(gdue * 1000);
             if (budget < 0 || g_us < budget) budget = g_us;
         }
-        if (budget >= 0) { tv.tv_sec = 0; tv.tv_usec = budget; tvp = &tv; }
+        if (budget >= 0) {
+            tv.tv_sec = budget / 1000000;
+            tv.tv_usec = budget % 1000000;
+            tvp = &tv;
+        }
         /* C8: Xlib queue đã có event (đọc vào lúc repaint round-trip)?
          * xử lý ngay, đừng block trong select — nếu không DamageNotify chưa
          * subtract sẽ kẹt và cửa sổ đông cứng. */
@@ -1524,7 +1586,7 @@ int main(int argc, char **argv) {
                     if (cook->evtype == PresentCompleteNotify) {
                         XPresentCompleteNotifyEvent *pe =
                             (XPresentCompleteNotifyEvent *)cook->data;
-                        present_pending = 0;
+                        present_complete(pe);
                         if (opt_debug >= 2)
                             fprintf(stderr, "dani-comp: present complete serial=%u ust=%llu msc=%llu mode=%u\n",
                                 pe->serial_number, (unsigned long long)pe->ust,
@@ -1532,8 +1594,7 @@ int main(int argc, char **argv) {
                     } else if (cook->evtype == PresentIdleNotify) {
                         XPresentIdleNotifyEvent *pe =
                             (XPresentIdleNotifyEvent *)cook->data;
-                        if (pe->pixmap == back_buf)
-                            present_idle = 1;
+                        present_buffer_idle(pe);
                     }
                     XFreeEventData(dpy, cook);
                 }
