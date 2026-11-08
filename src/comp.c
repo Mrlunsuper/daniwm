@@ -23,7 +23,7 @@
  *     Xvfb bỏ qua với pixmap redirect). Bóng cửa sổ shaped bị tắt.
  *   - XPresent nếu có: pool 3 pixmap, chỉ reuse sau IdleNotify. Buffer
  *     dựng hình riêng không bao giờ gửi cho scanout; fallback XCopyArea
- *     khi Present timeout. Nhịp render vẫn giới hạn khoảng 60Hz.
+ *     khi Present timeout. Nhịp render mặc định giới hạn khoảng 120Hz.
  *
  * Build: `make dani-comp` (xem Makefile).
  */
@@ -74,6 +74,7 @@ static int opt_fade = 1;
 static double opt_dim = 0.92; /* 1.0 = tắt dim */
 static int opt_fade_ms = 160;
 static int opt_verbose = 0;
+#define FRAME_INTERVAL_MS 8 /* ~120Hz: giảm input-to-photon latency */
 
 /* damage ext */
 static int dmg_event = 0, dmg_error = 0;
@@ -365,7 +366,7 @@ static int repaint_due(void) {
     if (present_ok && (present_pending || present_free_slot() < 0)) return 0;
 #endif
     if (!dirty && !fading) return 0;
-    return now - last_paint >= 16;
+    return now - last_paint >= FRAME_INTERVAL_MS;
 }
 
 
@@ -1362,10 +1363,10 @@ int main(int argc, char **argv) {
             XCloseDisplay(dpy);
             return 0;
         }
-        /* P2: tối đa 1 repaint / 16ms. Đủ 16ms và có việc -> vẽ ngay.
+        /* P2: tối đa 1 repaint / FRAME_INTERVAL_MS. Đủ thời gian và có việc -> vẽ ngay.
          * (repaint_due cũng chặn khi flip XPresent đang chờ -> hết chớp.) */
         if (repaint_due()) { repaint(); continue; }
-        /* Lịch chờ: dirty/fading -> tick tới mốc 16ms; P6 shape recheck ->
+        /* Lịch chờ: dirty/fading -> tick tới mốc FRAME_INTERVAL_MS; P6 shape recheck ->
          * tick tới mốc 100/400ms; không có gì -> block tới event. */
         struct timeval tv, *tvp = NULL;
         long budget = -1; /* us; -1 = block vô hạn */
@@ -1374,7 +1375,8 @@ int main(int argc, char **argv) {
 #ifdef WITH_XPRESENT
             if (!present_ok || (!present_pending && present_free_slot() >= 0))
 #endif
-                budget = (elapsed >= 16) ? 0 : (long)((16 - elapsed) * 1000);
+                budget = (elapsed >= FRAME_INTERVAL_MS) ? 0 :
+                    (long)((FRAME_INTERVAL_MS - elapsed) * 1000);
         }
 #ifdef WITH_XPRESENT
         /* Complete và thiếu Idle đều có deadline, kể cả khi không dirty.
@@ -1611,7 +1613,7 @@ int main(int argc, char **argv) {
                 break;
             }
         }
-        /* P2: throttle ở đầu vòng giữ nhịp <=60Hz. Đủ 16ms thì vẽ; chưa đủ
+        /* P2: throttle ở đầu vòng giữ nhịp <=~120Hz. Đủ thời gian thì vẽ; chưa đủ
          * thì để dirty, vòng sau tick nốt phần còn lại. */
         if (repaint_due()) repaint();
     }
