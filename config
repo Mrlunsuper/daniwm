@@ -75,14 +75,14 @@ bar_modules        = cpu mem bat vol clock  # thứ tự + ẩn/hiện (xóa tê
 clock_fmt          = %d/%m | %H:%M  # strftime (vd: "%H:%M" gọn, "%a %d/%m %H:%M" đầy đủ)
 bar_show_title     = 0       # tiêu đề cửa sổ trái (1/0)
 bar_show_tasks     = 1        # nút task Awesome: click-trái focus, click-giữa đóng (1/0)
-bar_task_w         = 360     # rộng mỗi nút task (px, 0 = auto chia đều; vd 160)
+bar_task_w         = 280     # rộng mỗi nút task (px, 0 = auto chia đều; vd 160)
 bar_task_pad       = 12        # padding chữ trong nút task (px, 0..32)
 bar_ws_task_gap    = 32        # vùng chết giữa ws và tasklist + vạch chia (px, 0..64; click vào đây = no-op)
 # style task list: đồng bộ với ws (pill + iris) | đổi pill->underline/block/none nếu thích
 bar_task_style        = pill
-bar_task_active       = 232A2D   # nền task đang focus (= bar_ws_active)
-bar_task_active_text  = DADADA   # chữ task đang focus (sáng trên nền xám đặc)
-bar_task_text         = DADADA   # chữ task thường (= bar_ws_occ; urgent vẫn dùng bar_urgent)
+bar_task_active       = 8CCF7E   # nền xanh nổi bật cho task đang focus
+bar_task_active_text  = 141B1E   # chữ tối tương phản trên nền xanh
+bar_task_text         = A8AFB2   # task thường dịu hơn; urgent vẫn dùng bar_urgent
 bar_show_layout    = 0        # icon tile/monocle + số cửa sổ (1/0)
 # icon cụm phải: mặc định là icon Nerd Font (đẹp nhất với font Nerd bên dưới),
 # tự rớt về C/M/B/V nếu máy thiếu font. Muốn chữ thường thì mở 3 dòng này:
