@@ -93,6 +93,7 @@ Window traywin = None;
 int tray_on = 1;
 int tray_active = 0;
 int TRAY_GAP = 6;
+int TRAY_SIZE = 0;
 int barw = 0;
 
 Atom A_TRAY_SEL = None, A_TRAY_OPCODE = None, A_XEMBED = None, A_XEMBED_INFO = None,

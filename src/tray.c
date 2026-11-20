@@ -26,6 +26,11 @@ int tray_icon_size(void) {
     int sz = bh - 10;
     if (sz < 8) sz = 8;
     if (sz > 22) sz = 22; /* breathing room: 32px overpowered text, 22px sits level */
+    if (TRAY_SIZE > 0) { /* tray_size= in config overrides the auto size */
+        sz = S(TRAY_SIZE);
+        if (sz > bh - 2) sz = bh - 2;
+        if (sz < 8) sz = 8;
+    }
     return sz;
 }
 

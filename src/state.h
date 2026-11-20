@@ -50,6 +50,7 @@ extern Window traywin;
 extern int tray_on;
 extern int tray_active;
 extern int TRAY_GAP; /* px between tray icons (0..32, default 6) */
+extern int TRAY_SIZE; /* tray icon px before scale (8..64); 0 = auto from bar_h */
 extern int barw;
 extern Pixmap barpm;
 extern GC bargc;

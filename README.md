@@ -179,7 +179,7 @@ System tray: XEmbed (`_NET_SYSTEM_TRAY_Sn`) on the bar's right edge — `nm-appl
 from the clock (same chrome as the workspace separator); clicking the tray area
 never leaks into workspace view; an ownerless selection is re-acquired automatically
 (e.g. after a standalone tray exits); `tray = 0` disables (reload applies live);
-`tray_gap` (0–32, default 6 — khoảng cách giữa các icon tray, reload applies live).
+`tray_size` (0 hoặc 8–64, default 0 = tự tính từ `bar_h`, tối đa 22 — cỡ icon tray), `tray_gap` (0–32, default 6 — khoảng cách giữa các icon tray, reload applies live).
 Classic XEmbed only — StatusNotifier/AppIndicator apps need `snixembed` bridge.
 
 ```ini
