@@ -145,8 +145,9 @@ default `monospace:size=10`, fallbacks built in: Nerd Fonts for icons, then
 `bar_show_title` / `bar_show_layout` (1/0 — left title, layout icon + count),
 `bar_show_tasks` (1/0, default 1 — Awesome-style clickable task buttons;
 replaces the lone title when on; overflow collapses into a `+N` chip),
-`bar_task_w` (0–512, default 0 = auto equal-share; e.g. `160` = fixed 160px
-buttons, left-aligned, clicks past them are no-ops),
+`bar_task_w` (0–512, default 0 = auto equal-share; e.g. `160` = buttons at
+most 160px wide, left-aligned, clicks past them are no-ops; buttons shrink to
+fit before any task is hidden),
 `bar_task_pad` (0–32, default 6 — text inset inside each task button),
 `bar_ws_task_gap` (0–64, default 12 — dead px between the ws/layout block and
 the tasklist, with a thin divider drawn in the middle when tasks show;

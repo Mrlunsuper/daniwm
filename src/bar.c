@@ -603,26 +603,25 @@ void drawbar(void) {
         int gap = S(BAR_WS_TASK_GAP); /* dead zone after ws/layout: no hitbox */
         int tx0 = mode_end + gap;
         int avail = (barw - right_w - trayw - pad_r) - tx0 - S(8);
-        /* bar_task_w > 0: fixed px per button, left-aligned, empty space
-         * stays inert; 0: auto equal-share across the whole area. */
+        /* bar_task_w > 0: widest a button may get, left-aligned, empty
+         * space stays inert; 0: auto equal-share across the whole area.
+         * Either way buttons shrink (down to S(48)) before any task is
+         * hidden: a fixed width that only fits one slot used to turn that
+         * slot into the "+N" chip and show no task at all. */
         int fixed = BAR_TASK_W > 0 ? S(BAR_TASK_W) : 0;
         if (fixed < 0) fixed = 0;
-        if (nt > 0 && avail > (fixed ? fixed : S(48))) {
-            int minw = fixed ? fixed : S(48);
+        if (nt > 0 && avail > S(48)) {
+            int minw = S(48);
             int slots = nt, overflow = 0;
-            if (fixed) {
-                slots = avail / fixed;
-                if (slots < 1) slots = 1;
-                if (slots > nt) slots = nt;
-                /* last slot becomes "+N" only when tasks truly overflow */
-                overflow = (ntotal > slots) ? ntotal - slots + 1 : 0;
-            } else if (nt * minw > avail) {
+            if (nt * minw > avail) {
                 slots = avail / minw;
                 if (slots < 1) slots = 1;
                 if (slots > nt) slots = nt;
-                overflow = ntotal - slots + 1; /* last slot becomes "+N" */
             }
-            int bw = fixed ? fixed : avail / slots;
+            /* last slot becomes "+N" only when tasks truly overflow */
+            if (ntotal > slots) overflow = ntotal - slots + 1;
+            int bw = avail / slots;
+            if (fixed && bw > fixed) bw = fixed;
             int tpad = S(BAR_TASK_PAD);
             /* zone marker in the middle of the dead gap: same chrome as
              * the tray divider, so the ws/task boundary reads at a glance */
