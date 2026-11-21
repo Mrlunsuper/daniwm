@@ -2,6 +2,157 @@
 
 Tiling + monocle, bar with sysmon, 5 workspaces by default (1–10 configurable), gaps, EWMH, multi-monitor (Xinerama), rules, scratchpad, autostart, system tray. Sources in `src/` (12 modules).
 
+## Three-finger swipe: workspace switching and overview (opt-in)
+
+Enable `swipe_enabled = 1` to use three-finger gestures (default `0` below).
+Left goes to the next workspace, right to the previous; up shows the overview
+and down hides it without committing a pending selection. While the overview
+is open, left/right change only its pending selection; Enter/click commits and
+Esc cancels. Repeated up/down are idempotent. Super+O also toggles the overview.
+Actions occur only once on a completed, uncancelled, exactly-three-finger gesture.
+Short, ambiguous and wrong-finger gestures do nothing. The dominant axis must
+meet the threshold and total perpendicular travel must be at most half its net
+distance. Meaningful dominant-axis reversal rejects the stroke; minor-axis
+reversal alone does not (for either horizontal or vertical gestures).
+Disabled by default:
+
+```ini
+swipe_enabled = 0
+swipe_threshold = 80
+swipe_wrap = 0
+swipe_reverse = 0
+swipe_debug = 0
+```
+
+### Opt-in diagnostics (not a runtime fix)
+
+Set `swipe_debug = 1` manually in your config only when investigating missing
+swipes; default `0` is silent. Stderr normally goes to `~/.xsession-errors`
+(depending on how the X session is launched). Logs contain XI support/selection
+status, one Begin and one final decision/reset per gesture, device/source IDs,
+finger count, aggregate deltas, threshold, rejection reason and workspace target
+(including clamping). Repeated overlapping Begins and Updates are not logged.
+No application contents or key events are recorded. Reload, drag and
+hierarchy/device changes have distinct reset reasons. A successful selection
+without Begin logs can help distinguish lack of delivery from classifier rejection;
+it does not by itself establish the runtime cause. XI swipe ownership is exclusive,
+so do not run a second swipe observer alongside the WM.
+
+Deployment is **manual**, not performed by the test suite: build with `make daniwm`,
+then copy the binary to a temporary file in the same directory as the installed
+binary and rename it over the installed binary (for example, if your actual
+installed path is `~/.local/bin/daniwm`:
+`cp ./daniwm ~/.local/bin/daniwm.new && mv ~/.local/bin/daniwm.new ~/.local/bin/daniwm`).
+Use your actual installed path, then press **Super+Ctrl+R** to restart. Enable or
+disable the debug scalar yourself and reload/restart as appropriate. These logs
+are diagnostic instrumentation, **not a claim that the missing horizontal swipe
+bug is fixed**; no live reproduction is required by the offline checks.
+
+`swipe_threshold` is a finite number in 1..10000 (default 80), measured in
+accumulated XI gesture delta units, not guaranteed physical pixels. Invalid
+values are rejected. `swipe_wrap` permits crossing the first/last workspace;
+`swipe_reverse` swaps left/right only; up/down remain show/hide. Reload cancels any in-flight gesture before
+loading settings and reconfigures delivery after workspace arrays are rebuilt.
+
+XI2.4 headers/server support and actual touchpad gesture delivery are required;
+compilation and offline tests do not establish physical delivery. Root observation
+may not deliver over application windows; applications or competing grabs may
+consume gestures. The Phase 1 adapter only selects events: it never grabs,
+freezes, or replays input. Run `make check-swipe` for its offline tests.
+Passive grabs in the separate diagnostic may intercept non-three-
+finger swipes too: the XI API has no finger-count grab filter, and rejecting them
+in the classifier cannot restore input to applications. Keep this opt-in off
+unless delivery and application-input behavior have been verified on an approved
+setup. No live-display or hardware verification is claimed here.
+
+### Phase 0 diagnostic reference (preserved)
+
+The following describes the original standalone Phase 0 probe, not the current
+Phase 1 WM feature; its evidence requirements and limitations still apply.
+
+**Ở Phase 0 chưa triển khai chuyển workspace hay overview.** Công cụ bên dưới chỉ thu thập
+bằng chứng XI2.4; không được nối vào WM/compositor, startup hoặc installation.
+Không đổi focus/workspace, map cửa sổ ứng dụng hay replay core button.
+
+Build và kiểm tra offline (không mở display, không cần quyền truy cập touchpad):
+
+```sh
+make test/xi2-gesture-probe
+make check-xi2-probe
+./test/xi2-gesture-probe --build-info
+./test/xi2-gesture-probe --self-test
+```
+
+Probe bắt buộc `--display NAME`, không tự dùng `$DISPLAY`. Exit code: 0 thành
+công, 1 lỗi kết nối/protocol, 2 sai tham số, 3 không hỗ trợ. Header cũ build nhánh
+unsupported; header mới nhưng server thiếu XI2.4 cũng báo unsupported. Offline
+suite kiểm tra riêng nhánh unsupported, mask **5 byte** bao phủ swipe end (32),
+và decoder cancellation bằng dữ liệu giả; không chứng minh giao thức/hardware.
+
+**Chỉ sau khi được chấp thuận riêng cho display/setup thử nghiệm** mới chạy các
+lệnh sau (thay `:PRIVATE` bằng display cô lập đã xác nhận, không phải phiên đang
+sử dụng). Đây không phải sự cho phép chạy probe trên phiên thật:
+
+```sh
+# Capability: chỉ query; không select events, không grab.
+./test/xi2-gesture-probe --display :PRIVATE --mode capabilities
+# Observation: chỉ sau khi được duyệt tương tác; giới hạn 1..60 giây (mặc định 10).
+./test/xi2-gesture-probe --display :PRIVATE --mode observe --seconds 10
+# Passive-grab: opt-in KHÁC, cần chấp thuận riêng về ảnh hưởng input.
+./test/xi2-gesture-probe --display :PRIVATE --mode grab --allow-passive-grab --seconds 10
+```
+
+Không tự cài dependencies, đọc raw device, chạy daemon hay thử live input không
+người giám sát. Server cô lập có thể kiểm tra protocol nhưng chỉ chứng minh swipe
+vật lý nếu có đường đưa sự kiện touchpad thật vào setup được chấp thuận.
+
+Log gồm version negotiated, device/use/attachment/enabled/name, class/source,
+gesture max touches nếu có. `use`/`attachment` là giá trị XI device/master-slave.
+Header, version XI2.4 và gesture class **không** chứng minh sự kiện thật đến WM.
+Event log gồm begin/update/end, time, device/source, detail, delta và unaccelerated
+delta, flags/cancelled, root/event/child và effective modifiers. Không diễn giải
+`detail` hay dấu delta thành số ngón/hướng cho đến khi đã đối chiếu thao tác thật.
+
+Observation trên root **không** chứng minh passive grab trên root hoạt động qua
+cửa sổ ứng dụng, cũng không bảo đảm input ứng dụng được giữ nguyên. Grab thử từng
+master pointer đang enabled trên default root, async cho cả hai thiết bị,
+`owner_events=False`, `XIAnyModifier`; log request status, per-modifier status và
+X errors. API **không có finger-count filter**: grab có thể chặn cả swipe không
+phải ba ngón. Bỏ qua chúng ở classifier sau này không giải quyết interception.
+Probe kết thúc theo deadline hoặc SIGINT/SIGTERM, ungrab/deselect rồi đóng kết nối;
+đóng kết nối cũng giải phóng resource thuộc probe. Không có synchronous freeze
+hay replay. Lỗi mất kết nối do Xlib kết thúc tiến trình; server thu hồi grabs.
+
+### Evidence gate trước mọi feature implementation
+
+Ghi riêng kết quả capability, observation và passive-grab; đừng suy diễn từ nhau:
+
+- Chuỗi **vật lý** begin → updates → end cho cả bốn hướng, đối chiếu số ngón,
+  `detail`, dấu/đơn vị delta, cancellation và IDs nguồn/master.
+- Root delivery qua child application windows, modifiers giữ/thả, competing
+  grabs, cancellation; ghi rõ master/root/setup và request/per-modifier status.
+- So sánh hành vi ứng dụng khi probe tắt/bật: click, drag, scroll, keyboard,
+  focus, swipe sai số ngón; grab không được nuốt input thông thường.
+- Kiểm tra deadline, SIGINT/SIGTERM và input sau cleanup; lỗi grab có thu hồi
+  toàn bộ grab của probe. Đây là runtime checks, không phải offline PASS.
+- Không có private server/hardware setup được duyệt: ghi **SKIP/BLOCKED**, không
+  tuyên bố đạt. Hiện physical delivery và input-preserving passive grab chưa xác minh.
+
+Chỉ khi gate đạt mới xem xét classifier ba ngón (một action trên completed,
+above-threshold, uncancelled swipe; reject short/ambiguous/wrong-finger), trái/tiếp,
+phải/trước qua `view()`, lên/show và xuống/hide idempotent. Overview/keyboard toggle,
+selection, bounded cached previews và regressions giữ focus/fullscreen/scratchpad/
+restart đều còn hoãn; không map app ẩn để chụp, không finger-follow animation hay
+cam kết thumbnail ẩn luôn live. Các lựa chọn kiến trúc chưa chốt cần duyệt riêng.
+
+## Workspace overview
+
+`Super+o` opens/toggles a workspace grid on the pointer monitor. Arrow keys change only the pending selection; Enter or a workspace click commits it. A window-card click commits its workspace, then focuses the still-managed client after checking its XID and workspace. Escape cancels without changing the original workspace or focus. Opening/browsing never maps hidden clients or focuses applications. Show/hide are idempotent; external workspace changes, client lifecycle changes, reload and monitor geometry changes close the overlay.
+
+The WM takes actual XComposite/XRender downscaled snapshots only when a compositor owns redirection and a client is viewable. Snapshots are also taken before workspace/monocle hiding and retained for hidden clients. The cache holds at most 64 opaque pixmaps, each at most 192×108 (about 5.1 MiB at 32 bits/pixel, excluding server overhead), with round-robin replacement and removal on unmanage. No application redirection ownership is changed. Without a compositor, or when capture fails, the overview remains usable as labeled cards without images; previews are cached, not live video. Large workspaces display as many cards as fit.
+
+Actions: `overview_show`, `overview_hide`, `overview_toggle`. Configurations with explicit `bind` entries replace defaults, so an existing live config needs `bind = mod+o:overview_toggle`; this repository's example includes it. No installed configuration is changed automatically. With `swipe_enabled = 1`, three-finger up/down show/hide this UI and left/right move its pending selection without switching the physical workspace. `make check-overview` runs isolated controller/cache tests; real X rendering and compositor compatibility still need private-display visual verification.
+
 ## Build
 
 ```sh

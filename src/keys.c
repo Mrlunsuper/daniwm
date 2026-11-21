@@ -1,4 +1,5 @@
 #include "keys.h"
+#include "overview.h"
 
 #include <X11/Xutil.h>
 #include <X11/XF86keysym.h>
@@ -281,6 +282,7 @@ static void k_rsz_h_inc(int unused)  { (void)unused; float_rszby(0, S(RSZ_STEP))
 const KeyAction actions[] = {
     { "focus_next", k_focusnext }, { "focus_prev", k_focusprev },
     { "zoom", zoom }, { "ws_toggle", ws_toggle }, { "kill", k_kill }, { "tile", k_tile }, { "monocle", k_monocle },
+    { "overview_toggle", overview_toggle }, { "overview_show", overview_show }, { "overview_hide", overview_hide },
     { "toggle", k_toggle }, { "spawn_term", k_spawnterm },
     { "spawn_menu", k_spawnmenu }, { "quit", k_quit }, { "float", k_float },
     { "mfact_dec", k_mfactdec }, { "mfact_inc", k_mfactinc },
@@ -318,6 +320,7 @@ void add_default_keys(void) {
     push_key_fn(XK_t, M, k_tile, 0);
     push_key_fn(XK_m, M, k_monocle, 0);
     push_key_fn(XK_space, M, k_toggle, 0);
+    push_key_fn(XK_o, M, overview_toggle, 0);
     push_key_fn(XK_Return, M, k_spawnterm, 0);
     push_key_fn(XK_p, M, k_spawnmenu, 0);
     push_key_fn(XK_h, M, k_mfactdec, 0);

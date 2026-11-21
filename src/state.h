@@ -118,6 +118,11 @@ extern int gap_outer;
 extern int gap_inner;
 extern float def_mfact;
 extern int def_nmaster;
+extern int SWIPE_ENABLED;
+extern double SWIPE_THRESHOLD;
+extern int SWIPE_WRAP;
+extern int SWIPE_REVERSE;
+extern int SWIPE_DEBUG;
 extern int NWS;
 extern char *ws_names[MAXWS]; /* custom workspace names, NULL = number fallback */
 extern char *RENAME_CMD; /* prompt cmd for ws_rename (stdout = new name) */
@@ -151,6 +156,9 @@ extern Cursor cur_move, cur_resize, cur_hsplit;
 
 /* ---- drag ---- */
 extern Drag drag;
+
+/* Suppress synthetic hover crossings until the pointer actually moves. */
+void hover_lock_arm(void);
 
 /* per-workspace layout conveniences */
 #define LAYOUT  (ws_layout[curws])

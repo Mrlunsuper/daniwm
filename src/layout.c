@@ -1,4 +1,5 @@
 #include "layout.h"
+#include "overview.h"
 
 #include "bar.h"
 #include "client.h"
@@ -143,6 +144,7 @@ void monocle_mon(int m) {
             XMapWindow(dpy, c->win);
             if (c->hidden) { c->hidden = 0; ewmh_update_state(c); }
         } else {
+            overview_capture(c->win);
             XUnmapWindow(dpy, c->win);
             if (!c->hidden) { c->hidden = 1; ewmh_update_state(c); }
         }
@@ -193,6 +195,7 @@ void arrange(void) {
         if (c->ws == curws && c->fullscreen)
             XRaiseWindow(dpy, c->win);
     }
+    overview_top(); /* Structural restacks must not cover the keyboard grab UI. */
     XSync(dpy, False);
     drawbar();
 }

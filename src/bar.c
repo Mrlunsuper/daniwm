@@ -1,4 +1,5 @@
 #include "bar.h"
+#include "overview.h"
 
 #include <X11/Xft/Xft.h>
 
@@ -811,6 +812,7 @@ static void scaled_font_pat(const char *pat, char *out, size_t n) {
  * `font` is a fontconfig pattern (e.g. "monospace:size=11"); fallbacks
  * keep the bar readable when the pattern matches nothing. */
 void bar_style(void) {
+    overview_hide(0);
     static const char *fallbacks[] = { NULL, "monospace:size=10", "monospace", "fixed", NULL };
     if (!bar) return;  /* nothing to (re)style without a bar window */
     Visual *vis = DefaultVisual(dpy, screen);

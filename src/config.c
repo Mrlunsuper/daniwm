@@ -1,10 +1,13 @@
 #define _POSIX_C_SOURCE 200809L /* getline() under strict -std=c11 */
 #include "config.h"
+#include "overview.h"
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
 
 #include <ctype.h>
+#include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +17,7 @@
 #include "bar.h"
 #include "client.h"
 #include "ewmh.h"
+#include "gestures.h"
 #include "keys.h"
 #include "layout.h"
 #include "mouse.h"
@@ -229,6 +233,8 @@ void config_defaults(void) {
     for (int i = 0; i < MAXWS; i++) { free(ws_icons[i]); ws_icons[i] = NULL; }
     free(RENAME_CMD); RENAME_CMD = xstrdup("rofi -dmenu -i -p rename");
     MOD = Mod4Mask; BORDER = 2; NWS = 5;
+    SWIPE_ENABLED = 0; SWIPE_THRESHOLD = 80.0;
+    SWIPE_WRAP = 0; SWIPE_REVERSE = 0; SWIPE_DEBUG = 0;
     BORDER_FOCUS = 0x7aa2f7; BORDER_NORMAL = 0x333333;
     BAR_BG = 0x1e1e2e; BAR_FG = 0xcdd6f4; BAR_ACC = 0x7aa2f7; BAR_DIM = 0x6c7086;
     C_WS_ACT = C_WS_ACT_TX = C_WS_OCC = C_WS_EMP = C_MODE = C_TITLE = C_SYS = 0;
@@ -418,6 +424,22 @@ static void parse_scalar(char *key, char *val) {
         else if (!strcasecmp(val, "click")) FOCUS_MODE = 1;
         else if (!strcasecmp(val, "both")) FOCUS_MODE = 2;
         else fprintf(stderr, "daniwm: bad focus '%s' (want hover|click|both)\n", val);
+    } else if (!strcmp(key, "swipe_enabled")) {
+        if (parse_bool(val, &b)) SWIPE_ENABLED = b;
+    } else if (!strcmp(key, "swipe_debug")) {
+        if (parse_bool(val, &b)) SWIPE_DEBUG = b;
+    } else if (!strcmp(key, "swipe_wrap")) {
+        if (parse_bool(val, &b)) SWIPE_WRAP = b;
+    } else if (!strcmp(key, "swipe_reverse")) {
+        if (parse_bool(val, &b)) SWIPE_REVERSE = b;
+    } else if (!strcmp(key, "swipe_threshold")) {
+        char *end;
+        errno = 0;
+        double threshold = strtod(val, &end);
+        if (end != val && !*end && !errno && isfinite(threshold) &&
+            threshold >= 1.0 && threshold <= 10000.0)
+            SWIPE_THRESHOLD = threshold;
+        else fprintf(stderr, "daniwm: bad swipe_threshold '%s' (want finite 1..10000)\n", val);
     } else if (!strcmp(key, "gaps_on")) {
         if (parse_bool(val, &b)) gaps_on = b;
 
@@ -733,6 +755,9 @@ void load_config(const char *path) {
             strcmp(k, "ico_mute") && strcmp(k, "ico_clk") && strcmp(k, "bar_pad_l") &&
             strcmp(k, "bar_pad_r") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "bar_ws_pad") && strcmp(k, "ws_pad") && strcmp(k, "tray") && strcmp(k, "tray_size") && strcmp(k, "tray_icon_size") && strcmp(k, "tray_gap") && strcmp(k, "tray_pad") &&
             strcmp(k, "tray_spacing") && strcmp(k, "tray_icons_gap") && strcmp(k, "bar_on") && strcmp(k, "focus") && strcmp(k, "gaps_on") &&
+            strcmp(k, "swipe_enabled") && strcmp(k, "swipe_threshold") &&
+            strcmp(k, "swipe_wrap") && strcmp(k, "swipe_reverse") &&
+            strcmp(k, "swipe_debug") &&
             strcmp(k, "gap_outer") && strcmp(k, "gap_inner") &&
             strcmp(k, "mfact") &&
             strcmp(k, "nmaster") && strcmp(k, "workspaces") && strcmp(k, "rename_cmd") &&
@@ -760,6 +785,7 @@ void load_config(const char *path) {
  * shrinking folds extra workspaces into the last one, and a parked
  * scratchpad follows the sentinel. OOM-safe: keeps the old set. */
 void finalize_nws(void) {
+    overview_hide(0);
     Client **s;
     Layout *l;
     float *f;
@@ -792,8 +818,11 @@ void finalize_nws(void) {
     ewmh_desktops();
 }
 void k_reload(int unused) {
+    overview_hide(0);
     (void)unused;
+    gestures_reset("config-reload");
     load_config(NULL);
+    gestures_configure();
     for (int i = 0; i < NWS; i++) {
         if (ws_mfact[i] < 0.1f || ws_mfact[i] > 0.9f) ws_mfact[i] = def_mfact;
         if (ws_nmaster[i] < 1) ws_nmaster[i] = def_nmaster;

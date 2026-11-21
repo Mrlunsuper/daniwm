@@ -10,6 +10,7 @@
 #include "monitor.h"
 #include "state.h"
 #include "xerr.h"
+#include "gestures.h"
 
 /* ---- mouse: Mod+Left move, Mod+Right resize ----
  * Passive grabs live on client windows (grabbuttons). Plain Mod+click
@@ -91,6 +92,7 @@ void drag_start(Client *c, int mode, int px, int py) {
             GrabModeAsync, GrabModeAsync, None,
             cur, CurrentTime) != GrabSuccess)
         return;
+    gestures_reset("drag");
     drag.win = c->win; drag.mode = mode;
     drag.px = px; drag.py = py;
     /* Drop motion events queued before the press: they carry positions

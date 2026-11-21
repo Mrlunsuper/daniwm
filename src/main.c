@@ -20,6 +20,7 @@
 
 #include "types.h"
 #include "state.h"
+#include "overview.h"
 #include "monitor.h"
 #include "ewmh.h"
 #include "bar.h"
@@ -32,6 +33,7 @@
 #include "sysmon.h"
 #include "tray.h"
 #include "xerr.h"
+#include "gestures.h"
 
 /* ---- _NET_ACTIVE_WINDOW focus-fight guard ----
  * Spammy pages (window.focus() on blur, competing across two browsers)
@@ -98,7 +100,7 @@ static int fight_check(Client *c) {
  * Cửa sổ mới map xong giữ focus tới khi chuột DI THẬT. */
 static int hover_lock_on = 0;
 static int hover_lock_x = 0, hover_lock_y = 0;
-static void hover_lock_arm(void) {
+void hover_lock_arm(void) {
     Window r, ch; int rx, ry, wx, wy; unsigned m;
     if (!XQueryPointer(dpy, root, &r, &ch, &rx, &ry, &wx, &wy, &m)) return;
     hover_lock_on = 1;
@@ -134,10 +136,23 @@ static int xi2_opcode = 0;
 static void xi2_init(void) {
     int xi_ev = 0, xi_err = 0;
     int maj = 2, min = 0;
-    if (XQueryExtension(dpy, "XInputExtension", &xi2_opcode, &xi_ev, &xi_err) != True)
+#if !defined(DANIWM_NO_GESTURES) && defined(XI_GestureSwipeBegin)
+    min = 4;
+#endif
+    if (XQueryExtension(dpy, "XInputExtension", &xi2_opcode, &xi_ev, &xi_err) != True) {
+        if (SWIPE_DEBUG) fprintf(stderr, "daniwm: swipe init active=0 reason=no-XInputExtension\n");
+        gestures_init(0, 0);
         return;
-    if (XIQueryVersion(dpy, &maj, &min) != Success)
-        return;
+    }
+    if (XIQueryVersion(dpy, &maj, &min) != Success) {
+        maj = 2; min = 0;
+        if (XIQueryVersion(dpy, &maj, &min) != Success) {
+            if (SWIPE_DEBUG) fprintf(stderr, "daniwm: swipe init active=0 reason=XIQueryVersion-failed\n");
+            gestures_init(0, 0);
+            return;
+        }
+    }
+    gestures_init(maj, min);
     int ndev = 0;
     XIDeviceInfo *info = XIQueryDevice(dpy, XIAllDevices, &ndev);
     if (!info) return;
@@ -150,9 +165,9 @@ static void xi2_init(void) {
         XIEventMask em = { .deviceid = info[i].deviceid,
             .mask_len = (int)sizeof(mask), .mask = mask };
         trap_errors(dpy);
-        if (XISelectEvents(dpy, root, &em, 1) == Success)
-            xi2_ok = 1;
-        untrap_errors(dpy);
+        int status = XISelectEvents(dpy, root, &em, 1);
+        int clean = untrap_errors(dpy);
+        if (status == Success && clean) xi2_ok = 1;
     }
     XIFreeDeviceInfo(info);
     if (!xi2_ok)
@@ -160,6 +175,7 @@ static void xi2_init(void) {
 }
 /* plain-click raise for the window under the pointer; returns after focus */
 static void xi2_raw_click(int button) {
+    if (overview_is_open()) return;
     Window r, child;
     int rx, ry, wx, wy;
     unsigned m;
@@ -513,6 +529,7 @@ int main(int argc, char **argv) {
             on_monitors_changed();
             continue; /* not break: we are before switch(), break would exit for(;;) */
         }
+        if (overview_event(&ev)) continue;
         switch (ev.type) {
         case MapRequest: {
             XMapRequestEvent *e = &ev.xmaprequest;
@@ -576,6 +593,7 @@ int main(int argc, char **argv) {
             if (tray_handle_opcode(e)) break;
             Client *c = find(e->window);
             if (e->message_type == A_NET_ACTIVE_WINDOW) {
+                overview_hide(0);
                 if (e->data.l[1]) last_evtime = (Time)e->data.l[1]; /* pager's user time */
                 if (c) {
                     /* Parked scratchpad (ws == NWS sentinel) is unmapped:
@@ -668,6 +686,7 @@ int main(int argc, char **argv) {
                     if (wc.height < 1 || wc.height > sh * 2) wc.height = c->fh;
                 }
                 XConfigureWindow(dpy, e->window, (unsigned int)e->value_mask, &wc);
+                overview_top();
             } else {
                 /* Tiled clients do not own their stacking (audit-0930 #10):
                  * honoring CWStackMode here let a tiled window slip under or
@@ -870,12 +889,15 @@ int main(int argc, char **argv) {
             /* XI2 raw button press (broadcast, app untouched):
              * click-to-raise for floating windows. */
             XGenericEventCookie *cook = &ev.xcookie;
-            if (cook->extension == xi2_opcode &&
-                cook->evtype == XI_RawButtonPress &&
+            if (xi2_opcode && cook->extension == xi2_opcode &&
                 XGetEventData(dpy, cook)) {
-                XIRawEvent *re = (XIRawEvent *)cook->data;
-                last_evtime = re->time;
-                xi2_raw_click(re->detail);
+                if (xi2_ok && cook->evtype == XI_RawButtonPress && cook->data) {
+                    XIRawEvent *re = (XIRawEvent *)cook->data;
+                    last_evtime = re->time;
+                    xi2_raw_click(re->detail);
+                } else {
+                    gestures_event(cook);
+                }
                 XFreeEventData(dpy, cook);
             }
             break;

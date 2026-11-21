@@ -55,14 +55,19 @@ CFLAGS += -DHAVE_CAIRO $(shell pkg-config --cflags cairo)
 CAIRO_LIBS = $(shell pkg-config --libs cairo)
 endif
 
-SRCS = src/state.c src/monitor.c src/sysmon.c src/bar.c src/ewmh.c \
-       src/layout.c src/client.c src/mouse.c src/keys.c src/config.c src/tray.c src/rename.c src/xerr.c src/main.c
+SRCS = src/overview.c src/state.c src/monitor.c src/sysmon.c src/bar.c src/ewmh.c \
+       src/layout.c src/client.c src/mouse.c src/keys.c src/config.c src/tray.c src/rename.c src/xerr.c src/swipe.c src/gestures.c src/main.c
 OBJS = $(SRCS:.c=.o)
 
 all: daniwm dani-comp dani-run
 
+.PHONY: check-overview
+check-overview:
+	sh test/test-overview.sh
+	sh test/test-overview-xvfb.sh
+
 daniwm: $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lXcomposite -lXrender -lm
 
 dani-run: src/run.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(CAIRO_LIBS) -lm
@@ -95,6 +100,19 @@ test/dialog-helper: test/dialog-helper.c
 
 test/float-click-helper: test/float-click-helper.c
 	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11 $(SYS_LDFLAGS)
+
+# Opt-in diagnostic only; never run by startup, install, or normal check.
+test/xi2-gesture-probe: test/xi2-gesture-probe.c
+	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lXi -lX11 $(SYS_LDFLAGS)
+
+test/xi2-gesture-probe-unsupported: test/xi2-gesture-probe.c
+	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -DPROBE_NO_GESTURES -o $@ $< -lXi -lX11 $(SYS_LDFLAGS)
+
+check-xi2-probe: test/xi2-gesture-probe test/xi2-gesture-probe-unsupported
+	sh ./test/test-xi2-gesture-probe.sh
+
+check-swipe:
+	sh ./test/test-swipe.sh
 
 check-ai:
 	./test/test-ai.sh
@@ -158,7 +176,7 @@ uninstall:
 	rm -f $(DESTDIR)$(EXAMPLEDIR)/ai.tools/xauusd_market.json $(DESTDIR)$(EXAMPLEDIR)/ai.tools/xauusd_market.py
 
 clean:
-	rm -f daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper test/menu-helper test/dialog-helper test/float-click-helper src/*.o src/*.d
+	rm -f daniwm dani-comp dani-run test/dock-helper test/tray-icon-helper test/click-helper test/menu-helper test/dialog-helper test/float-click-helper test/xi2-gesture-probe test/xi2-gesture-probe-unsupported src/*.o src/*.d
 	rm -rf __pycache__
 
-.PHONY: all clean check check-ai install install-examples install-user uninstall
+.PHONY: all clean check check-ai check-swipe check-xi2-probe install install-examples install-user uninstall

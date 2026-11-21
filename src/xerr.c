@@ -30,10 +30,10 @@ void trap_errors(Display *d) {
     }
 }
 
-void untrap_errors(Display *d) {
+int untrap_errors(Display *d) {
     char msg[128];
-    if (trap_depth <= 0) return;
-    if (--trap_depth > 0) return;
+    if (trap_depth <= 0) return 0;
+    if (--trap_depth > 0) return 0;
     XSync(d, False);
     if (trapped_err) {
         msg[0] = 0;
@@ -44,4 +44,5 @@ void untrap_errors(Display *d) {
     }
     if (prev_handler) XSetErrorHandler(prev_handler);
     prev_handler = NULL;
+    return !trapped_err;
 }

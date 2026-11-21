@@ -1,4 +1,5 @@
 #include "monitor.h"
+#include "overview.h"
 
 #include <X11/extensions/Xinerama.h>
 
@@ -80,6 +81,7 @@ void on_monitors_changed(void) {
         for (int i = 0; i < nmons; i++)
             if (mons[i].x != ox[i] || mons[i].y != oy[i] || mons[i].w != ow[i] || mons[i].h != oh[i]) { same = 0; break; }
     if (same) return;
+    overview_hide(0);
     for (Client *c = clients; c; c = c->next) {
         if (c->mon < 0 || c->mon >= nmons) c->mon = mon_at(c->fx + c->fw / 2, c->fy + c->fh / 2);
         if (c->floating) { /* keep floating windows on-screen */

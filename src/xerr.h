@@ -7,4 +7,5 @@
  * untrap syncs, logs request codes via XGetErrorText, and continues.
  * Nest-safe. No exits. */
 void trap_errors(Display *d);
-void untrap_errors(Display *d);
+/* Returns 1 only after a successful outermost sync; nested/unbalanced = 0. */
+int untrap_errors(Display *d);

@@ -2,6 +2,16 @@
 # key = value, # comment. Reload nóng bằng Super+Shift+r (không cần restart).
 # Dòng bind đầu tiên thay toàn bộ bảng phím mặc định; rule đầu tiên thay rules mặc định.
 
+# ---------- Three-finger swipe (opt-in; set swipe_enabled = 1) ----------
+# Up shows overview; down cancels/hides. Left/right select while open,
+# otherwise switch workspaces. Super+O also toggles; Enter commits, Esc cancels.
+# Requires XI2.4 and verified touchpad delivery; grabs may affect other swipes.
+swipe_enabled = 0
+swipe_threshold = 80   # finite 1..10000, accumulated XI gesture delta units
+swipe_wrap = 0         # stop at first/last workspace
+swipe_reverse = 0      # default left=next, right=previous
+swipe_debug = 0        # opt-in diagnostic logging to stderr
+
 # ---------- terminal & menu ----------
 # Đổi terminal: sửa 1 dòng term = ghostty | kitty | foot | xterm
 term = alacritty
@@ -139,6 +149,7 @@ rule = WAD:*:tile:2
 bind+ = mod+c:exec dani-run --calc
 # ---------- bảng phím ----------
 # focus & cửa sổ
+bind = mod+o:overview_toggle
 bind = mod+j:focus_next
 bind = mod+k:focus_prev
 bind = mod+ctrl+h:move_left

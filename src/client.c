@@ -1,4 +1,5 @@
 #include "client.h"
+#include "overview.h"
 
 #include <X11/Xutil.h>
 
@@ -100,6 +101,7 @@ void keep_docks_on_top(void) {
             if (ch) XFree(ch);
         }
     }
+    overview_top();
 }
 /* T-L2: keep saved floating geometry valid. w/h clamp to [1, 2x screen];
  * position is left free (multi-monitor/offscreen drags are legitimate).
@@ -222,6 +224,8 @@ void focus_step(int dir) {
 }
 
 void view(int n) {
+    overview_hide(0);
+    for (Client *c=clients;c;c=c->next) if (c->ws==curws) overview_capture(c->win);
     if (n < 0 || n >= NWS || n == curws) return;
     ws_sel[curws] = sel;
     int old = curws;
@@ -243,6 +247,8 @@ void view(int n) {
 }
 
 void send_to(int n) {
+    overview_hide(0);
+    for (Client *c=clients;c;c=c->next) if (c->ws==curws) overview_capture(c->win);
     if (!sel || n < 0 || n >= NWS || n == curws) return;
     Client *s = sel;
     int old = curws;
@@ -265,6 +271,8 @@ void send_to(int n) {
 }
 /* external pager move: same as send_to but stays on current ws */
 void move_to(Client *c, int n) {
+    overview_hide(0);
+    if (c) overview_capture(c->win);
     int old;
     if (!c || n < 0 || n >= NWS || n == c->ws) return;
     old = c->ws;
@@ -427,6 +435,7 @@ void zoom(int unused) {
 }
 
 void quit(void) {
+    overview_hide(0);
     tray_enable(0); /* un-embed tray icons back to root before disconnect */
     XCloseDisplay(dpy);
     exit(0);
@@ -439,6 +448,7 @@ void quit(void) {
  * _NET_ACTIVE_WINDOW, and the parked scratchpad via its sticky hint.
  * Floating state and per-workspace layout/mfact reset to defaults. */
 void restart(void) {
+    overview_hide(0);
     tray_enable(0); /* un-embed tray icons back to root before disconnect */
     XSync(dpy, False);
     if (dpy) XCloseDisplay(dpy);
@@ -499,6 +509,7 @@ static int isscratchpad(Window w) {
 
 /* ---- manage ---- */
 void manage(Window w) {
+    overview_hide(0);
     if (w == bar || w == traywin || tray_has(w)) return;
     if (tray_on && tray_is_icon_window(w)) { tray_add(w); return; }
     XWindowAttributes a;
@@ -575,8 +586,10 @@ void manage(Window w) {
 }
 
 void unmanage(Window w) {
+    overview_drop(w);
     Client *c = find(w);
     if (!c) return;
+    overview_hide(0);
     if (drag.win == w) {
         drag.win = None;
         drag.mode = 0;
