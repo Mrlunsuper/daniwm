@@ -1682,8 +1682,7 @@ static void repaint(void) {
         }
         if (had_clip)
             back_clip_reset(); /* trả clip về hộp damage (hoặc None) */
-        /* Candidate only: closing_detach drains outstanding asynchronous
-         * errors before it transfers these references out of live state. */
+        /* closing_detach drains async X errors before it takes these references. */
         if ((opt_close_ms > 0 || opt_workspace_ms > 0 || opt_overview_ms > 0) &&
             opt_fade && !opt_reduce_motion)
             w->painted = 1;
@@ -1967,7 +1966,6 @@ int main(int argc, char **argv) {
     }
     if (opt_wm_settings) {
         A_ANIMATION_SETTINGS = XInternAtom(dpy, ANIMATION_SETTINGS_ATOM, False);
-        A_WM_CHECK = XInternAtom(dpy, "_NET_SUPPORTING_WM_CHECK", False);
         opt_fade = 0; /* no valid WM settings -> instant, never CLI fallback */
     }
     {

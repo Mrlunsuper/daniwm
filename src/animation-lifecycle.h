@@ -1,7 +1,5 @@
-/* Phase 1B: ordered hide reasons, NOT capture/geometry coordination.
- * Root ClientMessage/32: version, supporting WM, client, sequence, reason.
- * Sent on the WM connection immediately before its original Unmap request.
- * X11 is a trusted-client protocol, not an authentication boundary. */
+/* Hide reasons: root ClientMessage/32 sent just before the WM unmaps a client.
+ * Words: version, supporting WM, client, sequence, reason. */
 #ifndef DANIWM_ANIMATION_LIFECYCLE_H
 #define DANIWM_ANIMATION_LIFECYCLE_H
 #include <stdint.h>

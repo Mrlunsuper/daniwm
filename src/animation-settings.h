@@ -1,7 +1,5 @@
-/* Private Phase 1A settings only; not a transition/capture protocol.
- * CARDINAL/32 root payload: version, current supporting WM window,
- * animations-enabled, reduced-motion, opening duration. Bounded at five words.
- * Xlib exposes format-32 property words as unsigned long, including on LP64. */
+/* Animation settings: root CARDINAL/32, five words: version, supporting WM,
+ * enabled, reduced motion, open duration. */
 #ifndef DANIWM_ANIMATION_SETTINGS_H
 #define DANIWM_ANIMATION_SETTINGS_H
 #define ANIMATION_SETTINGS_ATOM "_DANIWM_ANIMATION_SETTINGS_V1"

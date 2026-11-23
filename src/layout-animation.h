@@ -1,8 +1,5 @@
-/* Best-effort Phase 2 layout transaction. This is deliberately not an input
- * barrier: the WM commits real geometry immediately and the compositor may
- * display a retained picture at an intermediate position while X routes input
- * to the final window geometry. Invalid, stale or unavailable transactions
- * fail closed to the instant path. */
+/* Best-effort layout transaction: real geometry is final at once; the
+ * compositor only moves the picture. Bad transactions fall back to instant. */
 #ifndef DANIWM_LAYOUT_ANIMATION_H
 #define DANIWM_LAYOUT_ANIMATION_H
 

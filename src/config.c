@@ -452,7 +452,7 @@ static void parse_scalar(char *key, char *val) {
             else ANIMATION_LAYOUT_MS = (int)v;
         } else fprintf(stderr, "daniwm: bad %s '%s' (want integer 0..1000)\n", key, val);
     } else if (!strcmp(key, "animation_workspace_ms") || !strcmp(key, "animation_overview_ms")) {
-        /* The 3-P2 review caps the visual/input mismatch at about 125 ms. */
+        /* Capped low to keep the visual/input mismatch short. */
         char *end;
         errno = 0;
         v = strtol(val, &end, 10);

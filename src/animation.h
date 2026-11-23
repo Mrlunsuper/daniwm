@@ -1,4 +1,4 @@
-/* Phase 1A: deterministic linear opening fade; caller supplies monotonic ms. */
+/* Deterministic linear fade; caller supplies monotonic ms. */
 #ifndef DANIWM_ANIMATION_H
 #define DANIWM_ANIMATION_H
 #include <stdint.h>
