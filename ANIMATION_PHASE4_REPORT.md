@@ -201,3 +201,23 @@ The user reviewed the results and passed the gate. The click during the
 fade-in (Findings 1) is the accepted risk of the opt-in 0..250 ms setting.
 Hardware pacing, tearing, real input latency and multi-monitor placement are
 still open for a real-session check.
+
+## Real-session check (2026-11-24)
+
+The user installed commit `591a2de` (`sudo make install`) and restarted
+daniwm in the live session. The live config:
+`compositor = 1`, `animations = 1`, open 140, close 100, layout 0,
+workspace 180, overview 180 ms. The standalone dani-comp from
+`autostart.sh` was stopped first, so the WM started its own dani-comp.
+
+- Checked by the assistant (read-only): dani-comp ran as
+  `--wm-settings` from `/usr/local/bin/dani-comp`; the root properties
+  showed workspace 180 and overview 180; dani-comp was still running after
+  the user's tests.
+- User result for workspace switches and window fades: "Mượt rồi" (smooth).
+- User result for the overview: "ok rồi" (works). The user's config replaces
+  the default key binds, so `bind = mod+o:overview_toggle` was added to it
+  first.
+- Not measured: frame-time numbers, input latency in ms, and tearing as a
+  number. The result is the user's visual judgement. Multi-monitor was not
+  reported.
