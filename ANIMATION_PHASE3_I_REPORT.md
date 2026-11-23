@@ -184,3 +184,19 @@ The user reviewed this report and accepted:
 
 Tearing, vsync pacing and real input latency are still not verified (Xvfb
 only). Check them on real hardware before release.
+
+## Manual check in Xephyr (2026-11-23)
+
+The user tested the built binaries by hand in an isolated Xephyr (`:5`,
+1600×900) with real keyboard and mouse. The live session was not changed.
+
+- Config: the user's config with `mod = alt`, `compositor = 1`,
+  `animations = 1`, open 140, close 100, layout 160, workspace 180 ms.
+  `HOME` and `XDG_CONFIG_HOME` pointed to a temporary folder, and
+  `dbus-update-activation-environment` and `systemctl` were stubbed.
+- User result: "mượt, không lỗi" (smooth, no errors).
+- Evidence: the WM sent 9 PREPAREs (last sequence 9). The WM/compositor log
+  has no `Xerror` line and no crash.
+- Limit: Xephyr draws in software with no GPU vsync. This check covers feel
+  and correctness, not tearing or frame pacing. A check in the real session
+  is still open.
