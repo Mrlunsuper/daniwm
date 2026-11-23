@@ -31,14 +31,23 @@ Pass criteria: every adverse case either admits a correct scene or bypasses
 with the expected reason. The WM sequence completes with the model stopped.
 XRes count and bytes return to baseline. No unexpected X error occurs.
 
-## Decision: prototype checks pass; gate decision pending review
+## Decision: gate PASS (reviewed 2026-11-23)
 
 All prototype checks pass on a private Xvfb. Every adverse case either
 admitted a fresh and complete scene or bypassed with a reason. The simulated
-WM never waited for the model. Only a reviewed prototype can establish the
-coordination path, so the 3-P1 gate is not passed yet. This is not approval
-for 3-P2 or 3-I. No production protocol is frozen. Phase 2 strict stays
-BLOCKED.
+WM never waited for the model.
+
+The user reviewed this report and accepted these three points:
+
+1. The strategy: keep the named pixmaps of the outgoing members at unmap.
+   Send PREPARE before the desktop commit. The WM never waits.
+2. The deadline uses CLOCK_MONOTONIC, so the WM and dani-comp must run on one
+   host.
+3. Every race bypasses the effect.
+
+This establishes the coordination path for 3-P2. It does not approve 3-P2 or
+3-I: each needs a separate request. No production protocol is frozen. The
+open items below stay open. Phase 2 strict stays BLOCKED.
 
 ## Files (test-only)
 
@@ -201,5 +210,5 @@ a false FAIL (`(no report)`), never a false PASS, so earlier results hold.
 
 ## Next step
 
-Pause for review. If the review accepts this result, a separate request can
-start 3-P2 (input, rendering and resources, test-only).
+A separate request can start 3-P2 (input, rendering and resources,
+test-only). Carry the open items above into its plan.

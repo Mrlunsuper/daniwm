@@ -9,8 +9,8 @@ Status (branch `feat/animation`, not released):
 | 1B | Gate PASS. Opt-in, off by default. | `ANIMATION_PHASE1B_REPORT.md` |
 | 2 strict | BLOCKED. The strict input gate is not met. | `ANIMATION_PHASE2_PROTOTYPE_REPORT.md`, `ANIMATION_PHASE2_ELIGIBILITY_REPORT.md` |
 | 2 best-effort | Implemented. Opt-in, `animation_layout_ms = 0` by default. Strict gate still unmet. | `ANIMATION_PHASE2_BESTEFFORT_REPORT.md` |
-| 3-P1 | Test-only prototype checks pass. Gate decision pending review. No runtime code. | `ANIMATION_PHASE3_P1_REPORT.md` |
-| 3-P2, 3-I | Not started. Needs a separate request after 3-P1 review. | `ANIMATION_PHASE3_PREREQUISITES_REPORT.md` |
+| 3-P1 | Gate PASS (reviewed 2026-11-23). Test-only. No runtime code. | `ANIMATION_PHASE3_P1_REPORT.md` |
+| 3-P2, 3-I | Not started. Each needs a separate request. | `ANIMATION_PHASE3_PREREQUISITES_REPORT.md` |
 | 4 | Not started. | — |
 
 Each branch is reviewed on its own and must pass its own exit gate. A Phase 3
