@@ -16,6 +16,7 @@
 
 #define COLOR_A 0xcc0000UL
 #define COLOR_B 0x0000ccUL
+#define COLOR_C 0x00cc00UL
 
 static Display *d;
 static Window root, stamp;
@@ -282,7 +283,43 @@ int main(int argc, char **argv) {
           "after restart: first swap animates (top slot shows the old picture after 60 ms)");
     wait_ms(1200);
 
-    XDestroyWindow(d, a); XDestroyWindow(d, b); XDestroyWindow(d, stamp);
+    /* 7. Monocle: closing the shown window keeps its close fade. */
+    config(0, 250); action(XK_r, Mod4Mask | ShiftMask); wait_ms(300);
+    Window c = map_client(COLOR_C);
+    action(XK_m, Mod4Mask); wait_ms(300);
+    Window shown = None;
+    Window all[3] = {a, b, c};
+    unsigned viewable = 0;
+    for (unsigned i = 0; i < 3; i++)
+        if (geometry(all[i]).map_state == IsViewable) { shown = all[i]; viewable++; }
+    assert(viewable == 1);
+    unsigned long shown_color = shown == a ? COLOR_A : shown == b ? COLOR_B : COLOR_C;
+    assert(pixel(512, 384) == shown_color);
+    XDestroyWindow(d, shown); XFlush(d);
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    unsigned late = 0, samples = 0;
+    for (;;) {
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+        if (ms >= 200) break;
+        unsigned long p = pixel(512, 384);
+        unsigned shift = shown_color == COLOR_A ? 16 : shown_color == COLOR_B ? 0 : 8;
+        if (ms >= 60) { samples++; late += ((p >> shift) & 0xff) >= 0x10; }
+        struct timespec s = {0, 3000000};
+        nanosleep(&s, NULL);
+    }
+    printf("METRIC: monocle close: closed colour visible in %u/%u samples from 60 to 200 ms\n",
+           late, samples);
+    check(late > 0, "monocle close: the close fade is still visible after 60 ms");
+    wait_ms(400);
+    if (shown == a) a = None; else if (shown == b) b = None; else c = None;
+    action(XK_t, Mod4Mask); wait_ms(200);
+    if (c) XDestroyWindow(d, c);
+
+    if (a) XDestroyWindow(d, a);
+    if (b) XDestroyWindow(d, b);
+    XDestroyWindow(d, stamp);
     XCloseDisplay(d);
     return failures ? 1 : 0;
 }

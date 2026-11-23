@@ -151,8 +151,11 @@ void monocle_mon(int m) {
             if (c->hidden) { c->hidden = 0; ewmh_update_state(c); }
         } else {
             overview_capture(c->win);
-            animation_unmap(c->win, ANIMATION_HIDE_MONOCLE);
-            if (!c->hidden) { c->hidden = 1; ewmh_update_state(c); }
+            /* Hide reason only on a new hide: it clears pending close fades. */
+            if (!c->hidden) {
+                animation_unmap(c->win, ANIMATION_HIDE_MONOCLE);
+                c->hidden = 1; ewmh_update_state(c);
+            } else XUnmapWindow(dpy, c->win);
         }
     }
     for (Client *c = clients; c; c = c->next)
