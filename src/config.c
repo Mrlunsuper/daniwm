@@ -1,6 +1,8 @@
 #define _POSIX_C_SOURCE 200809L /* getline() under strict -std=c11 */
 #include "config.h"
 #include "overview.h"
+#include "animation-lifecycle.h"
+#include "animation-settings.h"
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
@@ -233,6 +235,9 @@ void config_defaults(void) {
     for (int i = 0; i < MAXWS; i++) { free(ws_icons[i]); ws_icons[i] = NULL; }
     free(RENAME_CMD); RENAME_CMD = xstrdup("rofi -dmenu -i -p rename");
     MOD = Mod4Mask; BORDER = 2; NWS = 5;
+    COMPOSITOR = 0; ANIMATIONS = 0; REDUCE_MOTION = 0;
+    ANIMATION_OPEN_MS = ANIMATION_OPEN_DEFAULT;
+    ANIMATION_CLOSE_MS = ANIMATION_CLOSE_DEFAULT;
     SWIPE_ENABLED = 0; SWIPE_THRESHOLD = 80.0;
     SWIPE_WRAP = 0; SWIPE_REVERSE = 0; SWIPE_DEBUG = 0;
     BORDER_FOCUS = 0x7aa2f7; BORDER_NORMAL = 0x333333;
@@ -424,6 +429,23 @@ static void parse_scalar(char *key, char *val) {
         else if (!strcasecmp(val, "click")) FOCUS_MODE = 1;
         else if (!strcasecmp(val, "both")) FOCUS_MODE = 2;
         else fprintf(stderr, "daniwm: bad focus '%s' (want hover|click|both)\n", val);
+    } else if (!strcmp(key, "compositor")) {
+        if (parse_bool(val, &b)) COMPOSITOR = b;
+        else fprintf(stderr, "daniwm: bad compositor '%s' (want boolean)\n", val);
+    } else if (!strcmp(key, "animations")) {
+        if (parse_bool(val, &b)) ANIMATIONS = b;
+        else fprintf(stderr, "daniwm: bad animations '%s' (want boolean)\n", val);
+    } else if (!strcmp(key, "reduce_motion")) {
+        if (parse_bool(val, &b)) REDUCE_MOTION = b;
+        else fprintf(stderr, "daniwm: bad reduce_motion '%s' (want boolean)\n", val);
+    } else if (!strcmp(key, "animation_open_ms") || !strcmp(key, "animation_close_ms")) {
+        char *end;
+        errno = 0;
+        v = strtol(val, &end, 10);
+        if (*val && end != val && !*end && !errno && v >= 0 && v <= 1000) {
+            if (!strcmp(key, "animation_open_ms")) ANIMATION_OPEN_MS = (int)v;
+            else ANIMATION_CLOSE_MS = (int)v;
+        } else fprintf(stderr, "daniwm: bad %s '%s' (want integer 0..1000)\n", key, val);
     } else if (!strcmp(key, "swipe_enabled")) {
         if (parse_bool(val, &b)) SWIPE_ENABLED = b;
     } else if (!strcmp(key, "swipe_debug")) {
@@ -755,6 +777,9 @@ void load_config(const char *path) {
             strcmp(k, "ico_mute") && strcmp(k, "ico_clk") && strcmp(k, "bar_pad_l") &&
             strcmp(k, "bar_pad_r") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "bar_ws_pad") && strcmp(k, "ws_pad") && strcmp(k, "tray") && strcmp(k, "tray_size") && strcmp(k, "tray_icon_size") && strcmp(k, "tray_gap") && strcmp(k, "tray_pad") &&
             strcmp(k, "tray_spacing") && strcmp(k, "tray_icons_gap") && strcmp(k, "bar_on") && strcmp(k, "focus") && strcmp(k, "gaps_on") &&
+            strcmp(k, "compositor") && strcmp(k, "animations") &&
+            strcmp(k, "reduce_motion") && strcmp(k, "animation_open_ms") &&
+            strcmp(k, "animation_close_ms") &&
             strcmp(k, "swipe_enabled") && strcmp(k, "swipe_threshold") &&
             strcmp(k, "swipe_wrap") && strcmp(k, "swipe_reverse") &&
             strcmp(k, "swipe_debug") &&
@@ -822,6 +847,7 @@ void k_reload(int unused) {
     (void)unused;
     gestures_reset("config-reload");
     load_config(NULL);
+    animation_settings_publish();
     gestures_configure();
     for (int i = 0; i < NWS; i++) {
         if (ws_mfact[i] < 0.1f || ws_mfact[i] > 0.9f) ws_mfact[i] = def_mfact;
@@ -836,7 +862,7 @@ void k_reload(int unused) {
              * (or maps them if the layout is now tile). Mapping them here
              * first only causes a transient over-map flash. */
             if (!c->hidden) XMapWindow(dpy, c->win);
-        } else XUnmapWindow(dpy, c->win);
+        } else animation_unmap(c->win, ANIMATION_HIDE_RELOAD);
     }
     if (bar) XMoveResizeWindow(dpy, bar, mons[0].x, mons[0].y, (unsigned)barw, (unsigned)S(BAR_H));
     if (!bar_on && bar) XUnmapWindow(dpy, bar);

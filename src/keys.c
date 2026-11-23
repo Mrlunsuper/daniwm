@@ -1,5 +1,9 @@
 #include "keys.h"
 #include "overview.h"
+#include "animation-settings.h"
+#include "animation-lifecycle.h"
+#include "xerr.h"
+#include <X11/Xatom.h>
 
 #include <X11/Xutil.h>
 #include <X11/XF86keysym.h>
@@ -48,7 +52,7 @@ static void k_scratch(int unused) {
         s->ws = NWS; /* park: hidden, ignored by all ws loops */
         ewmh_set_wm_desktop(s); /* → sticky 0xFFFFFFFF */
         ewmh_client_list(); /* drop parked window from _NET_CLIENT_LIST */
-        XUnmapWindow(dpy, s->win);
+        animation_unmap(s->win, ANIMATION_HIDE_SCRATCH);
         Client *n = sel != s ? sel : find(scratch_return);
         if (!n || n->ws != curws) n = first_in_ws(curws);
         scratch_return = None;
@@ -137,35 +141,98 @@ static void k_bar(int unused) {
     arrange();
 }
 static void k_fullscreen(int unused) { (void)unused; if (sel) setfullscreen(sel, !sel->fullscreen); }
-/* compositor toggle: đang chạy dani-comp thì pkill, chưa thì spawn.
- * Khởi động chính thức giờ nằm ở autostart.sh; phím này chỉ để restart/
- * test nhanh. Check qua _NET_WM_CM_Sn để restart-in-place không spawn
- * trùng. Flags nhẹ (transparent + shadow, không fade/dim) — muốn chỉnh cờ thì
- * sửa autostart.sh, không phải config daniwm nữa. */
-static void k_compositor(int unused) {
-    (void)unused;
+static Atom animation_hide_atom;
+/* Settings only, not a geometry/capture protocol. The WM never waits for
+ * an acknowledgment or restarts a compositor on animation-setting reload. */
+void animation_settings_publish(void) {
+    if (!dpy || !checkwin) return;
+    if (!animation_hide_atom) animation_hide_atom = XInternAtom(dpy, ANIMATION_REASON_ATOM, False);
+    unsigned long values[ANIMATION_SETTINGS_WORDS] = {
+        ANIMATION_SETTINGS_VERSION, checkwin, COMPOSITOR && ANIMATIONS,
+        (unsigned long)REDUCE_MOTION, (unsigned long)ANIMATION_OPEN_MS
+    };
+    XChangeProperty(dpy, root, XInternAtom(dpy, ANIMATION_SETTINGS_ATOM, False),
+        XA_CARDINAL, 32, PropModeReplace, (unsigned char *)values, ANIMATION_SETTINGS_WORDS);
+    unsigned long closing[] = {1, checkwin, (unsigned long)ANIMATION_CLOSE_MS};
+    XChangeProperty(dpy, root, XInternAtom(dpy, ANIMATION_CLOSE_ATOM, False),
+        XA_CARDINAL, 32, PropModeReplace, (unsigned char *)closing, 3);
+    XFlush(dpy);
+}
+/* Same-connection ordering guarantees this notification is enqueued before
+ * the unmap event. No capture, acknowledgment, XSync or server grab. */
+void animation_unmap(Window window, unsigned reason) {
+    static uint32_t sequence;
+    if (COMPOSITOR && ANIMATIONS && !REDUCE_MOTION &&
+        (ANIMATION_CLOSE_MS > 0 || ANIMATION_OPEN_MS > 0) && checkwin && animation_hide_atom) {
+        /* RFC1982-style serial ordering; zero is reserved. */
+        if (++sequence == 0) ++sequence;
+        {
+            XEvent event = {0};
+            event.xclient.type = ClientMessage; event.xclient.window = root;
+            event.xclient.message_type = animation_hide_atom; event.xclient.format = 32;
+            event.xclient.data.l[0] = ANIMATION_REASON_VERSION;
+            event.xclient.data.l[1] = (long)checkwin;
+            event.xclient.data.l[2] = (long)window;
+            event.xclient.data.l[3] = (long)sequence;
+            event.xclient.data.l[4] = (long)reason;
+            XSendEvent(dpy, root, False, SubstructureNotifyMask, &event);
+        }
+    }
+    XUnmapWindow(dpy, window);
+}
+static Window compositor_owner(void) {
     char cm[32];
     snprintf(cm, sizeof(cm), "_NET_WM_CM_S%d", screen);
-    Atom a = XInternAtom(dpy, cm, False);
-    int running = (a != None && XGetSelectionOwner(dpy, a) != None);
+    return XGetSelectionOwner(dpy, XInternAtom(dpy, cm, False));
+}
+void compositor_start(void) {
+    if (!COMPOSITOR || compositor_owner() != None) return;
     pid_t pid = fork();
     if (pid == -1) return;
     if (pid == 0) {
         if (dpy) close(ConnectionNumber(dpy));
         setsid();
-        if (running) { execlp("pkill", "pkill", "-x", "dani-comp", NULL); _exit(1); }
-        /* spawn cùng dir với daniwm binary nếu có, fallback PATH */
-        char self[1152];
+        char self[1152], sibling[1152];
         snprintf(self, sizeof(self), "%s", progpath[0] ? progpath : "dani-comp");
-        /* progpath trỏ tới daniwm -> thay basename thành dani-comp */
         char *slash = strrchr(self, '/');
-        char sibling[1152];
         if (slash) { size_t dl = (size_t)(slash - self) + 1; memcpy(sibling, self, dl); snprintf(sibling + dl, sizeof(sibling) - dl, "dani-comp"); }
         else snprintf(sibling, sizeof(sibling), "dani-comp");
-        execl(sibling, "dani-comp", "--shadow", "--no-fade", "--dim", "1", NULL);
-        execlp("dani-comp", "dani-comp", "--shadow", "--no-fade", "--dim", "1", NULL);
+        execl(sibling, "dani-comp", "--shadow", "--no-fade", "--dim", "1", "--wm-settings", NULL);
+        execlp("dani-comp", "dani-comp", "--shadow", "--no-fade", "--dim", "1", "--wm-settings", NULL);
         _exit(1);
     }
+}
+static void k_compositor(int unused) {
+    (void)unused;
+    Window owner = compositor_owner();
+    if (!owner) {
+        /* Explicit action may start it even when automatic startup is off;
+         * compositor=0 still keeps WM-controlled fades disabled. */
+        int enabled = COMPOSITOR;
+        COMPOSITOR = 1;
+        compositor_start();
+        COMPOSITOR = enabled;
+        return;
+    }
+    /* Never pkill every dani-comp process or disturb a foreign compositor.
+     * A version marker permits a stop request addressed to this owner only. */
+    Atom control = XInternAtom(dpy, ANIMATION_CONTROL_ATOM, False);
+    Atom type; int format; unsigned long n = 0, extra = 0;
+    unsigned char *data = NULL;
+    trap_errors(dpy);
+    int ok = XGetWindowProperty(dpy, owner, control, 0, 1, False, XA_CARDINAL,
+        &type, &format, &n, &extra, &data) == Success && type == XA_CARDINAL &&
+        format == 32 && n == 1 && !extra && data &&
+        *(unsigned long *)data == ANIMATION_SETTINGS_VERSION;
+    if (data) XFree(data);
+    if (ok) {
+        XEvent event = {0};
+        event.xclient.type = ClientMessage; event.xclient.window = owner;
+        event.xclient.message_type = control; event.xclient.format = 32;
+        event.xclient.data.l[0] = ANIMATION_SETTINGS_VERSION;
+        XSendEvent(dpy, owner, False, NoEventMask, &event);
+    }
+    untrap_errors(dpy);
 }
 /* Volume interaction: fire-and-forget setters. vol_ts = 0 forces the 1s
  * tick to re-sample so the bar refreshes promptly (no blocking sample here).

@@ -1,5 +1,7 @@
 #include "layout.h"
 #include "overview.h"
+#include "keys.h"
+#include "animation-lifecycle.h"
 
 #include "bar.h"
 #include "client.h"
@@ -145,7 +147,7 @@ void monocle_mon(int m) {
             if (c->hidden) { c->hidden = 0; ewmh_update_state(c); }
         } else {
             overview_capture(c->win);
-            XUnmapWindow(dpy, c->win);
+            animation_unmap(c->win, ANIMATION_HIDE_MONOCLE);
             if (!c->hidden) { c->hidden = 1; ewmh_update_state(c); }
         }
     }

@@ -1,5 +1,7 @@
 #include "client.h"
 #include "overview.h"
+#include "keys.h"
+#include "animation-lifecycle.h"
 
 #include <X11/Xutil.h>
 
@@ -236,7 +238,7 @@ void view(int n) {
     /* Unmap old ws first: fewer transient double-mapped windows and a
      * smaller UnmapNotify burst (H1A ignores it via ws mismatch). */
     for (Client *c = clients; c; c = c->next)
-        if (c->ws == old) XUnmapWindow(dpy, c->win);
+        if (c->ws == old) animation_unmap(c->win, ANIMATION_HIDE_WORKSPACE);
     arrange();  /* maps new workspace's windows */
     if (sel) focus(sel);
     else {
@@ -265,7 +267,7 @@ void send_to(int n) {
     ewmh_desktops();
     /* Unmap old ws first, like view(). */
     for (Client *c = clients; c; c = c->next)
-        if (c->ws == old) XUnmapWindow(dpy, c->win);
+        if (c->ws == old) animation_unmap(c->win, ANIMATION_HIDE_WORKSPACE);
     arrange(); /* maps new workspace windows */
     focus(s); /* follow: nhảy theo luôn */
 }
@@ -286,7 +288,7 @@ void move_to(Client *c, int n) {
     if (!ws_sel[n]) ws_sel[n] = c;
     ewmh_set_wm_desktop(c);
     if (old == curws && n != curws) {
-        XUnmapWindow(dpy, c->win);
+        animation_unmap(c->win, ANIMATION_HIDE_WORKSPACE);
         if (sel == c) {
             Client *nx = first_in_ws(curws);
             sel = NULL;

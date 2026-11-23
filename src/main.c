@@ -21,6 +21,7 @@
 #include "types.h"
 #include "state.h"
 #include "overview.h"
+#include "animation-lifecycle.h"
 #include "monitor.h"
 #include "ewmh.h"
 #include "bar.h"
@@ -316,6 +317,7 @@ int main(int argc, char **argv) {
     XSync(dpy, False);
     XSetErrorHandler(xerror_ignore);
     ewmh_init();
+    animation_settings_publish();
     /* restart beacon: re-exec keeps the PID and the X server may recycle the
      * supporting-window ID, so external watchers (and test-restart.sh) use
      * this ever-changing stamp to detect a fresh instance. */
@@ -402,7 +404,7 @@ int main(int argc, char **argv) {
                     c->ws = NWS;
                     if (sel == c) sel = NULL; /* manage() focused it */
                     if (ws_sel[curws] == c) ws_sel[curws] = NULL;
-                    XUnmapWindow(dpy, c->win);
+                    animation_unmap(c->win, ANIMATION_HIDE_SCRATCH);
                     ewmh_set_wm_desktop(c); /* back to sticky */
                     ewmh_client_list();
                 }
@@ -423,6 +425,7 @@ int main(int argc, char **argv) {
             XFree(data);
         }
     }
+    compositor_start(); /* optional; existing selection owner is left alone */
     /* autostart (non-blocking) */
     {
         const char *xdg = getenv("XDG_CONFIG_HOME");

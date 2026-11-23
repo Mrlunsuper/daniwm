@@ -1,4 +1,5 @@
 #include "state.h"
+#include "animation-settings.h"
 
 Rule *rules = NULL;
 unsigned nrules = 0, caprules = 0;
@@ -48,6 +49,11 @@ int gap_outer = 10;
 int gap_inner = 8;
 float def_mfact = 0.55f;
 int def_nmaster = 1;
+int COMPOSITOR = 0;
+int ANIMATIONS = 0;
+int REDUCE_MOTION = 0;
+int ANIMATION_OPEN_MS = ANIMATION_OPEN_DEFAULT;
+int ANIMATION_CLOSE_MS = 100; /* Phase 1B; independently zeroable. */
 int SWIPE_ENABLED = 0;
 double SWIPE_THRESHOLD = 80.0;
 int SWIPE_WRAP = 0;

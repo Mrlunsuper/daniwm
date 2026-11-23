@@ -33,8 +33,9 @@ run_once clipit clipit
 #run_once eww "$HOME/.local/bin/eww" daemon
 
 # dani-comp (compositor của nhà trồng) — chỉ start 1 instance duy nhất.
-# Chỉnh shadow/fade/dim ở đây: daniwm không quản lý compositor nữa.
-#run_once dani-comp "$HOME/daniwm/dani-comp" --shadow --no-fade --dim 0
+# Nếu dùng compositor=1 trong config WM, bỏ launcher fastcompmgr bên dưới.
+# Chạy tay mặc định dùng CLI; thêm --wm-settings để nhận motion config WM.
+#run_once dani-comp "$HOME/daniwm/dani-comp" --shadow --no-fade --dim 1 --wm-settings
 run_once fastcompmgr -o 0.4 -r 12 -c -C
 run_once dunst dunst
 

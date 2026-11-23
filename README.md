@@ -234,15 +234,15 @@ Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL DD/MM HH:MM`, custom 
 - **Rules**: config `rule` lines match class/title substring → float / send to ws (default: scratchpad, Gimp, mpv float).
 - **Scratchpad**: `Super+s` toggles `xterm -name scratchpad` (2/3 centered float; first press spawns it). A custom `scratch =` command must produce a window with `scratchpad` in its class/name (e.g. `xterm -name scratchpad`, `alacritty --class scratchpad`); otherwise toggle keeps spawning instead of toggling.
 - **Autostart**: runs `~/.config/daniwm/autostart.sh` if executable.
-- **Compositor** (`dani-comp`, a picom alternative if you like): soft 7-layer drop shadow (picom-style), 160ms fade-in,
-  inactive window dim (`inactive_dim`, default 0.92), honors
-  `_NET_WM_WINDOW_OPACITY` (works with `transset`), advertises `_NET_WM_CM_Sn`
-  (yields if picom is already running). Run `dani-comp [--no-shadow] [--no-fade]
-  [--dim 0.5..1]` manually or set `compositor = 1` in config so daniwm spawns it;
-  the `compositor` action (e.g. `bind = mod+c:compositor`) toggles it live.
-  Test: `./test/test-comp.sh`. Limits: double-buffered (no flicker), bg snapshot
-  from `_XROOTPMAP_ID` (a solid-color root falls back to 1 clear on bg change
-  only), shaped windows clipped on the back buffer, no real vsync.
+- **Compositor** (`dani-comp`): soft 7-layer shadows, optional opening fade,
+  inactive dim and application `_NET_WM_WINDOW_OPACITY`. It yields to an existing
+  `_NET_WM_CM_Sn` owner. `compositor = 1` starts it at WM startup with shadows,
+  no dim and WM-controlled motion (off by default). The `compositor` action
+  toggles only a compatible dani-comp on this display, never a foreign owner or
+  every dani-comp process. Standalone `dani-comp [--no-shadow] [--no-fade]
+  [--dim 0.5..1] [--fade-ms 0..1000] [--reduce-motion]` keeps its defaults:
+  fade 160 ms, dim 0.92. XPresent is optional, with copy fallback; hardware
+  pacing is not guaranteed. Tests use private Xvfb displays.
 - **Launcher** (`dani-run`, a rofi replacement): `dani-run` = vertical fuzzy drun list
   (scans `/usr/share/applications` + `~/.local/share/applications`, wraps `Terminal=true`
   in `${TERMINAL:-alacritty} -e`, fuzzy sort + history at `~/.cache/dani-run/history`, and
@@ -266,6 +266,61 @@ Bar right side: Nerd Font icons + values (`CPU MEM BAT VOL DD/MM HH:MM`, custom 
   External watchers can detect a re-exec via the `_DANIWM_HEARTBEAT` root stamp
   (PID is kept across exec, and the X server may recycle window IDs).
 
+## Opening and closing animation (Phases 1A/1B, opt-in)
+
+```ini
+compositor = 0
+animations = 0
+reduce_motion = 0
+animation_open_ms = 140
+animation_close_ms = 100
+```
+
+Set `compositor = 1` and `animations = 1` to enable opening/remap fade-in and
+close/withdraw fade-out with WM-managed dani-comp. Durations are independent
+integers in **0..1000 ms**; invalid values are rejected with diagnostics.
+`compositor = 0`, `animations = 0`, or `reduce_motion = 1` makes all WM-controlled
+effects instant; duration `0` disables the corresponding effect.
+Workspace/monocle/scratchpad hiding and return remain instant. Layout changes
+stay instant. Docks, fullscreen and override-redirect windows stay instant. Focus, input routing, geometry state, workspace state and application
+opacity properties are otherwise unchanged.
+
+`reload_config` updates the running opted-in compositor without restarting it.
+Changing motion settings snaps live fades to final opacity, removes closing
+images, and affects subsequent events; re-enabling does not restart existing fades. Reload does not
+start/stop a compositor: after changing `compositor`, use the explicit toggle
+or next WM startup. The existing frame loop sleeps after fades finish (normal
+shape/GC maintenance remains). Animation does not implicitly start a compositor.
+
+Standalone CLI settings are **not** overridden by WM reload. To opt a manually
+launched dani-comp into WM control, add `--wm-settings`; this replaces its fade
+policy with valid WM settings and fails instant if the settings/WM disappear.
+`--reduce-motion` is always a hard override. Keep `compositor = 1` when using
+WM-controlled fades even if autostart starts the process. Do not run a second
+compositor (including the example autostart's `fastcompmgr`) at the same time;
+an existing owner is left alone. Without `--wm-settings`, existing standalone
+fade defaults and flags remain authoritative. Standalone closing defaults to
+**off** (`--close-ms 0`); use `--close-ms 100` to opt in on an unmanaged display.
+Closing under a WM requires `--wm-settings` and compatible daniwm hide reasons;
+standalone instances with a detected WM conservatively skip closing effects.
+
+Close images transfer already-painted compositor pixmap/Picture references;
+there is no capture request or wait in the WM. A missing, invalid, oversized, or
+unpainted image closes instantly. At most **8 images / 32 MiB pixel payload** are
+retained for at most **1 second**, with earlier cleanup on completion, remap,
+workspace change, settings changes, errors, or compositor teardown. No hidden app
+is mapped or queried to obtain a close image; images are never saved to disk.
+
+Private versioned settings retain the five-word opening contract and add a
+three-word closing property; ordered five-word hide notifications distinguish
+WM hiding from close/withdraw. They are scoped to the supporting WM window,
+not a capture/geometry protocol or a security boundary between clients sharing
+the same X server. Deadlines reuse the compositor loop, not a WM timer/thread.
+`make check-animation` covers
+headless math/config checks; `make check-animation-xvfb check-animation-wm`
+covers renderer, cancellation, pacing and WM reload checks on private displays.
+No installed configuration is modified automatically.
+
 ## Config
 `~/.config/daniwm/config` (`$XDG_CONFIG_HOME/daniwm/config` if set), `key = value`, `#` comment.
 Missing file → defaults. Bad line → stderr + ignored, WM keeps running.
@@ -275,8 +330,11 @@ Scalars: `mod` (super|alt|ctrl), `border`, `border_focus/border_normal`,
 `scale` (0.5–3.0, default 1.0 — HiDPI multiplier for WM chrome only:
 `bar_h`/`ws_w`/`border`/`gap_outer`/`gap_inner`/float-step/drag-deadzone
 plus bar font `size=`; fractional ok, e.g. `scale = 1.5`; reload applies live),
-`bar_on/gaps_on` (1/true/yes/on), `compositor` (0 default — tự spawn dani-comp),
-`shadow`/`fade` (1 default), `inactive_dim` (0.5–1.0, default 0.92),
+`bar_on/gaps_on` (1/true/yes/on), `compositor` (0 default, opt-in startup),
+`animations` (0 default), `reduce_motion` (0 default), `animation_open_ms`
+(integer 0..1000, default 140), `animation_close_ms` (integer 0..1000, default 100).
+Shadow/dim are standalone compositor flags,
+not WM scalar keys; standalone fade defaults to 160 ms.
 `focus` (`hover`| `click`|`both`, default `hover` — hover-to-focus vs click-to-focus), `tray` (system tray on/off, default on),
 `gap_outer/gap_inner`, `mfact` (0.1–0.9),
 `nmaster`, `workspaces` (1–10, default 5),

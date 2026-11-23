@@ -61,6 +61,18 @@ OBJS = $(SRCS:.c=.o)
 
 all: daniwm dani-comp dani-run
 
+# Headless and isolated-display animation checks (Phases 0, 1A and 1B).
+# The copied-image experiment remains test-only; exit-layer owns detached images.
+.PHONY: check-animation check-animation-xvfb check-animation-wm
+check-animation:
+	sh test/test-animation.sh
+
+check-animation-xvfb:
+	sh test/test-animation-xvfb.sh
+
+check-animation-wm:
+	sh test/test-animation-wm.sh
+
 .PHONY: check-overview
 check-overview:
 	sh test/test-overview.sh
@@ -72,7 +84,7 @@ daniwm: $(OBJS)
 dani-run: src/run.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(CAIRO_LIBS) -lm
 
-dani-comp: src/comp.o
+dani-comp: src/comp.o src/animation.o src/exit-layer.o
 	$(CC) $(CFLAGS) -o $@ $^ $(COMP_LDFLAGS)
 
 src/comp.o: src/comp.c
@@ -81,7 +93,7 @@ src/comp.o: src/comp.c
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
--include $(OBJS:.o=.d)
+-include $(OBJS:.o=.d) src/comp.d src/animation.d src/exit-layer.d
 
 test/dock-helper: test/dock-helper.c
 	$(CC) $(filter-out -MMD -MP,$(CFLAGS)) -o $@ $< -lX11 $(SYS_LDFLAGS)

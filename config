@@ -53,10 +53,16 @@ gaps_on = 1
 gap_outer = 4
 gap_inner = 8
 # ---------- dani-comp (compositor của nhà trồng, thay picom) ----------
-# daniwm KHÔNG quản lý compositor nữa — khởi động ở autostart.sh:
-#   run_once dani-comp "$HOME/daniwm/dani-comp" --shadow --no-fade --dim 1
-# Muốn chỉnh shadow/fade/dim thì sửa dòng đó trong autostart.sh.
-# Toggle nóng để restart/test: bind = mod+c:compositor  (tùy chọn)
+# Phases 1A/1B: mặc định tắt. Bật compositor=1 + animations=1 để fade-in/out.
+# Không chạy đồng thời fastcompmgr/picom trong autostart.sh.
+compositor = 0
+animations = 0
+reduce_motion = 0
+animation_open_ms = 140           # số nguyên 0..1000; 0 = instant
+animation_close_ms = 100          # close/withdraw only; workspace/monocle vẫn instant
+# Reload cập nhật motion, không start/stop compositor; dùng toggle hoặc startup.
+# Chạy tay: dani-comp --wm-settings để nhận config WM (CLI mặc định độc lập).
+# Toggle: bind = mod+c:compositor (chỉ dani-comp tương thích trên display này)
 bar_on = 1
 tray = 1                          # system tray XEmbed ở mép phải bar (1/0)
 tray_gap = 8                     # khoảng cách giữa các icon tray (px, 0..32)

@@ -49,6 +49,11 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/select.h>
+#include <stdint.h>
+#include "animation.h"
+#include "animation-settings.h"
+#include "animation-lifecycle.h"
+#include "exit-layer.h"
 
 static Display *dpy;
 static Window root;
@@ -67,6 +72,18 @@ static Atom A_WM_WINTYPE_DOCK;
 static Atom A_WM_WINTYPE_DIALOG;
 static Atom A_XROOTPMAP;  /* _XROOTPMAP_ID (feh đổi wallpaper) */
 static Atom A_XSETROOT;   /* _XSETROOT_ID */
+static Atom A_ANIMATION_SETTINGS, A_WM_CHECK, A_ANIMATION_CONTROL;
+static Window settings_owner;
+static int opt_wm_settings;
+static int opt_reduce_motion;
+static int opt_force_reduce_motion;
+static int opt_close_ms; /* standalone remains opening-only unless explicitly enabled */
+static Atom A_HIDE_REASON, A_CLOSE_SETTINGS, A_CURRENT_DESKTOP;
+static Window reason_owner;
+static uint32_t reason_sequence;
+static ExitPool exits;
+static int exit_xerror;
+static unsigned exit_bpp[33], exit_pad[33];
 
 /* options */
 static int opt_shadow = 1;
@@ -214,7 +231,11 @@ struct Win {
     int dock;
     Atom wintype;        /* _NET_WM_WINDOW_TYPE đầu tiên, None nếu không có */
     unsigned opacity;    /* _NET_WM_WINDOW_OPACITY, mặc định ~0U */
-    long long born;      /* ms, để fade-in */
+    long long born;      /* ms, shape rechecks (separate from fade lifecycle) */
+    uint64_t generation;
+    Animation opening;
+    int painted;          /* painted candidate, validated before retention */
+    int hide_reason;      /* applies only to this tracked generation */
     XRectangle *clip_rects; /* bounding shape (window coords), NULL nếu không shaped */
     int n_clip;
     int shaped;
@@ -222,6 +243,7 @@ struct Win {
     Win *next;
 };
 static Win *wins;
+static uint64_t next_generation;
 static Window active_win = None;
 static int dirty = 1;       /* cần repaint */
 static int stack_dirty = 1; /* geometry/stacking đổi: cần pre-pass + re-query root */
@@ -243,7 +265,7 @@ static int opt_debug = 0;  /* DANI_COMP_DEBUG=1: log event/paint ra stderr */
 static long n_damage = 0, n_paint = 0;
 static volatile sig_atomic_t quit_req = 0; /* SIGTERM/SIGINT -> dọn rồi thoát */
 static void on_quit(int sig) { (void)sig; quit_req = 1; }
-static int fading = 0; /* đang có anim -> giữ nhịp 60Hz */
+static int fading = 0; /* active fade -> existing frame scheduler */
 static long long last_paint;
 
 #define OPAQUE (~0U)
@@ -354,8 +376,26 @@ static void present_buffer_idle(const XPresentIdleNotifyEvent *pe) {
 }
 #endif
 
+static void exit_release(unsigned long picture, unsigned long pixmap) {
+    if (picture) XRenderFreePicture(dpy, picture);
+    if (pixmap) XFreePixmap(dpy, pixmap);
+}
+static void exits_clear(void) {
+    if (!exits.count) return;
+    exit_clear(&exits, exit_release);
+    dirty = full_dirty = 1;
+}
+static void exits_maintain(long long now) {
+    if (!exits.count && !exit_xerror) return;
+    unsigned before = exits.count;
+    if (exit_xerror) { exits_clear(); exit_xerror = 0; }
+    if (exits.count) exit_expire(&exits, now, exit_release);
+    if (before != exits.count) dirty = full_dirty = 1;
+    if (exits.count) fading = 1;
+}
 static int repaint_due(void) {
     long long now = now_ms();
+    exits_maintain(now);
 #ifdef WITH_XPRESENT
     /* Kiểm tra kể cả khi chưa dirty: Complete bị mất cũng phải timeout. */
     if (present_wait_ms(now) == 0) {
@@ -376,7 +416,74 @@ static Win *win_get(Window id) {
     return NULL;
 }
 
+static void opening_start(Win *w, long long now) {
+    animation_cancel(&w->opening);
+    if (opt_fade && !opt_reduce_motion && opt_fade_ms > 0 &&
+        !w->override && !w->dock && !w->fullscreen)
+        animation_start(&w->opening, w->id, w->generation, now, (unsigned)opt_fade_ms);
+}
+
+/* Opt-in only. Invalid, absent, stale or deleted settings fail closed to
+ * instant mode. No acknowledgment, compositor restart, or WM round trip. */
+static Window settings_wm(void) {
+    Atom type; int format; unsigned long n, extra;
+    unsigned char *data = NULL;
+    Window owner = None;
+    if (XGetWindowProperty(dpy, root, A_WM_CHECK, 0, 1, False, XA_WINDOW,
+        &type, &format, &n, &extra, &data) == Success && type == XA_WINDOW &&
+        format == 32 && n == 1 && !extra && data) owner = *(unsigned long *)data;
+    if (data) XFree(data);
+    if (!owner) return None;
+    data = NULL;
+    trap_errors();
+    int valid = XGetWindowProperty(dpy, owner, A_WM_CHECK, 0, 1, False, XA_WINDOW,
+        &type, &format, &n, &extra, &data) == Success && type == XA_WINDOW &&
+        format == 32 && n == 1 && !extra && data && *(unsigned long *)data == owner;
+    if (valid) XSelectInput(dpy, owner, StructureNotifyMask);
+    if (data) XFree(data);
+    if (untrap_errors() || !valid) return None;
+    return owner;
+}
+static void animation_settings_read(void) {
+    if (!opt_wm_settings) return;
+    Window owner = settings_wm();
+    Atom type; int format; unsigned long n = 0, extra = 0;
+    unsigned char *data = NULL;
+    int enabled = 0, reduced = 0, duration = ANIMATION_OPEN_DEFAULT;
+    if (owner && XGetWindowProperty(dpy, root, A_ANIMATION_SETTINGS, 0,
+        ANIMATION_SETTINGS_WORDS, False, XA_CARDINAL, &type, &format, &n,
+        &extra, &data) == Success && type == XA_CARDINAL && format == 32 &&
+        animation_settings_valid((unsigned long *)data, n, extra, owner)) {
+        unsigned long *v = (unsigned long *)data;
+        enabled = (int)v[2]; reduced = (int)v[3]; duration = (int)v[4];
+    }
+    if (data) XFree(data);
+    reduced = reduced || opt_force_reduce_motion;
+    int closing = 0;
+    data = NULL;
+    if (owner && A_CLOSE_SETTINGS && XGetWindowProperty(dpy, root, A_CLOSE_SETTINGS, 0,
+        3, False, XA_CARDINAL, &type, &format, &n, &extra, &data) == Success &&
+        type == XA_CARDINAL && format == 32 &&
+        animation_close_valid((unsigned long *)data, n, extra, owner))
+        closing = (int)((unsigned long *)data)[2];
+    if (data) XFree(data);
+    int changed = enabled != opt_fade || reduced != opt_reduce_motion ||
+        duration != opt_fade_ms || closing != opt_close_ms || owner != settings_owner;
+    opt_close_ms = closing;
+    opt_fade = enabled; opt_reduce_motion = reduced; opt_fade_ms = duration;
+    settings_owner = owner;
+    if (changed) {
+        /* New settings affect subsequent maps only; existing images snap
+         * to final alpha (including when motion is switched off mid-fade). */
+        for (Win *w = wins; w; w = w->next) animation_cancel(&w->opening);
+        exits_clear();
+        fading = 0;
+        dirty = full_dirty = 1;
+    }
+}
+
 static void win_free_pix(Win *w) {
+    w->painted = 0;
     if (w->pict) { XRenderFreePicture(dpy, w->pict); w->pict = None; }
     if (w->pixmap) { XFreePixmap(dpy, w->pixmap); w->pixmap = None; }
     w->w = w->h = 0;
@@ -499,6 +606,8 @@ static Win *win_add(Window id) {
     w = calloc(1, sizeof(*w));
     if (!w) return NULL;
     w->id = id;
+    /* Fail instant rather than reuse a generation after counter exhaustion. */
+    w->generation = next_generation == UINT64_MAX ? 0 : ++next_generation;
     w->opacity = OPAQUE;
     w->born = now_ms();
     w->next = wins;
@@ -517,6 +626,7 @@ static Win *win_add(Window id) {
     win_refresh_flags(w);
     /* override_redirect (bar của daniwm, menu...) không fade: hiện ngay */
     if (w->override) w->born = 0;
+    opening_start(w, now_ms());
     return w;
 }
 
@@ -575,17 +685,12 @@ static void read_active(void) {
 /* alpha cuối cùng 0..1 của 1 cửa sổ */
 static double win_alpha(Win *w, long long now) {
     double a = (double)w->opacity / (double)OPAQUE;
-    if (opt_fade && !w->override && w->born > 0) {
-        long long dt = now - w->born;
-        if (dt < 0) dt = 0;
-        if (dt < opt_fade_ms) {
-            double f = (double)dt / (double)opt_fade_ms;
-            if (f < 0.0) f = 0.0;
-            if (f > 1.0) f = 1.0;
-            a *= f;
-            fading = 1;
-        }
-    }
+    if (opt_fade && !opt_reduce_motion && opt_fade_ms > 0 &&
+        !w->override && !w->dock && !w->fullscreen) {
+        double f = animation_sample(&w->opening, w->id, w->generation, now);
+        a *= f;
+        if (w->opening.active) fading = 1;
+    } else animation_cancel(&w->opening);
     if (a < 0.0) a = 0.0;
     if (a > 1.0) a = 1.0;
     return a;
@@ -622,9 +727,64 @@ static int win_is_opaque(const Win *w, long long now) {
     if (w->depth == 32) return 0; /* ARGB: trong suốt từng pixel có thể */
     if (w->opacity != OPAQUE) return 0;
     if (w->shaped) return 0;
-    if (opt_fade && !w->override && w->born > 0 && now - w->born < opt_fade_ms)
-        return 0; /* đang fade-in */
+    if (opt_fade && !opt_reduce_motion && opt_fade_ms > 0 &&
+        !w->override && !w->dock && !w->fullscreen &&
+        animation_value(&w->opening, w->id, w->generation, now) < 1.0)
+        return 0;
     return 1;
+}
+
+/* Transfer only an already painted named pixmap. The server keeps its
+ * storage alive across unmap/destroy while this compositor owns references.
+ * No client query, capture acknowledgment, or WM delay occurs here. */
+static void closing_detach(Win *w, long long now) {
+    if (!opt_fade || opt_reduce_motion || opt_close_ms <= 0 || w->hide_reason ||
+        (opt_wm_settings && !settings_owner) ||
+        (reason_owner && !opt_wm_settings) ||
+        w->override || w->dock || w->fullscreen || !w->generation || !w->painted ||
+        !w->pixmap || !w->pict || w->depth < 1 || w->depth > 32 ||
+        w->n_clip < 0 || w->n_clip > 256 || (w->shaped && !w->n_clip)) return;
+    /* Confirm pending Render requests on the compositor connection only.
+     * The WM has already committed removal; this never queries the client. */
+    XSync(dpy, False);
+    if (!w->painted || exit_xerror) return;
+    ExitLayer layer = {0};
+    layer.identity = w->id; layer.generation = w->generation;
+    layer.pixmap = w->pixmap; layer.picture = w->pict;
+    layer.x = w->x; layer.y = w->y;
+    layer.width = w->w + 2 * w->bw; layer.height = w->h + 2 * w->bh;
+    if (layer.width <= 0 || layer.height <= 0 ||
+        !exit_size((unsigned)layer.width, (unsigned)layer.height,
+            exit_bpp[w->depth], exit_pad[w->depth], &layer.bytes)) return;
+    layer.retained = now;
+    layer.alpha = (double)w->opacity / OPAQUE *
+        animation_value(&w->opening, w->id, w->generation, now);
+    layer.dim = win_dim(w);
+    layer.shaped = w->shaped; layer.nclip = (unsigned)w->n_clip;
+    for (unsigned i = 0; i < layer.nclip; i++) {
+        layer.clip[i].x = w->clip_rects[i].x;
+        layer.clip[i].y = w->clip_rects[i].y;
+        layer.clip[i].width = w->clip_rects[i].width;
+        layer.clip[i].height = w->clip_rects[i].height;
+    }
+    /* Anchor immediately below the next surviving live generation. Unknown
+     * stacking means skip rather than arbitrarily put an image on top. */
+    int found = 0;
+    for (unsigned i = 0; i < stack_nk; i++) {
+        if (stack_cache[i] == w->id) { found = 1; layer.rank = i; continue; }
+        if (!found) continue;
+        Win *above = win_get(stack_cache[i]);
+        if (above && above->mapped) {
+            layer.above = above->id; layer.above_generation = above->generation;
+            break;
+        }
+    }
+    if (!found || layer.alpha <= 0) return;
+    /* A stale XID anchor is validated by generation again at paint time. */
+    animation_start(&layer.animation, layer.identity, layer.generation, now, (unsigned)opt_close_ms);
+    if (!exit_admit(&exits, &layer)) return;
+    w->pixmap = None; w->pict = None; w->painted = 0;
+    fading = 1; dirty = full_dirty = 1;
 }
 
 /* đảm bảo back buffer + snapshot nền đúng size root hiện tại */
@@ -775,6 +935,17 @@ static int ensure_win_pict(Win *w) {
     Picture pict = XRenderCreatePicture(dpy, pm, fmt, 0, NULL);
     int pict_error = untrap_errors();
     if (pict_error || !pict) { XFreePixmap(dpy, pm); return 0; }
+    if (opt_close_ms > 0 && opt_fade && !opt_reduce_motion) {
+        Window rr; int px, py; unsigned pw, ph, pb, pd;
+        trap_errors();
+        int valid = XGetGeometry(dpy, pm, &rr, &px, &py, &pw, &ph, &pb, &pd);
+        int error = untrap_errors();
+        if (error || !valid || pw != (unsigned)(a.width + 2 * a.border_width) ||
+            ph != (unsigned)(a.height + 2 * a.border_width) || pd != (unsigned)a.depth) {
+            XRenderFreePicture(dpy, pict); XFreePixmap(dpy, pm);
+            return 0;
+        }
+    }
     w->pixmap = pm; w->pict = pict;
     w->w = a.width; w->h = a.height;
     read_shape(w); /* shape tương thích với geometry mới */
@@ -840,16 +1011,62 @@ static long long shape_next_wake(long long now) {
     return next;
 }
 
+static void paint_exits(Window before, long long now, unsigned char *drawn) {
+    /* Rank order is explicit even if pool slots have been recycled. */
+    for (unsigned pass = 0; pass < EXIT_COUNT; pass++) {
+        unsigned best = EXIT_COUNT;
+        for (unsigned i = 0; i < EXIT_COUNT; i++) {
+            ExitLayer *s = &exits.layers[i];
+            if (!s->bytes || drawn[i] || s->above != before) continue;
+            if (best == EXIT_COUNT || s->rank < exits.layers[best].rank) best = i;
+        }
+        if (best == EXIT_COUNT) break;
+        drawn[best] = 1;
+        ExitLayer *s = &exits.layers[best];
+        Win *anchor = before ? win_get(before) : NULL;
+        if (before && (!anchor || !anchor->mapped || anchor->generation != s->above_generation)) {
+            exit_drop(&exits, best, exit_release);
+            continue;
+        }
+        double a = s->alpha * (1.0 - animation_sample(&s->animation,
+            s->identity, s->generation, now));
+        if (a <= 0) continue;
+        /* Retained pictures never enter the opaque fast path. Restore all
+         * mutable Render state explicitly before reusing their references. */
+        XTransform identity = {{{65536, 0, 0}, {0, 65536, 0}, {0, 0, 65536}}};
+        XRenderPictureAttributes pa = {0}; pa.clip_mask = None;
+        XRenderSetPictureTransform(dpy, s->picture, &identity);
+        XRenderSetPictureFilter(dpy, s->picture, FilterNearest, NULL, 0);
+        XRenderChangePicture(dpy, s->picture, CPClipMask, &pa);
+        if (s->shaped) {
+            XRectangle clips[256];
+            for (unsigned i = 0; i < s->nclip; i++)
+                clips[i] = (XRectangle){(short)(s->x + s->clip[i].x),
+                    (short)(s->y + s->clip[i].y), s->clip[i].width, s->clip[i].height};
+            XRenderSetPictureClipRectangles(dpy, back_pict, 0, 0, clips, (int)s->nclip);
+        }
+        XRenderComposite(dpy, PictOpOver, s->picture, alpha_mask(a), back_pict,
+            0, 0, 0, 0, s->x, s->y, (unsigned)s->width, (unsigned)s->height);
+        if (s->dim < 1.0)
+            XRenderComposite(dpy, PictOpOver, alpha_mask((1.0 - s->dim) * a),
+                s->picture, back_pict, 0, 0, 0, 0, s->x, s->y,
+                (unsigned)s->width, (unsigned)s->height);
+        back_clip_reset();
+    }
+}
+
 static void repaint(void) {
     Window r, p, *kids = NULL;
     unsigned nk = 0;
     long long now = now_ms();
     XWindowAttributes ra;
-    fading = 0;
+    int was_fading = fading;
+    exits_maintain(now);
+    fading = exits.count != 0;
     shape_poll(now); /* P6: recheck shape cửa sổ non tại mốc 100/400ms */
     /* P1: full-frame khi stack/geometry/nền/appearance đổi hoặc không có hộp
      * damage; ngược lại (gõ chữ, video) chỉ vẽ lại hộp bao damage. */
-    int full = full_dirty || stack_dirty || bg_dirty || !dmg_have;
+    int full = full_dirty || stack_dirty || bg_dirty || was_fading || exits.count || !dmg_have;
     /* frame content-only (gõ chữ/fade tick): reuse attrs root, khỏi 1 RT.
      * Resize root luôn sinh ConfigureNotify -> stack_dirty/bg_dirty nên
      * cache không bao giờ stale. */
@@ -908,9 +1125,11 @@ static void repaint(void) {
                       (qa.override_redirect && qa.map_state != IsUnmapped));
             if (vs != w->mapped) {
                 win_free_pix(w);
-                if (vs && !w->override) w->born = now_ms(); /* remap: fade lại từ đầu */
+                if (vs && !w->override) w->born = now_ms();
                 w->mapped = vs;
                 win_refresh_flags(w);
+                if (vs && !w->hide_reason) opening_start(w, now);
+                else animation_cancel(&w->opening);
             } else if (w->pict == None) {
                 /* Configure đã invalidate pixmap ở event (không refresh ở
                  * đó để bão resize chỉ tốn 1 lần/frame): refresh tại đây */
@@ -945,7 +1164,7 @@ static void repaint(void) {
         : (XRectangle){ 0, 0, (unsigned short)ra.width, (unsigned short)ra.height };
     unsigned start = 0;
     int occlude = 0;
-    for (int i = (int)nk - 1; i >= 0; i--) {
+    for (int i = exits.count ? -1 : (int)nk - 1; i >= 0; i--) {
         if (kids[i] == cm_win) continue;
         Win *ow = win_get(kids[i]);
         if (!ow || !ow->mapped || ow->pict == None) continue;
@@ -980,8 +1199,18 @@ static void repaint(void) {
     }
     /* kids[0] = dưới cùng -> vẽ từ dưới lên trên. P4: bắt đầu từ occluder
      * đục trên cùng (start) nếu có -> bỏ mọi cửa sổ bị che hoàn toàn. */
-    for (unsigned i = start; i < nk; i++) {
-        Window id = kids[i];
+    unsigned char exits_drawn[EXIT_COUNT] = {0};
+    for (unsigned i = start; i <= nk; i++) {
+        Window id = i < nk ? kids[i] : None;
+        if (exits.count) {
+            Win *upper = id ? win_get(id) : NULL;
+            /* A newly mapped dock/menu/overview must stay above detached
+             * normal-client visuals even if absent from the old stack. */
+            if (upper && (upper->dock || upper->override || upper->fullscreen))
+                paint_exits(None, now, exits_drawn);
+            paint_exits(id, now, exits_drawn);
+        }
+        if (i == nk) break;
         if (id == cm_win) continue;
         Win *w = win_get(id);
         if (!w) {
@@ -1059,7 +1288,13 @@ static void repaint(void) {
         }
         if (had_clip)
             back_clip_reset(); /* trả clip về hộp damage (hoặc None) */
+        /* Candidate only: closing_detach drains outstanding asynchronous
+         * errors before it transfers these references out of live state. */
+        if (opt_close_ms > 0 && opt_fade && !opt_reduce_motion) w->painted = 1;
     }
+    /* Missing/destroyed stacking anchors cancel rather than float to top. */
+    if (exits.count) for (unsigned i = 0; i < EXIT_COUNT; i++)
+        if (exits.layers[i].bytes && !exits_drawn[i]) exit_drop(&exits, i, exit_release);
     /* Mỗi Present slot phải nhận snapshot ĐẦY ĐỦ từ canonical back_buf:
      * slot idle có thể chứa frame cũ nhiều lượt; chỉ copy bbox sẽ làm các
      * vùng ngoài damage quay về nội dung cũ khi driver flip cả pixmap.
@@ -1139,6 +1374,15 @@ static void repaint(void) {
 
 static int xerror_ignore(Display *d, XErrorEvent *e) {
     (void)d;
+    /* Never perform Xlib cleanup from an error callback. Drain at loop top. */
+    for (unsigned i = 0; i < EXIT_COUNT; i++) {
+        ExitLayer *s = &exits.layers[i];
+        if (s->bytes && (e->resourceid == s->pixmap || e->resourceid == s->picture))
+            exit_xerror = 1;
+    }
+    for (Win *w = wins; w; w = w->next)
+        if (e->resourceid == w->id || e->resourceid == w->pixmap || e->resourceid == w->pict)
+            w->painted = 0;
     /* BadWindow, BadDamage và RenderBadPicture là race bình thường: cửa
      * sổ hủy ở server kéo theo Damage/pixmap redirect/Picture chết cùng.
      * Entry zombie còn lại tới gc_sweep nên repaint composite bằng picture
@@ -1165,7 +1409,8 @@ static void usage(const char *prog) {
     fprintf(stderr,
         "dani-comp — compositor đơn giản cho daniwm\n"
         "usage: %s [-d display] [--shadow/--no-shadow] [--fade/--no-fade]\n"
-        "         [--dim 0.5..1] [--fade-ms N] [-v] [-h]\n"
+        "         [--dim 0.5..1] [--fade-ms 0..1000] [--close-ms 0..1000]\n"
+        "         [--reduce-motion] [--wm-settings] [-v] [-h]\n"
         "  --dim 0.92  độ sáng cửa sổ inactive (0 hoặc 1 = tắt dim)\n", prog);
 }
 
@@ -1193,9 +1438,29 @@ int main(int argc, char **argv) {
             if (opt_dim < 0.5) opt_dim = 0.5;
             if (opt_dim > 1.0) opt_dim = 1.0;
         } else if ((!strcmp(argv[i], "--fade-ms") || !strcmp(argv[i], "--fade-time")) && i + 1 < argc) {
-            opt_fade_ms = atoi(argv[++i]);
-            if (opt_fade_ms < 0) opt_fade_ms = 0;
-            if (opt_fade_ms > 1000) opt_fade_ms = 1000;
+            char *end;
+            const char *value = argv[++i];
+            errno = 0;
+            long duration = strtol(value, &end, 10);
+            if (!*value || end == value || *end || errno || duration < 0 || duration > 1000) {
+                fprintf(stderr, "dani-comp: bad fade duration '%s' (want integer 0..1000)\n", value);
+                return 1;
+            }
+            opt_fade_ms = (int)duration;
+        } else if (!strcmp(argv[i], "--close-ms") && i + 1 < argc) {
+            char *end;
+            const char *value = argv[++i];
+            errno = 0;
+            long duration = strtol(value, &end, 10);
+            if (!*value || end == value || *end || errno || duration < 0 || duration > 1000) {
+                fprintf(stderr, "dani-comp: bad close duration '%s' (want integer 0..1000)\n", value);
+                return 1;
+            }
+            opt_close_ms = (int)duration;
+        } else if (!strcmp(argv[i], "--reduce-motion")) {
+            opt_reduce_motion = opt_force_reduce_motion = 1;
+        } else if (!strcmp(argv[i], "--wm-settings")) {
+            opt_wm_settings = 1;
         } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
             opt_verbose = 1;
         } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
@@ -1278,6 +1543,25 @@ int main(int argc, char **argv) {
     A_WM_WINTYPE_DIALOG = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
     A_XROOTPMAP = XInternAtom(dpy, "_XROOTPMAP_ID", False);
     A_XSETROOT = XInternAtom(dpy, "_XSETROOT_ID", False);
+    A_ANIMATION_CONTROL = XInternAtom(dpy, ANIMATION_CONTROL_ATOM, False);
+    A_HIDE_REASON = XInternAtom(dpy, ANIMATION_REASON_ATOM, False);
+    A_CURRENT_DESKTOP = XInternAtom(dpy, "_NET_CURRENT_DESKTOP", False);
+    A_CLOSE_SETTINGS = XInternAtom(dpy, ANIMATION_CLOSE_ATOM, False);
+    A_WM_CHECK = XInternAtom(dpy, "_NET_SUPPORTING_WM_CHECK", False);
+    int formats_n;
+    XPixmapFormatValues *formats = XListPixmapFormats(dpy, &formats_n);
+    if (formats) {
+        for (int i = 0; i < formats_n; i++) if (formats[i].depth > 0 && formats[i].depth <= 32) {
+            exit_bpp[formats[i].depth] = (unsigned)formats[i].bits_per_pixel;
+            exit_pad[formats[i].depth] = (unsigned)formats[i].scanline_pad;
+        }
+        XFree(formats);
+    }
+    if (opt_wm_settings) {
+        A_ANIMATION_SETTINGS = XInternAtom(dpy, ANIMATION_SETTINGS_ATOM, False);
+        A_WM_CHECK = XInternAtom(dpy, "_NET_SUPPORTING_WM_CHECK", False);
+        opt_fade = 0; /* no valid WM settings -> instant, never CLI fallback */
+    }
     {
         char cm[32];
         snprintf(cm, sizeof(cm), "_NET_WM_CM_S%d", screen);
@@ -1311,8 +1595,15 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        unsigned long version = ANIMATION_SETTINGS_VERSION;
+        XChangeProperty(dpy, cm_win, A_ANIMATION_CONTROL, XA_CARDINAL, 32,
+            PropModeReplace, (unsigned char *)&version, 1);
+    }
     XSelectInput(dpy, root,
         SubstructureNotifyMask | PropertyChangeMask | StructureNotifyMask | ExposureMask);
+    animation_settings_read();
+    reason_owner = opt_wm_settings ? settings_owner : opt_close_ms > 0 ? settings_wm() : None;
 
 #ifdef WITH_XPRESENT
     /* XPresent: đăng ký nhận events trên root */
@@ -1350,6 +1641,7 @@ int main(int argc, char **argv) {
 
     for (;;) {
         if (quit_req) {
+            exits_clear();
             /* trả redirect về cho server: không thì cửa sổ đông cứng
              * offscreen sau khi compositor chết. Xóa frame composite
              * khỏi root để server vẽ lại cửa sổ thật. */
@@ -1390,6 +1682,17 @@ int main(int argc, char **argv) {
             long sw_us = (swake > 1000000) ? 1000000 : (long)(swake * 1000);
             if (budget < 0 || sw_us < budget) budget = sw_us;
         }
+        /* Retention deadlines are independent of Present completion/idle.
+         * Even a stalled backend must release images at duration/TTL. */
+        if (exits.count) for (unsigned i = 0; i < EXIT_COUNT; i++) {
+            ExitLayer *s = &exits.layers[i];
+            if (!s->bytes) continue;
+            long long end = s->animation.start_ms + s->animation.duration_ms;
+            if (s->retained + EXIT_TTL_MS < end) end = s->retained + EXIT_TTL_MS;
+            long long left = end - now_ms();
+            if (left < 0) left = 0;
+            if (budget < 0 || left * 1000 < budget) budget = (long)(left * 1000);
+        }
         /* GC zombie window chết sót: wake tối đa 5s để quét 1 lần. */
         {
             long long gdue = last_gc + 5000 - now_ms();
@@ -1425,6 +1728,8 @@ int main(int argc, char **argv) {
             }
         }
         while (XPending(dpy)) {
+            /* Event storms must not postpone resource expiry until paint. */
+            if (exits.count) exits_maintain(now_ms());
             XEvent ev;
             XNextEvent(dpy, &ev);
             if (ev.type == dmg_event + XDamageNotify) {
@@ -1470,32 +1775,64 @@ int main(int argc, char **argv) {
             } else switch (ev.type) {
             case MapNotify: {
                 XMapEvent *e = &ev.xmap;
-                if (e->window == cm_win) break;
+                if (e->event != root || e->window == cm_win) break;
                 if (opt_debug) fprintf(stderr, "dani-comp: Map 0x%lx\n", (unsigned long)e->window);
+                if (exits.count) exit_cancel_identity(&exits, e->window, exit_release);
+                Win *prior = win_get(e->window);
+                int hidden = prior && prior->hide_reason;
                 Win *w = win_add(e->window);
+                if (w) {
+                    w->generation = next_generation == UINT64_MAX ? 0 : ++next_generation;
+                    w->hide_reason = 0;
+                }
                 /* override (bar/menu) không fade: win_add đã đặt born=0,
                  * đừng ghi đè thành now */
-                if (w && !w->override) { w->born = now_ms(); win_free_pix(w); }
-                else if (w) win_free_pix(w);
+                if (w) {
+                    if (!w->override) w->born = now_ms();
+                    win_free_pix(w);
+                    if (hidden) animation_cancel(&w->opening);
+                    else opening_start(w, now_ms());
+                }
                 dirty = 1; stack_dirty = 1;
                 break;
             }
             case UnmapNotify: {
                 XUnmapEvent *e = &ev.xunmap;
+                if (e->event != root || e->send_event) break;
                 if (opt_debug) fprintf(stderr, "dani-comp: Unmap 0x%lx tracked=%d\n",
                     (unsigned long)e->window, win_get(e->window) != NULL);
                 Win *w = win_get(e->window);
-                if (w) { w->mapped = 0; win_free_pix(w); }
+                if (w && w->mapped) {
+                    closing_detach(w, now_ms());
+                    w->mapped = 0;
+                    animation_cancel(&w->opening);
+                    win_free_pix(w);
+                }
                 dirty = 1; stack_dirty = 1;
                 break;
             }
             case DestroyNotify: {
+                if (ev.xdestroywindow.event != root && ev.xdestroywindow.window != reason_owner &&
+                    ev.xdestroywindow.window != settings_owner) break;
+                if (ev.xdestroywindow.window == reason_owner) {
+                    reason_owner = None; reason_sequence = 0;
+                    exits_clear();
+                }
+                if (opt_wm_settings && ev.xdestroywindow.window == settings_owner)
+                    animation_settings_read();
+                Win *w = win_get(ev.xdestroywindow.window);
+                if (w && w->mapped) closing_detach(w, now_ms());
                 win_del(ev.xdestroywindow.window);
                 dirty = 1; stack_dirty = 1;
                 break;
             }
+            case CreateNotify:
+                /* An XID beginning another lifetime cannot inherit a ghost. */
+                if (exits.count) exit_cancel_identity(&exits, ev.xcreatewindow.window, exit_release);
+                break;
             case ReparentNotify: {
                 XReparentEvent *e = &ev.xreparent;
+                if (exits.count) exit_cancel_identity(&exits, e->window, exit_release);
                 /* daniwm không reparent, nhưng transients có thể */
                 Win *w = win_get(e->window);
                 if (e->parent == root) {
@@ -1513,6 +1850,7 @@ int main(int argc, char **argv) {
                     /* resize root: ensure_targets tự tạo lại buffer theo
                      * size mới ở repaint tới; đánh dấu nền phải chụp lại */
                     bg_dirty = 1;
+                    exits_clear();
                 } else {
                     /* P3: pixmap chỉ đổi khi size/border đổi (Composite spec:
                      * storage realloc khi top-level đổi size). Move thuần giữ
@@ -1534,7 +1872,19 @@ int main(int argc, char **argv) {
                 break;
             case PropertyNotify: {
                 XPropertyEvent *e = &ev.xproperty;
-                if (e->window == root && e->atom == A_ACTIVE) {
+                if (e->window == root && e->atom == A_WM_CHECK) {
+                    Window owner = opt_wm_settings || opt_close_ms > 0 ? settings_wm() : None;
+                    if (owner != reason_owner) reason_sequence = 0;
+                    reason_owner = owner;
+                    exits_clear();
+                    for (Win *w = wins; w; w = w->next) w->hide_reason = 0;
+                    animation_settings_read();
+                } else if (opt_wm_settings && e->window == root &&
+                    (e->atom == A_ANIMATION_SETTINGS || e->atom == A_CLOSE_SETTINGS)) {
+                    animation_settings_read();
+                } else if (e->window == root && e->atom == A_CURRENT_DESKTOP) {
+                    exits_clear();
+                } else if (e->window == root && e->atom == A_ACTIVE) {
                     read_active();
                     dirty = 1; full_dirty = 1; /* dim đổi cả 2 cửa sổ, không có damage */
                 } else if (e->window == root &&
@@ -1563,9 +1913,28 @@ int main(int argc, char **argv) {
                     dirty = 1;
                 }
                 break;
+            case ClientMessage:
+                if (ev.xclient.window == root && ev.xclient.message_type == A_HIDE_REASON &&
+                    ev.xclient.format == 32) {
+                    unsigned long words[5];
+                    for (int i = 0; i < 5; i++) words[i] = (uint32_t)ev.xclient.data.l[i];
+                    if (animation_reason_valid(words, reason_owner, reason_sequence)) {
+                        reason_sequence = (uint32_t)words[3];
+                        Win *w = win_get(words[2]);
+                        if (w) w->hide_reason = (int)words[4];
+                        /* A hide invalidates all outgoing visuals: never let a
+                         * recently closed app follow a workspace switch. */
+                        exits_clear();
+                    }
+                }
+                if (ev.xclient.window == cm_win && ev.xclient.message_type == A_ANIMATION_CONTROL &&
+                    ev.xclient.format == 32 && ev.xclient.data.l[0] == ANIMATION_SETTINGS_VERSION)
+                    quit_req = 1;
+                break;
             case SelectionClear:
                 if (ev.xselectionclear.selection == A_CM) {
                     fprintf(stderr, "dani-comp: replaced, exiting\n");
+                    exits_clear();
                     for (int i = 0; i < 7; i++)
                         if (shadow_fill[i] != None) XRenderFreePicture(dpy, shadow_fill[i]);
                     if (present_gc != None) XFreeGC(dpy, present_gc);
