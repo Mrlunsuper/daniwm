@@ -74,6 +74,11 @@ check-animation:
 check-ws-capture:
 	sh test/test-ws-capture.sh
 
+# Phase 3-P2 workspace crossfade prototype, test-only, never linked into binaries.
+.PHONY: check-ws-render
+check-ws-render:
+	sh test/test-ws-render.sh
+
 # Phase 2 mandatory coordination/input prototype, never linked into binaries.
 .PHONY: check-layout-prototype
 check-layout-prototype:

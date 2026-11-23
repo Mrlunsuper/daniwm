@@ -58,6 +58,11 @@ int main(void) {
     assert(wsp_image_bytes(&bytes, 3, 2, 24, 32) && bytes == 12u * 2u);
     assert(!wsp_image_bytes(&bytes, 0, 1, 32, 32) && !wsp_image_bytes(&bytes, 1, 1, 32, 7));
 
+    /* 3-P2 shared budget: reserved close-layer bytes plus the scene. */
+    assert(wsp_shared_fits(0, WSP_BUDGET) && !wsp_shared_fits(1, WSP_BUDGET));
+    assert(wsp_shared_fits(WSP_BUDGET / 2, WSP_BUDGET / 2));
+    assert(!wsp_shared_fits(WSP_BUDGET + 1, 0) && !wsp_shared_fits(UINT64_MAX, UINT64_MAX));
+
     /* Budget admission happens before any retention. */
     WSScene scene = {0};
     WSTxn two = txn(9, 2);

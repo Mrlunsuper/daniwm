@@ -83,6 +83,11 @@ static inline int wsp_image_bytes(uint64_t *out, unsigned w, unsigned h, unsigne
     return 1;
 }
 
+/* 3-P2: one budget shared with other retained images (close layers). */
+static inline int wsp_shared_fits(uint64_t reserved, uint64_t scene) {
+    return reserved <= WSP_BUDGET && scene <= WSP_BUDGET - reserved;
+}
+
 enum { WSP_IDLE, WSP_COLLECTING, WSP_READY };
 typedef struct {
     uint32_t id;

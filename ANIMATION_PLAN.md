@@ -10,7 +10,8 @@ Status (branch `feat/animation`, not released):
 | 2 strict | BLOCKED. The strict input gate is not met. | `ANIMATION_PHASE2_PROTOTYPE_REPORT.md`, `ANIMATION_PHASE2_ELIGIBILITY_REPORT.md` |
 | 2 best-effort | Implemented. Opt-in, `animation_layout_ms = 0` by default. Strict gate still unmet. | `ANIMATION_PHASE2_BESTEFFORT_REPORT.md` |
 | 3-P1 | Gate PASS (reviewed 2026-11-23). Test-only. No runtime code. | `ANIMATION_PHASE3_P1_REPORT.md` |
-| 3-P2, 3-I | Not started. Each needs a separate request. | `ANIMATION_PHASE3_PREREQUISITES_REPORT.md` |
+| 3-P2 | Gate PASS (reviewed 2026-11-23): mismatch accepted with `animation_workspace_ms` capped at 0..250, default 0. Test-only. | `ANIMATION_PHASE3_P2_REPORT.md` |
+| 3-I | Not started. Needs a separate request. | `ANIMATION_PHASE3_PREREQUISITES_REPORT.md` |
 | 4 | Not started. | — |
 
 Each branch is reviewed on its own and must pass its own exit gate. A Phase 3
@@ -270,12 +271,12 @@ animation_layout_ms = 0     # best-effort; 0 = instant
 Proposed only (not supported yet):
 
 ```ini
-animation_workspace_ms = 180
+animation_workspace_ms = 0   # 3-P2 review: 0..250 only, opt-in
 animation_overview_ms = 140
 ```
 
 Add each setting only with its corresponding phase. Proposed duration range:
-0–1000 ms; reject invalid/overflowing values with diagnostics. `animations = 0`
+0–1000 ms, except `animation_workspace_ms` (0–250 ms after the 3-P2 review); reject invalid/overflowing values with diagnostics. `animations = 0`
 or `reduce_motion = 1` overrides all durations. Workspace crossfade is the initial
 fixed effect; do not advertise slide until implemented and verified. Keep
 `compositor = 1` separate: enabling animation does not silently start a compositor.
