@@ -67,6 +67,12 @@ all: daniwm dani-comp dani-run
 check-animation:
 	sh test/test-animation.sh
 	sh test/test-layout-prototype.sh --headless
+	sh test/test-ws-capture.sh --headless
+
+# Phase 3-P1 workspace capture prototype, test-only, never linked into binaries.
+.PHONY: check-ws-capture
+check-ws-capture:
+	sh test/test-ws-capture.sh
 
 # Phase 2 mandatory coordination/input prototype, never linked into binaries.
 .PHONY: check-layout-prototype
