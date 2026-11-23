@@ -9,6 +9,17 @@
 
 static Display *d;
 static Window root;
+static int root_query;
+static int xerror(Display *display, XErrorEvent *e) {
+    /* XQueryTree's list may contain the just-destroyed overlay. The
+     * following attribute query then fails; polling must retry safely. */
+    if (root_query && e->error_code == BadWindow && e->request_code == 3) return 0;
+    char message[128];
+    XGetErrorText(display, e->error_code, message, sizeof(message));
+    fprintf(stderr, "overview Xvfb: unexpected X error %s req=%u/%u\n",
+            message, e->request_code, e->minor_code);
+    exit(1);
+}
 static void pause_tick(void) {
     struct timespec t = {0, 20000000};
     nanosleep(&t, NULL);
@@ -33,7 +44,11 @@ static Window overlay(void) {
         fail("cannot query root tree");
     for (unsigned i = 0; i < n; i++) {
         XWindowAttributes a;
-        if (XGetWindowAttributes(d, children[i], &a) && a.override_redirect &&
+        root_query = 1;
+        int valid = XGetWindowAttributes(d, children[i], &a);
+        XSync(d, False);
+        root_query = 0;
+        if (valid && a.override_redirect &&
             a.map_state == IsViewable && a.class == InputOutput &&
             a.width == DisplayWidth(d, DefaultScreen(d)) &&
             a.height == DisplayHeight(d, DefaultScreen(d)))
@@ -60,6 +75,7 @@ int main(void) {
         if (!d) pause_tick();
     }
     if (!d) fail("cannot connect to private display");
+    XSetErrorHandler(xerror);
     root = DefaultRootWindow(d);
     int ready = 0;
     for (int i = 0; i < 250; i++) {

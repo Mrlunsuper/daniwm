@@ -22,13 +22,28 @@ void hover_lock_arm(void) { hover_arms++; }
 static unsigned char rendered[512];
 static int rendered_len;
 static XEvent queued;
-static int queue_count, copies, check_cells;
+static int queue_count, copies;
+static struct { Pixmap dst; int x,y,w,h; } copy_rects[1024];
+static int ncopy;
+static char text_log[16384];
 static Window last_raised;
 static KeySym keymap[256]={[36]=XK_Return,[104]=XK_KP_Enter,[113]=XK_Left,[114]=XK_Right,[111]=XK_Up,[116]=XK_Down,[9]=XK_Escape,[32]=XK_o,[53]=XK_x};
-static void copy_area(Pixmap src, unsigned w, unsigned h, int y) {
-    if (src>1 && w<=192 && h<=108) { assert(h>0); if (check_cells) assert(y%240+h<=236); copies++; }
+static void copy_area(Pixmap src, Pixmap dst, unsigned w, unsigned h, int x, int y) {
+    assert(w>0 && h>0);
+    if (src>1 && w<=192 && h<=108) copies++;
+    if (ncopy<1024) {
+        copy_rects[ncopy].dst=dst; copy_rects[ncopy].x=x; copy_rects[ncopy].y=y;
+        copy_rects[ncopy].w=(int)w; copy_rects[ncopy++].h=(int)h;
+    }
 }
-static void record_text(const FcChar8 *s, int n) { assert(n>=0 && n<=512); memcpy(rendered,s,n); rendered_len=n; }
+static int fill_rect(unsigned w, unsigned h) { assert(w>0 && h>0); return 0; }
+static void record_text(const FcChar8 *s, int n) {
+    assert(n>=0 && n<=512); memcpy(rendered,s,n); rendered_len=n;
+    size_t used=strlen(text_log);
+    if (used+(size_t)n+2<sizeof text_log) {
+        memcpy(text_log+used,s,n); text_log[used+n]='\n'; text_log[used+n+1]=0;
+    }
+}
 static int free_pixmap(void) { assert(!require_trap || trapped); return --pixmaps; }
 static int grab_result=GrabSuccess, trap_ok=1, compositor=1, draw_ok=1;
 static unsigned long serial=100;
@@ -39,7 +54,8 @@ Display *dpy;
 Window root=1;
 int screen, curws, NWS=4, barcol_ok=1;
 unsigned int MOD=Mod4Mask;
-unsigned long BAR_BG, BAR_ACC, BAR_DIM;
+unsigned long BAR_BG=0x1e1e2e, BAR_FG=0xcdd6f4, BAR_ACC=0x7aa2f7, BAR_DIM=0x6c7086;
+float ui_scale=1.0f;
 XftFont *barfont=&font;
 BarColors barcol;
 Client *clients;
@@ -48,7 +64,8 @@ Client *find(Window w) { for(Client *c=clients;c;c=c->next) if(c->win==w) return
 void view(int ws) { assert(!overview_is_open()); curws=ws; views++; }
 void focus(Client *c) { assert(c && c->ws==curws); focuses++; }
 int mon_by_pointer(void) { return 0; }
-const char *ws_name(int ws) { (void)ws; return "workspace"; }
+static const char *workspace_name="workspace";
+const char *ws_name(int ws) { (void)ws; return workspace_name; }
 void trap_errors(Display *d) { (void)d; assert(!trapped); trapped=1; }
 int untrap_errors(Display *d) { (void)d; assert(trapped); trapped=0; return trap_ok; }
 /* All server-facing calls are replaced, including rendering and keyboard lookup. */
@@ -73,9 +90,10 @@ int untrap_errors(Display *d) { (void)d; assert(trapped); trapped=0; return trap
 #define XMapRaised(...) 0
 #define XRaiseWindow(d,w) (last_raised=(w),0)
 #define XSetForeground(...) 0
-#define XFillRectangle(...) 0
+#define XFillRectangle(d,p,g,x,y,w,h) fill_rect(w,h)
+#define XFillArc(d,p,g,x,y,w,h,a,b) fill_rect(w,h)
 #define XDrawRectangle(...) 0
-#define XCopyArea(d,s,t,g,sx,sy,w,h,x,y) copy_area(s,w,h,y)
+#define XCopyArea(d,s,t,g,sx,sy,w,h,x,y) copy_area(s,t,w,h,x,y)
 #define XftDrawSetClipRectangles(...) ((void)0)
 #define XftDrawStringUtf8(d,c,f,x,y,s,n) record_text(s,n)
 #define XftDrawSetClip(...) ((void)0)
@@ -98,6 +116,15 @@ int untrap_errors(Display *d) { (void)d; assert(trapped); trapped=0; return trap
 
 #include "../src/ewmh.h"
 int nmons=1, gaps_on, gap_inner, BORDER;
+int COMPOSITOR, ANIMATIONS, REDUCE_MOTION, ANIMATION_OPEN_MS, ANIMATION_CLOSE_MS,
+    ANIMATION_LAYOUT_MS;
+Window checkwin;
+int XChangeProperty(Display *d, Window w, Atom p, Atom t, int f, int m,
+                    const unsigned char *data, int n) {
+    (void)d; (void)w; (void)p; (void)t; (void)f; (void)m; (void)data; (void)n;
+    return 0;
+}
+int XFlush(Display *d) { (void)d; return 0; }
 static Layout layouts[MAXWS]; static int masters[MAXWS]; static float mfacts[MAXWS];
 Layout *ws_layout=layouts; int *ws_nmaster=masters; float *ws_mfact=mfacts;
 unsigned long BORDER_FOCUS, BORDER_NORMAL;
@@ -107,6 +134,7 @@ Dock *docks;
 #define XRestackWindows(...) 0
 #define XMoveResizeWindow(...) 0
 #define XMapWindow(...) 0
+void animation_unmap(Window window, unsigned reason) { (void)window; (void)reason; }
 #define XUnmapWindow(...) 0
 #define XSetWindowBorderWidth(...) 0
 #define XSetWindowBorder(...) 0
@@ -150,7 +178,35 @@ static void click_card(Window id) {
     }
     assert(!"missing card");
 }
+/* Preview copies and click targets must stay inside their workspace/card. */
+static void check_geometry(void) {
+    int workspaces=0;
+    for (int i=0;i<nhits;i++) {
+        assert(hits[i].x>=0 && hits[i].y>=0 && hits[i].w>0 && hits[i].h>0);
+        assert(hits[i].x+hits[i].w<=width && hits[i].y+hits[i].h<=height);
+        if (!hits[i].id) { workspaces++; continue; }
+        int parent=0;
+        for (int j=0;j<i;j++) if (!hits[j].id && hits[j].ws==hits[i].ws) {
+            assert(hits[i].x>hits[j].x && hits[i].y>hits[j].y);
+            assert(hits[i].x+hits[i].w<hits[j].x+hits[j].w);
+            assert(hits[i].y+hits[i].h<hits[j].y+hits[j].h);
+            parent=1;
+        }
+        assert(parent);
+    }
+    if (width>=cols && height>=(NWS+cols-1)/cols) assert(workspaces==NWS);
+    for (int i=0;i<ncopy;i++) if (copy_rects[i].dst==backing) {
+        int inside=0;
+        for (int j=0;j<nhits;j++) if (hits[j].id &&
+            copy_rects[i].x>=hits[j].x && copy_rects[i].y>=hits[j].y &&
+            copy_rects[i].x+copy_rects[i].w<=hits[j].x+hits[j].w &&
+            copy_rects[i].y+copy_rects[i].h<=hits[j].y+hits[j].h-barfont->height)
+            inside=1;
+        assert(inside);
+    }
+}
 int main(void) {
+    font.height=16; font.ascent=12; font.descent=4;
     /* Fake display also makes accidental Default* macro dereferences harmless. */
     fake_display=calloc(1,sizeof *fake_display); assert(fake_display);
     fake_display->screens=&fake_screen; dpy=(Display *)fake_display;
@@ -225,7 +281,53 @@ int main(void) {
     NWS=9; mons[0].w=1280; mons[0].h=720;
     Client nine[9]={0};
     for (int i=0;i<9;i++) { nine[i].win=200+i; nine[i].ws=i; nine[i].next=i<8?&nine[i+1]:NULL; }
-    clients=nine; copies=0; check_cells=1; overview_show(0); assert(copies==9); clean(); clients=NULL; check_cells=0;
+    clients=nine; copies=ncopy=0; overview_show(0); assert(copies==9);
+    check_geometry(); clean(); clients=NULL;
+    /* Default config has NULL workspace names: always render numbered labels. */
+    workspace_name=NULL; text_log[0]=0;
+    overview_show(0);
+    assert(strstr(text_log,"Workspace 1\n") && strstr(text_log,"Workspace 9\n"));
+    assert(strstr(text_log,"Empty workspace") && strstr(text_log,"Esc: cancel"));
+    clean(); workspace_name="Development"; text_log[0]=0;
+    overview_show(0); assert(strstr(text_log,"Development\n")); clean();
+    workspace_name="workspace";
+    /* Dense workspaces show an overflow count, never overlapping cards. */
+    Client many[30]={0};
+    NWS=5; mons[0].w=1920; mons[0].h=1080;
+    for (int i=0;i<30;i++) { many[i].win=500+i; many[i].ws=0; many[i].next=i<29?&many[i+1]:NULL; }
+    clients=many; compositor=0; text_log[0]=0; ncopy=0;
+    overview_show(0); check_geometry();
+    assert(strstr(text_log,"30 windows  /  +") && strstr(text_log,"Preview unavailable"));
+    int cards=0; for (int i=0;i<nhits;i++) if (hits[i].id) cards++;
+    assert(cards>=2 && cards<30);
+    int firstcard=-1, secondcard=-1;
+    for (int i=0;i<nhits;i++) if (hits[i].id) {
+        if (firstcard<0) firstcard=i;
+        else { secondcard=i; break; }
+    }
+    assert(secondcard>=0 && hits[firstcard].y==hits[secondcard].y);
+    assert(hits[firstcard].x+hits[firstcard].w<hits[secondcard].x);
+    /* Gutters are not workspace targets; clicking them does not commit. */
+    XEvent gutter={0}; gutter.type=ButtonPress; gutter.xbutton.window=overlay;
+    assert(overview_event(&gutter) && overview_is_open());
+    click_card(500); assert(!overview_is_open() && curws==0);
+    clean(); clients=NULL; compositor=1;
+    /* All workspace counts, compact outputs and configured scale factors. */
+    const int sizes[][2]={{320,240},{800,600},{1280,720},{1920,1080},{3440,1440}};
+    for (int sc=0;sc<3;sc++) {
+        ui_scale=sc==0?0.75f:sc==1?1.0f:2.0f;
+        font.height=S(16); font.ascent=S(12); font.descent=font.height-font.ascent;
+        for (unsigned z=0;z<sizeof sizes/sizeof sizes[0];z++) {
+            mons[0].w=sizes[z][0]; mons[0].h=sizes[z][1];
+            for (NWS=1;NWS<=MAXWS;NWS++) {
+                clients=nine;
+                for (int i=0;i<9;i++) nine[i].ws=i%NWS;
+                ncopy=0; overview_show(0); check_geometry(); clean();
+                clients=NULL;
+            }
+        }
+    }
+    ui_scale=1.0f; font.height=16; font.ascent=12; font.descent=4; NWS=9;
     mons[0].w=1; mons[0].h=1;
     overview_show(0); assert(overview_is_open());
     for(int i=0;i<nhits;i++) assert(hits[i].w>0 && hits[i].h>0);

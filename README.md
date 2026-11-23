@@ -147,6 +147,8 @@ cam kết thumbnail ẩn luôn live. Các lựa chọn kiến trúc chưa chốt
 
 ## Workspace overview
 
+The overview uses a theme-colored card grid with rounded surfaces, a highlighted pending selection, workspace numbers/names and a current-workspace marker. Window previews are centered in their cards, with labeled fallbacks when unavailable. Window counts and overflow indicators keep crowded workspaces readable; the last row is centered and spacing follows the configured UI scale. A footer shows the keyboard controls. No additional rendering dependency is required.
+
 `Super+o` opens/toggles a workspace grid on the pointer monitor. Arrow keys change only the pending selection; Enter or a workspace click commits it. A window-card click commits its workspace, then focuses the still-managed client after checking its XID and workspace. Escape cancels without changing the original workspace or focus. Opening/browsing never maps hidden clients or focuses applications. Show/hide are idempotent; external workspace changes, client lifecycle changes, reload and monitor geometry changes close the overlay.
 
 The WM takes actual XComposite/XRender downscaled snapshots only when a compositor owns redirection and a client is viewable. Snapshots are also taken before workspace/monocle hiding and retained for hidden clients. The cache holds at most 64 opaque pixmaps, each at most 192×108 (about 5.1 MiB at 32 bits/pixel, excluding server overhead), with round-robin replacement and removal on unmanage. No application redirection ownership is changed. Without a compositor, or when capture fails, the overview remains usable as labeled cards without images; previews are cached, not live video. Large workspaces display as many cards as fit.

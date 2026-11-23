@@ -86,8 +86,8 @@ void overview_capture(Window id) {
     cache[slot].id=id; cache[slot].pm=dst;
     cache[slot].w=dw; cache[slot].h=dh;
 }
-static void text(int x,int y,int w,const char *s) {
-    if (!xd || !barfont || w<=0) return;
+static void text_color(int x,int y,int w,const char *s,const XftColor *color) {
+    if (!xd || !barfont || !s || w<=0) return;
     XRectangle clip={(short)x,(short)(y-barfont->ascent),(unsigned short)w,(unsigned short)barfont->height};
     XftDrawSetClipRectangles(xd,0,0,&clip,1);
     size_t n=strnlen(s,512), used=0;
@@ -107,8 +107,37 @@ static void text(int x,int y,int w,const char *s) {
         if (valid) { memcpy(safe+used,s+i,len); used+=len; i+=len; }
         else { safe[used++]='?'; i++; }
     }
-    XftDrawStringUtf8(xd,&barcol.title,barfont,x,y,safe,(int)used);
+    XftDrawStringUtf8(xd,color,barfont,x,y,safe,(int)used);
     XftDrawSetClip(xd,NULL);
+}
+static void text(int x,int y,int w,const char *s) {
+    text_color(x,y,w,s,&barcol.title);
+}
+/* Derive surfaces from the configured theme without allocating server colors. */
+static unsigned long blend(unsigned long a,unsigned long b,unsigned weight) {
+    unsigned long rgb=0;
+    for (int shift=0;shift<=16;shift+=8)
+        rgb|=((((a>>shift)&255)*(100-weight)+((b>>shift)&255)*weight)/100)<<shift;
+    return rgb;
+}
+static void rect(int x,int y,int w,int h,unsigned long color) {
+    if (w<=0 || h<=0) return;
+    XSetForeground(dpy,gc,color);
+    XFillRectangle(dpy,backing,gc,x,y,(unsigned)w,(unsigned)h);
+}
+static void rounded(int x,int y,int w,int h,int r,unsigned long color) {
+    if (w<=0 || h<=0) return;
+    if (r>w/2) r=w/2;
+    if (r>h/2) r=h/2;
+    if (r<1) { rect(x,y,w,h,color); return; }
+    rect(x+r,y,w-2*r,h,color);
+    rect(x,y+r,w,h-2*r,color);
+    XSetForeground(dpy,gc,color);
+    int d=2*r;
+    XFillArc(dpy,backing,gc,x,y,d,d,90*64,90*64);
+    XFillArc(dpy,backing,gc,x+w-d,y,d,d,0,90*64);
+    XFillArc(dpy,backing,gc,x,y+h-d,d,d,180*64,90*64);
+    XFillArc(dpy,backing,gc,x+w-d,y+h-d,d,d,270*64,90*64);
 }
 static void hit(int x,int y,int w,int h,int ws,Window id) {
     if (w>0 && h>0 && nhits<HITS) { hits[nhits].x=x; hits[nhits].y=y; hits[nhits].w=w; hits[nhits].h=h; hits[nhits].ws=ws; hits[nhits++].id=id; }
@@ -116,37 +145,105 @@ static void hit(int x,int y,int w,int h,int ws,Window id) {
 static void draw(void) {
     if (!active) return;
     nhits=0;
-    XSetForeground(dpy,gc,BAR_BG); XFillRectangle(dpy,backing,gc,0,0,width,height);
-    int rows=(NWS+cols-1)/cols, cw=width/cols, ch=height/rows;
+    int pad=S(12), gap=S(16), radius=S(12);
+    int fh=barfont->height, line=fh+S(8);
+    int margin=S(28), header=2*line+S(16), footer=line+S(12);
+    int rows=(NWS+cols-1)/cols;
+    /* Keep the controller usable even on very small or heavily scaled outputs. */
+    if (width<2*margin+cols*S(96) ||
+        height<2*margin+header+footer+rows*(3*line+pad))
+        margin=gap=header=footer=0;
+    int gw=width-2*margin, gh=height-2*margin-header-footer;
+    int cw=(gw-(cols-1)*gap)/cols, ch=(gh-(rows-1)*gap)/rows;
+    unsigned long backdrop=blend(BAR_BG,0,22);
+    unsigned long surface=blend(BAR_BG,BAR_FG,5);
+    unsigned long edge=blend(BAR_BG,BAR_FG,14);
+    unsigned long well=blend(BAR_BG,0,12);
+    rect(0,0,width,height,backdrop);
+    if (header) {
+        char summary[80];
+        text(margin,margin+barfont->ascent,gw,"Workspaces");
+        snprintf(summary,sizeof summary,"%d workspaces  /  Choose your next space",NWS);
+        text_color(margin,margin+barfont->ascent+line,gw,summary,&barcol.sep);
+    }
+    if (footer)
+        text_color(margin,height-margin-barfont->descent,gw,
+                   "Arrow keys: select    Enter / click: open    Esc: cancel    Previews: cached",&barcol.sep);
     for (int ws=0;ws<NWS && ws<MAXWS;ws++) {
-        int x=(ws%cols)*cw,y=(ws/cols)*ch;
-        XSetForeground(dpy,gc,ws==pending?BAR_ACC:BAR_DIM);
-        if (cw>2 && ch>2) XDrawRectangle(dpy,backing,gc,x+1,y+1,cw-3,ch-3);
+        int row=ws/cols, inrow=NWS-row*cols;
+        if (inrow>cols) inrow=cols;
+        int x=margin+(gw-(inrow*cw+(inrow-1)*gap))/2+(ws%cols)*(cw+gap);
+        int y=margin+header+row*(ch+gap);
+        int selected=ws==pending;
+        unsigned long fill=selected?blend(surface,BAR_ACC,10):surface;
+        if (gap) rounded(x,y+S(3),cw,ch,radius,blend(backdrop,0,30));
+        rounded(x,y,cw,ch,radius,selected?BAR_ACC:edge);
+        int border=selected?2:1;
+        rounded(x+border,y+border,cw-2*border,ch-2*border,radius-border,fill);
         hit(x,y,cw,ch,ws,None);
-        text(x+8,y+24,cw-16,ws_name(ws));
-        if (cw<=16) continue;
-        int cy=y+36;
-        for (Client *c=clients;c;c=c->next) if (c->ws==ws && cy+24<y+ch) {
-            int room=y+ch-4-cy-28;
-            int imageh=room>TH?TH:room;
-            if (imageh<0) imageh=0;
-            int cardh=imageh+28;
-            if (cy+cardh>y+ch-4) break;
-            hit(x+6,cy,cw-12,cardh,ws,c->win);
-            if (cardh>28) for (int i=0;i<CACHE;i++) if (cache[i].id==c->win && cache[i].pm) {
-                int w=cache[i].w; if (w>cw-16) w=cw-16;
+        if (cw<2*pad+line || ch<3*line+pad) continue;
+        int badge=line, badgew=badge+S(8), by=y+pad;
+        rounded(x+pad,by,badgew,badge,S(6),selected?BAR_ACC:edge);
+        char label[128], number[8];
+        snprintf(number,sizeof number,"%d",ws+1);
+        /* The badge uses the theme's active-workspace contrast pair. */
+        text_color(x+pad+S(5),by+(badge-fh)/2+barfont->ascent,badgew-S(8),number,
+                   selected?&barcol.ws_acttx:&barcol.title);
+        const char *name=ws_name(ws);
+        if (name && *name) snprintf(label,sizeof label,"%s",name);
+        else snprintf(label,sizeof label,"Workspace %d",ws+1);
+        int statusw=cw>S(260)?S(76):0;
+        text(x+2*pad+badgew,by+(badge-fh)/2+barfont->ascent,
+             cw-3*pad-badgew-statusw,label);
+        if (statusw && ws==curws)
+            text_color(x+cw-pad-statusw,by+(badge-fh)/2+barfont->ascent,
+                       statusw,"CURRENT",&barcol.ws_occ);
+        int count=0;
+        for (Client *c=clients;c;c=c->next) if (c->ws==ws) count++;
+        int top=by+badge+pad, bottom=y+ch-pad-line;
+        int available=bottom-top, cardgap=S(10);
+        int cardcols=cw-2*pad>=2*(TW+2*S(8))+cardgap?2:1;
+        int cardw=(cw-2*pad-(cardcols-1)*cardgap)/cardcols;
+        int cardh=TH+line+2*S(8);
+        int cardrows=(available+cardgap)/(cardh+cardgap);
+        if (cardrows<1 && available>=line+2*S(8)) { cardrows=1; cardh=available; }
+        int shown=0, capacity=cardrows*cardcols;
+        if (!count && available>=line) {
+            text_color(x+pad,top+available/2+barfont->ascent/2,cw-2*pad,
+                       "Empty workspace",&barcol.sep);
+        }
+        for (Client *c=clients;c && shown<capacity;c=c->next) if (c->ws==ws) {
+            int cx=x+pad+(shown%cardcols)*(cardw+cardgap);
+            int cy=top+(shown/cardcols)*(cardh+cardgap);
+            int inset=S(8), imageh=cardh-line-2*inset;
+            rounded(cx,cy,cardw,cardh,S(8),well);
+            hit(cx,cy,cardw,cardh,ws,c->win);
+            int cached=0;
+            for (int i=0;i<CACHE;i++) if (cache[i].id==c->win && cache[i].pm) {
+                int w=cache[i].w; if (w>cardw-2*inset) w=cardw-2*inset;
                 int h=cache[i].h; if (h>imageh) h=imageh;
-                if (w>0 && h>0) XCopyArea(dpy,cache[i].pm,backing,gc,0,0,w,h,x+8,cy);
+                if (w>0 && h>0) {
+                    XCopyArea(dpy,cache[i].pm,backing,gc,(cache[i].w-w)/2,(cache[i].h-h)/2,
+                              w,h,cx+(cardw-w)/2,cy+inset+(imageh-h)/2);
+                    cached=1;
+                }
+                break;
             }
+            if (!cached && imageh>=line)
+                text_color(cx+inset,cy+inset+imageh/2+barfont->ascent/2,
+                           cardw-2*inset,"Preview unavailable",&barcol.sep);
             unsigned char *title=NULL; Atom type; int format; unsigned long n,after;
             trap_errors(dpy);
             if (XGetWindowProperty(dpy,c->win,A_NET_WM_NAME,0,128,False,AnyPropertyType,&type,&format,&n,&after,&title)==Success && title && format==8)
-                text(x+8,cy+cardh-6,cw-16,(char *)title);
-            else text(x+8,cy+cardh-6,cw-16,"Window");
+                text(cx+inset,cy+cardh-inset-barfont->descent,cardw-2*inset,(char *)title);
+            else text(cx+inset,cy+cardh-inset-barfont->descent,cardw-2*inset,"Window");
             if (title) XFree(title);
             untrap_errors(dpy);
-            cy+=cardh+4;
+            shown++;
         }
+        if (count>shown) snprintf(label,sizeof label,"%d windows  /  +%d more",count,count-shown);
+        else snprintf(label,sizeof label,"%d window%s",count,count==1?"":"s");
+        text_color(x+pad,y+ch-pad-barfont->descent,cw-2*pad,label,&barcol.sep);
     }
     XCopyArea(dpy,backing,overlay,gc,0,0,width,height,0,0);
 }
