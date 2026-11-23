@@ -578,7 +578,7 @@ static void animation_settings_read(void) {
     int changed = enabled != opt_fade || reduced != opt_reduce_motion ||
         duration != opt_fade_ms || closing != opt_close_ms || owner != settings_owner ||
         workspace != opt_workspace_ms || overview != opt_overview_ms;
-    if (owner != settings_owner) ws_last_sequence = 0;
+    if (owner != settings_owner) ws_last_sequence = layout_request.sequence = 0;
     opt_workspace_ms = workspace;
     opt_overview_ms = overview;
     opt_close_ms = closing;

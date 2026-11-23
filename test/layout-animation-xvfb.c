@@ -31,13 +31,14 @@ static void check(int ok, const char *what) {
     printf("%s: %s\n", ok ? "PASS" : "FAIL", what);
     if (!ok) failures++;
 }
-static void config(int layout_ms) {
+static void config(int layout_ms, int close_ms) {
     FILE *f = fopen(config_path, "w"); assert(f);
     fprintf(f, "compositor = 1\nanimations = 1\nreduce_motion = 0\n"
-        "animation_open_ms = 0\nanimation_close_ms = 0\nanimation_layout_ms = %d\n"
+        "animation_open_ms = 0\nanimation_close_ms = %d\nanimation_layout_ms = %d\n"
         "nmaster = 2\nbar_on = 0\ngaps_on = 0\nborder = 0\nfocus = click\n"
-        "bind = mod+Shift+r:reload_config\nbind = mod+k:move_up\nbind = mod+j:move_down\n",
-        layout_ms);
+        "bind = mod+Shift+r:reload_config\nbind = mod+k:move_up\nbind = mod+j:move_down\n"
+        "bind = mod+Control+r:restart\nbind = mod+m:monocle\nbind = mod+t:tile\n",
+        close_ms, layout_ms);
     assert(fclose(f) == 0);
 }
 static Time server_time(void) {
@@ -134,6 +135,17 @@ static int transit_gap(unsigned ms) {
     }
     return 0;
 }
+static long heartbeat(void) {
+    Atom type; int format; unsigned long n = 0, extra = 0;
+    unsigned char *data = NULL;
+    long value = 0;
+    if (XGetWindowProperty(d, root, XInternAtom(d, "_DANIWM_HEARTBEAT", False), 0, 2,
+            False, XA_CARDINAL, &type, &format, &n, &extra, &data) == Success &&
+        data && format == 32 && n == 2)
+        value = ((long *)data)[0] * 1000000L + ((long *)data)[1];
+    if (data) XFree(data);
+    return value;
+}
 static Window map_client(unsigned long color) {
     Window w = XCreateSimpleWindow(d, root, 10, 10, 200, 120, 0, 0, color);
     XMapWindow(d, w); XFlush(d);
@@ -228,7 +240,7 @@ int main(int argc, char **argv) {
     wait_ms(1200);
 
     /* 4. Repeated short swaps settle back to the same retained resources. */
-    config(100); action(XK_r, Mod4Mask | ShiftMask); wait_ms(600);
+    config(100, 0); action(XK_r, Mod4Mask | ShiftMask); wait_ms(600);
     uint64_t before_count, before_bytes, after_count, after_bytes;
     resources(owner, &before_count, &before_bytes);
     unsigned swaps = 0;
@@ -249,12 +261,26 @@ int main(int argc, char **argv) {
           "retained layout pictures are released after rapid swaps settle");
 
     /* 5. Disabled path: duration 0 makes swaps instant. */
-    config(0); action(XK_r, Mod4Mask | ShiftMask); wait_ms(300);
+    config(0, 0); action(XK_r, Mod4Mask | ShiftMask); wait_ms(300);
     old_top = top_of(a, b);
     early = swap_and_sample(a, b, 60);
     new_top = top_of(a, b);
     check(new_top != old_top && early == (new_top == a ? COLOR_A : COLOR_B),
           "animation_layout_ms = 0 keeps swaps instant");
+
+    /* 6. After a WM restart with the same compositor, swaps animate at once. */
+    config(1000, 0); action(XK_r, Mod4Mask | ShiftMask); wait_ms(300);
+    long beat = heartbeat();
+    action(XK_r, Mod4Mask | ControlMask);
+    for (unsigned i = 0; i < 300 && heartbeat() == beat; i++) tick();
+    check(heartbeat() != beat && compositor() == owner, "WM restarts and keeps the same compositor");
+    wait_ms(800);
+    old_top = top_of(a, b);
+    early = swap_and_sample(a, b, 60);
+    new_top = top_of(a, b);
+    check(new_top != old_top && early == (old_top == a ? COLOR_A : COLOR_B),
+          "after restart: first swap animates (top slot shows the old picture after 60 ms)");
+    wait_ms(1200);
 
     XDestroyWindow(d, a); XDestroyWindow(d, b); XDestroyWindow(d, stamp);
     XCloseDisplay(d);
