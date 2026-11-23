@@ -81,10 +81,20 @@ The model rejects the PREPARE if any of these is true:
 - The message is older than its deadline (`late`).
 - A member has no named pixmap for its current generation (`unnamed`).
 - The sum of member image bytes is over 32 MiB (`budget`).
+- A member is not in the root tree when the model reads it (`unnamed`).
 
-The model checks the budget before it keeps any image.
+The model checks the budget before it keeps any image. At PREPARE it records
+the stacking rank of each member from the root tree. Unmapped windows keep
+their place, so the rank stays valid after the unmaps.
 
-## Results (`make check-ws-capture`, 3 runs in a row, all PASS)
+Other ways a scene ends:
+
+- The compositor owner property changes to another window (`replaced`).
+- A kept image fails its check before use (`xerror`). The model checks each
+  image with `XGetGeometry` before it uses it. Its error handler also drops a
+  kept image that an asynchronous error names.
+
+## Results (`make check-ws-capture`, 4 runs in a row, all PASS)
 
 | Case | Expected | Result |
 | --- | --- | --- |
@@ -103,17 +113,31 @@ The model checks the budget before it keeps any image.
 | Commit-last order: member destroyed during retention | kept image valid, ADMIT | PASS (`ADMIT 3 cc0000 00ffff cc00cc`) |
 | 4096×2048 member | BYPASS budget before retention | PASS |
 | Rapid A→B→A, model running (smoke only, outcome varies) | each switch reported once | PASS (seen: `superseded`/`ADMIT`, then `ADMIT`/`unnamed`) |
+| Hidden (monocle-like) client on the outgoing workspace, WM lists viewable clients only | ADMIT with the viewable count | PASS (`ADMIT 2`) |
+| Negative control: WM also lists the hidden client | BYPASS unnamed | PASS |
+| Stacking: w1 raised above w4, then w4 raised above w1 | ADMIT lists images bottom to top | PASS (`cc00cc cc0000`, then `cc0000 cc00cc`) |
+| Commit-last order: compositor owner property changes while the scene holds every image | BYPASS replaced; capability returns after restore | PASS |
+| Commit-last order: another client frees one kept image before commit | BYPASS xerror; no unexpected X error | PASS |
+| Race: member destroyed before the model reads PREPARE | BYPASS unnamed | PASS |
 | 64 ordinary switches, daniwm order | 64 ADMIT; XRes back to baseline | PASS (13/13 resources, 49600/49600 bytes) |
 | Commit-last order: 16 epoch cancels of a held complete scene + 2 TTL expiries | 18 ended; XRes back to baseline | PASS (13/13, 49600/49600) |
 | Model X errors | 0 unexpected | PASS |
 
 No-wait metric with the model stopped (`SIGSTOP`): enqueue 107–564 µs, server
-completion 209–765 µs over 7 runs. The WM sequence does not depend on the model.
+completion 209–765 µs across all runs. The WM sequence does not depend on the model.
 
 The first full run used commit-last as the default order. Review found that
 daniwm commits first. With commit-first, the first model ended every scene
 as `incomplete`. The model now records an early commit. The results above
 are from 3 runs in a row after that change.
+
+The open items of the first review (stacking, viewable member set, compositor
+replacement, forced X error) were added later. All cases above passed in 4
+runs in a row after that.
+
+The same change fixed a harness bug: the driver used `poll()` on the pipe
+while a line could already wait in the stdio buffer. That bug could only give
+a false FAIL (`(no report)`), never a false PASS, so earlier results hold.
 
 ## Findings
 
@@ -135,6 +159,16 @@ are from 3 runs in a row after that change.
    not treat the commit as the end of collection.
 6. **Retention extends the storage lifetime.** It does not add a copy, but it
    keeps memory that the server would free at unmap. The budget counts it.
+7. **The WM must list viewable clients only.** In monocle, the other clients
+   of the workspace are already unmapped and have no named pixmap. Listing
+   them makes every monocle switch bypass.
+8. **Any client can free a kept image.** Core X lets another client free the
+   named pixmap by its XID. The compositor must check each image before use
+   and must not free an image that is already gone.
+9. **The member must still exist when the model reads PREPARE.** The stacking
+   rank comes from the current tree. A member that is destroyed before the
+   model reads PREPARE makes the scene bypass. A member that is destroyed
+   after the model keeps its image stays valid.
 
 ## Limits and open items
 
@@ -143,15 +177,18 @@ are from 3 runs in a row after that change.
   clock.
 - The WM is simulated. Real `view()`, `send_to()`, `move_to()`, scratchpad and
   reload paths are not wired. This is a 3-I item.
-- Member set: the transaction must list only *viewable* outgoing clients. In
-  monocle, hidden clients are already unmapped. If the WM lists every client
-  with `c->ws == old`, every monocle switch bypasses with `unnamed`. 3-I item.
-- Stacking order: the scene records no stacking order. Not covered. 3-P2 needs
-  it to draw the members.
+- Member set: the prototype WM lists viewable clients only (tested). The real
+  `view()` must use the same rule. 3-I item.
+- Stacking order: recorded from the tree at PREPARE (tested). A restack
+  between PREPARE and the unmaps is not covered. Docks and the bar are not
+  members, so their place is a 3-P2 item.
 - Stale generations: only the headless test covers them. The Xvfb A→B→A case
   is a smoke test.
-- Not covered yet: compositor-owner replacement (`_DANIWM_TEST_WS_COMP_V1`
-  change) while a scene is held, and forced partial X errors during retention.
+- Asynchronous X error on a kept image: the handler branch is not exercised.
+  The forced-free case ends in the synchronous check before use. 3-P2 item,
+  where Render requests use the images.
+- Compositor replacement is simulated by a property change. A real second
+  compositor process that takes the selection is not tested.
 - Content isolation during a live crossfade (remap while the scene is drawn):
   3-P2. The model frees the scene at admit.
 - Single monitor only. Per-monitor clipping, negative and unequal outputs:

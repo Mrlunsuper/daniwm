@@ -85,6 +85,16 @@ int main(void) {
     wsp_clear(&scene, release);
     assert(released == 2 && scene.phase == WSP_IDLE && wsp_member(&scene, 100) < 0);
 
+    /* Stacking order: members sort bottom to top by recorded rank. */
+    WSTxn three = txn(10, 3);
+    uint64_t small[WSP_MEMBERS] = {1, 1, 1}, g3[WSP_MEMBERS] = {1, 1, 1};
+    assert(wsp_begin(&scene, &three, small, g3, 0));
+    scene.m[0].rank = 7; scene.m[1].rank = 2; scene.m[2].rank = 5;
+    unsigned order[WSP_MEMBERS];
+    wsp_stack_order(&scene, order);
+    assert(order[0] == 1 && order[1] == 2 && order[2] == 0);
+    wsp_clear(&scene, release);
+
     /* An empty outgoing workspace is ready at once and owns nothing. */
     uint64_t none[WSP_MEMBERS] = {0};
     assert(wsp_begin(&scene, &empty, none, none, 0) && scene.phase == WSP_READY);
@@ -100,6 +110,6 @@ int main(void) {
     }
     assert(released == 3000);
     puts("PASS: 3-P1 codec bounds, owner/epoch/sequence/age checks, padded budget admission, "
-         "generation-bound retention and 2000 scene cycles");
+         "generation-bound retention, stacking order and 2000 scene cycles");
     return 0;
 }

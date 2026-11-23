@@ -24,11 +24,11 @@
 enum {
     WSP_OK, WSP_INVALID, WSP_STALE, WSP_OVERWRITTEN, WSP_LATE, WSP_UNNAMED,
     WSP_BUDGET_EXCEEDED, WSP_OWNER, WSP_EPOCH, WSP_EXPIRED, WSP_SUPERSEDED,
-    WSP_CANCELLED
+    WSP_CANCELLED, WSP_REPLACED, WSP_XERROR
 };
 static const char *const wsp_reason_names[] = {
     "ok", "invalid", "stale", "overwritten", "late", "unnamed", "budget",
-    "owner", "epoch", "expired", "superseded", "cancelled"
+    "owner", "epoch", "expired", "superseded", "cancelled", "replaced", "xerror"
 };
 
 /* Words: version, wm, compositor, epoch, sequence, from, to, sent_ms,
@@ -89,6 +89,7 @@ typedef struct {
     uint64_t generation;
     unsigned long pixmap;
     uint64_t bytes;
+    unsigned rank; /* position in the root stacking order, bottom = 0 */
 } WSMember;
 typedef struct {
     int phase;
@@ -138,6 +139,16 @@ static inline int wsp_retain(WSScene *s, int index, unsigned long pixmap, uint64
     s->m[index].pixmap = pixmap;
     if (++s->retained == s->txn.count) s->phase = WSP_READY;
     return 1;
+}
+/* Member indices from bottom to top of the recorded stacking order. */
+static inline void wsp_stack_order(const WSScene *s, unsigned *order) {
+    for (uint32_t i = 0; i < s->txn.count; i++) order[i] = i;
+    for (uint32_t i = 1; i < s->txn.count; i++) {
+        unsigned v = order[i];
+        uint32_t j = i;
+        while (j > 0 && s->m[order[j - 1]].rank > s->m[v].rank) { order[j] = order[j - 1]; j--; }
+        order[j] = v;
+    }
 }
 static inline int wsp_expired(const WSScene *s, int64_t now_ms) {
     return s->phase != WSP_IDLE && now_ms - s->prepared_ms > WSP_TTL_MS;

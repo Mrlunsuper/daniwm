@@ -64,10 +64,16 @@ static unsigned bpp_of[33], pad_of[33];
 static int trapping, trapped;
 static unsigned unexpected_errors;
 static volatile sig_atomic_t model_quit;
-static Atom A_OWNER, A_EPOCH, A_TXN, A_EVENT, A_DESKTOP;
+static Atom A_OWNER, A_EPOCH, A_TXN, A_EVENT, A_DESKTOP, A_COMP;
+static int scene_xerror;
 
 static int model_error(Display *d, XErrorEvent *e) {
     if (trapping) { trapped = 1; return 0; }
+    /* A kept image died under us: drop it from the scene, end it at loop top. */
+    for (uint32_t i = 0; scene.phase != WSP_IDLE && i < scene.txn.count; i++)
+        if (scene.m[i].pixmap && e->resourceid == scene.m[i].pixmap) {
+            scene.m[i].pixmap = 0; scene_xerror = 1; return 0;
+        }
     char text[128];
     XGetErrorText(d, e->error_code, text, sizeof(text));
     fprintf(stderr, "model: unexpected X error %s req=%u/%u\n", text, e->request_code, e->minor_code);
@@ -105,6 +111,12 @@ static void name_pixmap(Track *t) {
     }
     t->pixmap = pm; t->w = w; t->h = h; t->depth = depth;
 }
+static void held(void) {
+    printf("HELD %" PRIu32, scene.txn.sequence);
+    for (uint32_t i = 0; i < scene.txn.count; i++) printf(" 0x%lx", scene.m[i].pixmap);
+    printf("\n");
+    fflush(stdout);
+}
 static void report(uint32_t sequence, int reason) {
     printf("SCENE %" PRIu32 " BYPASS %s\n", sequence, wsp_reason_names[reason]);
     fflush(stdout);
@@ -121,13 +133,25 @@ static unsigned long center_pixel(Pixmap pm, unsigned w, unsigned h) {
     XDestroyImage(image);
     return p;
 }
+static void scene_end(int reason);
 static void admit(void) {
-    printf("SCENE %" PRIu32 " ADMIT %" PRIu32, scene.txn.sequence, scene.txn.count);
+    unsigned w[WSP_MEMBERS] = {0}, h[WSP_MEMBERS] = {0}, order[WSP_MEMBERS];
+    /* Validate every kept image before use; a dead one ends the scene. */
     for (uint32_t i = 0; i < scene.txn.count; i++) {
-        Window r; int x, y; unsigned w = 0, h = 0, b, depth;
-        XGetGeometry(md, scene.m[i].pixmap, &r, &x, &y, &w, &h, &b, &depth);
-        printf(" %06lx", center_pixel(scene.m[i].pixmap, w, h));
+        Window r; int x, y; unsigned b, depth;
+        trapping = 1; trapped = 0;
+        Status ok = scene.m[i].pixmap &&
+            XGetGeometry(md, scene.m[i].pixmap, &r, &x, &y, &w[i], &h[i], &b, &depth);
+        XSync(md, False);
+        trapping = 0;
+        if (!ok || trapped) scene.m[i].pixmap = 0;
     }
+    for (uint32_t i = 0; i < scene.txn.count; i++)
+        if (!scene.m[i].pixmap) { scene_end(WSP_XERROR); return; }
+    printf("SCENE %" PRIu32 " ADMIT %" PRIu32, scene.txn.sequence, scene.txn.count);
+    wsp_stack_order(&scene, order);
+    for (uint32_t i = 0; i < scene.txn.count; i++)
+        printf(" %06lx", center_pixel(scene.m[order[i]].pixmap, w[order[i]], h[order[i]]));
     printf("\n");
     fflush(stdout);
     wsp_clear(&scene, release_pixmap);
@@ -166,7 +190,18 @@ static void prepare(const XClientMessageEvent *e) {
         }
         generations[i] = k->generation;
     }
-    if (!wsp_begin(&scene, &t, bytes, generations, mono_ms())) report(sequence, WSP_BUDGET_EXCEEDED);
+    if (!wsp_begin(&scene, &t, bytes, generations, mono_ms())) {
+        report(sequence, WSP_BUDGET_EXCEEDED); return;
+    }
+    /* Unmapped windows keep their place, so the current tree gives the order. */
+    Window r, p, *kids = NULL; unsigned nk = 0, found = 0;
+    if (XQueryTree(md, mroot, &r, &p, &kids, &nk))
+        for (unsigned k = 0; k < nk; k++) {
+            int index = wsp_member(&scene, (uint32_t)kids[k]);
+            if (index >= 0) { scene.m[index].rank = k; found++; }
+        }
+    if (kids) XFree(kids);
+    if (found != t.count) scene_end(WSP_UNNAMED);
 }
 static void model_event(XEvent *ev) {
     switch (ev->type) {
@@ -197,6 +232,7 @@ static void model_event(XEvent *ev) {
             if (wsp_retain(&scene, index, t->pixmap, t->generation)) {
                 t->pixmap = None;
                 if (scene.phase == WSP_READY && scene.committed) admit();
+                else if (scene.phase == WSP_READY) held();
             } else scene_end(WSP_UNNAMED);
         }
         t->mapped = 0;
@@ -212,6 +248,8 @@ static void model_event(XEvent *ev) {
     case PropertyNotify:
         if (ev->xproperty.window != mroot) break;
         if (ev->xproperty.atom == A_OWNER) scene_end(WSP_OWNER);
+        else if (ev->xproperty.atom == A_COMP &&
+                 (Window)prop_word(md, mroot, A_COMP, XA_WINDOW) != mowner) scene_end(WSP_REPLACED);
         else if (ev->xproperty.atom == A_EPOCH) scene_end(WSP_EPOCH);
         else if (ev->xproperty.atom == A_DESKTOP && scene.phase != WSP_IDLE &&
                  prop_word(md, mroot, A_DESKTOP, XA_CARDINAL) == scene.txn.to) {
@@ -238,6 +276,7 @@ static int model_main(const char *display) {
     A_TXN = XInternAtom(md, WSP_TXN_ATOM, False);
     A_EVENT = XInternAtom(md, WSP_EVENT_ATOM, False);
     A_DESKTOP = XInternAtom(md, "_NET_CURRENT_DESKTOP", False);
+    A_COMP = XInternAtom(md, WSP_COMP_ATOM, False);
     int nf;
     XPixmapFormatValues *f = XListPixmapFormats(md, &nf);
     for (int i = 0; f && i < nf; i++) if (f[i].depth > 0 && f[i].depth <= 32) {
@@ -272,7 +311,10 @@ static int model_main(const char *display) {
     fflush(stdout);
     int fd = ConnectionNumber(md);
     while (!model_quit) {
-        while (XPending(md)) { XEvent ev; XNextEvent(md, &ev); model_event(&ev); }
+        while (XPending(md)) {
+            XEvent ev; XNextEvent(md, &ev); model_event(&ev);
+            if (scene_xerror) { scene_xerror = 0; scene_end(WSP_XERROR); }
+        }
         if (wsp_expired(&scene, mono_ms())) scene_end(WSP_EXPIRED);
         fd_set set; FD_ZERO(&set); FD_SET(fd, &set);
         struct timeval tv = {0, 20000};
@@ -291,7 +333,9 @@ static int model_main(const char *display) {
 static Display *wm, *app;
 static Window root, wm_owner;
 static Window ws[2][8];
+static int hidden[2][8]; /* like monocle-hidden clients: never mapped */
 static unsigned nws[2], current;
+static int list_all; /* negative control: also list hidden clients */
 static uint32_t sequence, epoch = 1;
 static pid_t model_pid;
 static FILE *model_out;
@@ -315,9 +359,17 @@ static int capability(void) {
 static Window client(unsigned slot, unsigned long color, unsigned w, unsigned h) {
     Window win = XCreateSimpleWindow(app, root, 20 + 30 * (int)nws[slot], 20, w, h, 0, 0, color);
     XSync(app, False);
+    hidden[slot][nws[slot]] = 0;
     ws[slot][nws[slot]++] = win;
     if (slot == current) { XMapWindow(wm, win); XSync(wm, False); }
     return win;
+}
+static void forget(unsigned slot, Window win) {
+    for (unsigned i = 0; i < nws[slot]; i++) if (ws[slot][i] == win) {
+        nws[slot]--;
+        ws[slot][i] = ws[slot][nws[slot]]; hidden[slot][i] = hidden[slot][nws[slot]];
+        return;
+    }
 }
 static void paint(Window win, unsigned long color) {
     GC gc = XCreateGC(app, win, 0, NULL);
@@ -326,19 +378,31 @@ static void paint(Window win, unsigned long color) {
     XFreeGC(app, gc);
     XSync(app, False);
 }
-enum { HOOK_NONE, HOOK_OWNER, HOOK_EPOCH, HOOK_DESTROY, HOOK_NO_COMMIT };
+enum { HOOK_NONE, HOOK_OWNER, HOOK_EPOCH, HOOK_DESTROY, HOOK_NO_COMMIT, HOOK_COMP, HOOK_FREE };
 static Window destroy_target;
 static long hook_delay_ms;
 /* 0: daniwm view() order (desktop before unmaps). 1: commit after the maps. */
 static int commit_last;
 static void change(int hook) {
-    if (hook != HOOK_OWNER && hook != HOOK_EPOCH) return;
+    if (hook != HOOK_OWNER && hook != HOOK_EPOCH && hook != HOOK_COMP) return;
     /* Test ordering control only: let the model reach the in-flight scene. */
     if (hook_delay_ms) { XSync(wm, False); sleep_ms(hook_delay_ms); }
     if (hook == HOOK_OWNER) {
         wm_owner = XCreateSimpleWindow(wm, root, -5, -5, 1, 1, 0, 0, 0);
         set_word(wm, D_OWNER, XA_WINDOW, wm_owner);
-    } else set_word(wm, D_EPOCH, XA_CARDINAL, ++epoch);
+    } else if (hook == HOOK_EPOCH) set_word(wm, D_EPOCH, XA_CARDINAL, ++epoch);
+    else set_word(wm, D_COMP, XA_WINDOW, wm_owner); /* another compositor owner */
+}
+static int model_line(char *line, size_t size, int timeout_ms);
+/* Test ordering control: wait until the model holds every image. */
+static Pixmap wait_held(uint32_t seq) {
+    char line[256], want[32];
+    snprintf(want, sizeof(want), "HELD %" PRIu32 " ", seq);
+    XSync(wm, False);
+    while (model_line(line, sizeof(line), 2500))
+        if (!strncmp(line, want, strlen(want)))
+            return (Pixmap)strtoul(line + strlen(want), NULL, 16);
+    return None;
 }
 /* The simulated WM never reads from or waits for the compositor model. */
 static uint32_t switch_ws(unsigned to, uint32_t deadline, int hook) {
@@ -351,8 +415,10 @@ static uint32_t switch_ws(unsigned to, uint32_t deadline, int hook) {
         seq = ++sequence;
         t.wm = (uint32_t)wm_owner; t.compositor = (uint32_t)comp; t.epoch = epoch;
         t.sequence = seq; t.from = from; t.to = to; t.sent_ms = (uint32_t)mono_ms();
-        t.deadline_ms = deadline; t.count = nws[from];
-        for (unsigned i = 0; i < nws[from]; i++) t.members[i] = (uint32_t)ws[from][i];
+        t.deadline_ms = deadline;
+        /* Members are the viewable outgoing clients only. */
+        for (unsigned i = 0; i < nws[from]; i++)
+            if (list_all || !hidden[from][i]) t.members[t.count++] = (uint32_t)ws[from][i];
         unsigned long words[WSP_WORDS];
         size_t n = wsp_encode(words, &t);
         XChangeProperty(wm, root, D_TXN, XA_CARDINAL, 32, PropModeReplace,
@@ -367,9 +433,17 @@ static uint32_t switch_ws(unsigned to, uint32_t deadline, int hook) {
     if (!commit_last && hook != HOOK_NO_COMMIT) set_word(wm, D_DESKTOP, XA_CARDINAL, to);
     /* daniwm order: owner/epoch change lands while the scene collects. */
     if (!commit_last) change(hook);
-    for (unsigned i = 0; i < nws[from]; i++) XUnmapWindow(wm, ws[from][i]);
-    for (unsigned i = 0; i < nws[to]; i++) XMapWindow(wm, ws[to][i]);
-    if (hook == HOOK_DESTROY) { XSync(wm, False); XDestroyWindow(app, destroy_target); XSync(app, False); }
+    for (unsigned i = 0; i < nws[from]; i++) if (!hidden[from][i]) XUnmapWindow(wm, ws[from][i]);
+    for (unsigned i = 0; i < nws[to]; i++) if (!hidden[to][i]) XMapWindow(wm, ws[to][i]);
+    /* Test-only fault: free one kept image from another connection. */
+    if (hook == HOOK_FREE) {
+        Pixmap victim = wait_held(seq);
+        if (victim) { XFreePixmap(wm, victim); XSync(wm, False); }
+    }
+    if (hook == HOOK_DESTROY) {
+        wait_held(seq);
+        XDestroyWindow(app, destroy_target); XSync(app, False);
+    }
     /* Commit-last order: the change lands while the scene holds every image. */
     if (commit_last) change(hook);
     if (commit_last && hook != HOOK_NO_COMMIT) set_word(wm, D_DESKTOP, XA_CARDINAL, to);
@@ -401,7 +475,7 @@ static int scene_line(uint32_t seq, char *out, size_t size) {
             snprintf(out, size, "%s", line + strlen(want));
             return 1;
         }
-        printf("INFO: model %s\n", line);
+        if (strncmp(line, "HELD ", 5)) printf("INFO: model %s\n", line);
     }
     snprintf(out, size, "(no report)");
     return 0;
@@ -483,6 +557,7 @@ int main(int argc, char **argv) {
     }
     close(fds[1]);
     model_out = fdopen(fds[0], "r");
+    setvbuf(model_out, NULL, _IONBF, 0); /* poll() must see every pending line */
     char line[256];
     assert(model_line(line, sizeof(line), 3000) && !strncmp(line, "READY", 5));
     Window model_owner = (Window)strtoul(line + 6, NULL, 16);
@@ -588,7 +663,7 @@ int main(int argc, char **argv) {
     char want[64];
     snprintf(want, sizeof(want), "ADMIT %u cc0000 00ffff cc00cc", nws[0]);
     expect(s, want, "ordered (commit last): destroy during retention, kept image stays valid");
-    for (unsigned i = 0; i < nws[0]; i++) if (ws[0][i] == w2) ws[0][i] = ws[0][--nws[0]];
+    forget(0, w2);
     settle(0);
 
     /* 10. Over budget: admission fails before any retention. */
@@ -599,7 +674,7 @@ int main(int argc, char **argv) {
     expect(s, "BYPASS budget", "over-budget scene bypasses before retention");
     settle(0);
     XDestroyWindow(app, big); XSync(app, False);
-    nws[0]--;
+    forget(0, big);
     sleep_ms(50);
 
     /* 11. Rapid A->B->A with a running model: the older switch never revives. */
@@ -613,6 +688,69 @@ int main(int argc, char **argv) {
            !strcmp(r1, "BYPASS unnamed")) && strcmp(r2, "(no report)"),
           "rapid A->B->A: each switch reported once, newest wins");
     sleep_ms(100);
+
+    /* 12a. Member set: only viewable clients. A monocle-like hidden client stays out. */
+    Window shy = client(0, 0x404040, 120, 90);
+    XUnmapWindow(wm, shy); XSync(wm, False);
+    hidden[0][nws[0] - 1] = 1;
+    sleep_ms(50);
+    unsigned viewable = 0;
+    for (unsigned i = 0; i < nws[0]; i++) if (!hidden[0][i]) viewable++;
+    s = switch_ws(1, 1000, HOOK_NONE);
+    snprintf(want, sizeof(want), "ADMIT %u", viewable);
+    expect(s, want, "viewable members only: a hidden client does not block the scene");
+    settle(0);
+    sleep_ms(50);
+    list_all = 1;
+    s = switch_ws(1, 1000, HOOK_NONE);
+    list_all = 0;
+    expect(s, "BYPASS unnamed", "negative control: listing a hidden client bypasses");
+    settle(0);
+    XDestroyWindow(app, shy); XSync(app, False);
+    forget(0, shy);
+    sleep_ms(50);
+
+    /* 12b. Stacking: ADMIT lists images bottom to top. ws0 is w1 and w4 now. */
+    XRaiseWindow(wm, w1); XSync(wm, False);
+    sleep_ms(50);
+    s = switch_ws(1, 1000, HOOK_NONE);
+    expect(s, "ADMIT 2 cc00cc cc0000", "stacking: w1 raised above w4 is drawn last");
+    settle(0);
+    XRaiseWindow(wm, w4); XSync(wm, False);
+    sleep_ms(50);
+    s = switch_ws(1, 1000, HOOK_NONE);
+    expect(s, "ADMIT 2 cc0000 cc00cc", "stacking: w4 raised above w1 is drawn last");
+    settle(0);
+
+    /* 12c. Compositor owner replaced while the scene holds every image. */
+    commit_last = 1; hook_delay_ms = 100;
+    sleep_ms(50);
+    s = switch_ws(1, 1000, HOOK_COMP);
+    expect(s, "BYPASS replaced", "ordered (commit last): compositor replacement cancels the scene");
+    commit_last = 0; hook_delay_ms = 0;
+    set_word(wm, D_COMP, XA_WINDOW, model_owner); XSync(wm, False);
+    sleep_ms(50);
+    check(capability(), "capability returns after the owner is restored");
+    settle(0);
+
+    /* 12d. Forced X error: another client frees one kept image before commit. */
+    commit_last = 1;
+    sleep_ms(50);
+    s = switch_ws(1, 1000, HOOK_FREE);
+    expect(s, "BYPASS xerror", "ordered (commit last): a freed kept image ends the scene");
+    commit_last = 0;
+    settle(0);
+
+    /* 12e. Race: a member is destroyed before the model reads PREPARE. */
+    Window gone = client(0, 0x00aaaa, 120, 90);
+    sleep_ms(100);
+    model_stop();
+    s = switch_ws(1, 1000, HOOK_NONE);
+    XDestroyWindow(app, gone); XSync(app, False);
+    model_cont();
+    expect(s, "BYPASS unnamed", "race: member destroyed before PREPARE is read bypasses");
+    forget(0, gone);
+    settle(0);
 
     /* 12. 64 admitted cycles return model resources to the baseline. */
     settle(1); settle(0);
@@ -665,7 +803,6 @@ int main(int argc, char **argv) {
         if (!strncmp(line, "ERRORS ", 7)) errors = atoi(line + 7);
     waitpid(model_pid, NULL, 0);
     check(errors == 0, "model saw no unexpected X error");
-    (void)w4;
     XCloseDisplay(app); XCloseDisplay(wm);
     printf("%s: 3-P1 workspace capture prototype (%d failure(s))\n", failures ? "FAIL" : "PASS", failures);
     return failures ? 1 : 0;
