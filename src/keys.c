@@ -4,6 +4,7 @@
 #include "layout-animation.h"
 #include "animation-lifecycle.h"
 #include "workspace-animation.h"
+#include "overview-animation.h"
 #include "xerr.h"
 #include <X11/Xatom.h>
 #include <time.h>
@@ -168,9 +169,22 @@ void animation_settings_publish(void) {
         (unsigned long)ANIMATION_WORKSPACE_MS};
     XChangeProperty(dpy, root, XInternAtom(dpy, WORKSPACE_SETTINGS_ATOM, False),
         XA_CARDINAL, 32, PropModeReplace, (unsigned char *)workspace, 3);
+    unsigned long overview[] = {OVERVIEW_ANIMATION_VERSION, checkwin,
+        (unsigned long)ANIMATION_OVERVIEW_MS};
+    XChangeProperty(dpy, root, XInternAtom(dpy, OVERVIEW_SETTINGS_ATOM, False),
+        XA_CARDINAL, 32, PropModeReplace, (unsigned char *)overview, 3);
     XChangeProperty(dpy, root, XInternAtom(dpy, MONITOR_EPOCH_ATOM, False),
         XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&monitor_epoch, 1);
     XFlush(dpy);
+}
+/* Mark the overview window for dani-comp before it maps; None clears it. */
+void animation_overview_role(Window overlay) {
+    if (!dpy || !checkwin) return;
+    Atom atom = XInternAtom(dpy, OVERVIEW_ROLE_ATOM, False);
+    if (!overlay) { XDeleteProperty(dpy, root, atom); return; }
+    unsigned long role[] = {OVERVIEW_ANIMATION_VERSION, checkwin, overlay};
+    XChangeProperty(dpy, root, atom, XA_CARDINAL, 32, PropModeReplace,
+        (unsigned char *)role, 3);
 }
 /* Monitor geometry changed: any workspace image from before is stale. */
 void animation_monitor_epoch_bump(void) {

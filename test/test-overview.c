@@ -113,11 +113,13 @@ int untrap_errors(Display *d) { (void)d; assert(trapped); trapped=0; return trap
 #define XRenderSetPictureFilter(...) ((void)0)
 #define XRenderComposite(...) ((void)0)
 #include "../src/overview.c"
+static Window role_window;
+void animation_overview_role(Window w) { role_window=w; }
 
 #include "../src/ewmh.h"
 int nmons=1, gaps_on, gap_inner, BORDER;
 int COMPOSITOR, ANIMATIONS, REDUCE_MOTION, ANIMATION_OPEN_MS, ANIMATION_CLOSE_MS,
-    ANIMATION_LAYOUT_MS;
+    ANIMATION_LAYOUT_MS, ANIMATION_OVERVIEW_MS;
 Window checkwin;
 int XChangeProperty(Display *d, Window w, Atom p, Atom t, int f, int m,
                     const unsigned char *data, int n) {
@@ -220,16 +222,18 @@ int main(void) {
     assert(drag.win==42);
     drag.win=None;
     overview_show(0); assert(overview_is_open());
+    assert(role_window && role_window==overlay); /* marked before it maps */
     int g=grabs; unsigned long s=serial;
     overview_show(0); assert(grabs==g && serial==s);
     overview_select(2); assert(overview_selection()==2 && curws==0 && views==0 && focuses==0);
     overview_select(-1); overview_select(NWS); assert(overview_selection()==2);
     int arms=hover_arms;
     commit(None); assert(curws==2 && views==1 && !overview_is_open());
+    assert(role_window==None);
     assert(hover_arms==arms+1);
     assert(overview_selection()==-1);
     int u=ungrabs; clean(); clean(); assert(ungrabs==u);
-    grab_result=AlreadyGrabbed; overview_show(0); assert(!overview_is_open()); clean();
+    grab_result=AlreadyGrabbed; overview_show(0); assert(!overview_is_open() && role_window==None); clean();
     grab_result=GrabSuccess; trap_ok=0; g=grabs; overview_show(0);
     assert(!overview_is_open() && grabs==g); clean(); trap_ok=1;
     draw_ok=0; overview_show(0); assert(!overview_is_open()); clean(); draw_ok=1;
@@ -340,6 +344,34 @@ int main(void) {
     removed->win=12345; removed->ws=curws; clients=removed; sel=removed;
     unmanage(removed->win);
     assert(!overview_is_open() && !clients && !sel);
+    clean();
+    /* 4B highlight: off means no move and no timer. */
+    mons[0].w=1280; mons[0].h=720; NWS=5; curws=0;
+    ANIMATIONS=0; ANIMATION_OVERVIEW_MS=200;
+    overview_show(0); overview_select(1);
+    assert(from_sel<0 && overview_next_ms()==-1 && highlight(1,mono_ms())==100);
+    clean();
+    ANIMATIONS=1; REDUCE_MOTION=1;
+    overview_show(0); overview_select(1); assert(from_sel<0 && overview_next_ms()==-1); clean();
+    REDUCE_MOTION=0; ANIMATION_OVERVIEW_MS=0;
+    overview_show(0); overview_select(1); assert(from_sel<0 && overview_next_ms()==-1); clean();
+    /* On: the old card fades out while the new one fades in. */
+    ANIMATION_OVERVIEW_MS=200;
+    overview_show(0); overview_select(1);
+    assert(from_sel==0 && pending==1);
+    long next=overview_next_ms(); assert(next>=0 && next<=FRAME_MS);
+    long long t0=sel_start;
+    assert(highlight(1,t0)==0 && highlight(0,t0)==100 && highlight(2,t0)==0);
+    assert(highlight(1,t0+100)==50 && highlight(0,t0+100)==50);
+    assert(highlight(1,t0+199)>=99 && highlight(0,t0+199)<=1);
+    assert(highlight(1,t0+200)==100 && from_sel<0 && overview_next_ms()==-1);
+    /* The selection stays pending; commit takes the new target mid-move. */
+    int v0=views;
+    overview_select(2); assert(from_sel==1 && curws==0 && views==v0);
+    commit(None); assert(curws==2 && from_sel<0 && overview_next_ms()==-1);
+    /* Hide in the middle stops the move. */
+    overview_show(0); overview_select(3); assert(from_sel>=0);
+    overview_hide(0); assert(from_sel<0 && overview_next_ms()==-1);
     clean(); free(fake_display);
     puts("overview offline tests: OK");
     return 0;

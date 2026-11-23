@@ -240,6 +240,7 @@ void config_defaults(void) {
     ANIMATION_CLOSE_MS = ANIMATION_CLOSE_DEFAULT;
     ANIMATION_LAYOUT_MS = 0;
     ANIMATION_WORKSPACE_MS = 0;
+    ANIMATION_OVERVIEW_MS = 0;
     SWIPE_ENABLED = 0; SWIPE_THRESHOLD = 80.0;
     SWIPE_WRAP = 0; SWIPE_REVERSE = 0; SWIPE_DEBUG = 0;
     BORDER_FOCUS = 0x7aa2f7; BORDER_NORMAL = 0x333333;
@@ -450,14 +451,15 @@ static void parse_scalar(char *key, char *val) {
             else if (!strcmp(key, "animation_close_ms")) ANIMATION_CLOSE_MS = (int)v;
             else ANIMATION_LAYOUT_MS = (int)v;
         } else fprintf(stderr, "daniwm: bad %s '%s' (want integer 0..1000)\n", key, val);
-    } else if (!strcmp(key, "animation_workspace_ms")) {
+    } else if (!strcmp(key, "animation_workspace_ms") || !strcmp(key, "animation_overview_ms")) {
         /* The 3-P2 review caps the visual/input mismatch at about 125 ms. */
         char *end;
         errno = 0;
         v = strtol(val, &end, 10);
-        if (*val && end != val && !*end && !errno && v >= 0 && v <= 250)
-            ANIMATION_WORKSPACE_MS = (int)v;
-        else fprintf(stderr, "daniwm: bad animation_workspace_ms '%s' (want integer 0..250)\n", val);
+        if (*val && end != val && !*end && !errno && v >= 0 && v <= 250) {
+            if (!strcmp(key, "animation_overview_ms")) ANIMATION_OVERVIEW_MS = (int)v;
+            else ANIMATION_WORKSPACE_MS = (int)v;
+        } else fprintf(stderr, "daniwm: bad %s '%s' (want integer 0..250)\n", key, val);
     } else if (!strcmp(key, "swipe_enabled")) {
         if (parse_bool(val, &b)) SWIPE_ENABLED = b;
     } else if (!strcmp(key, "swipe_debug")) {
@@ -792,7 +794,7 @@ void load_config(const char *path) {
             strcmp(k, "compositor") && strcmp(k, "animations") &&
             strcmp(k, "reduce_motion") && strcmp(k, "animation_open_ms") &&
             strcmp(k, "animation_close_ms") && strcmp(k, "animation_layout_ms") &&
-            strcmp(k, "animation_workspace_ms") &&
+            strcmp(k, "animation_workspace_ms") && strcmp(k, "animation_overview_ms") &&
             strcmp(k, "swipe_enabled") && strcmp(k, "swipe_threshold") &&
             strcmp(k, "swipe_wrap") && strcmp(k, "swipe_reverse") &&
             strcmp(k, "swipe_debug") &&

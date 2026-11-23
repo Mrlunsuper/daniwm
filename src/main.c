@@ -479,6 +479,8 @@ int main(int argc, char **argv) {
     static long long vol_due_ms = 0;  /* CLOCK_MONOTONIC ms when flush is due */
     enum { VOL_STEP = 5, VOL_FLUSH_MS = 60 };
     for (;;) {
+        /* A steady event stream must not starve overview highlight frames. */
+        if (overview_next_ms() == 0) overview_tick();
         if (!XPending(dpy)) arrange_flush(); /* queue drained: one relayout */
         while (!XPending(dpy)) {
             /* 1s tick for clock; shorter sleep while a vol batch is due */
@@ -493,6 +495,14 @@ int main(int argc, char **argv) {
                 if (rem < 0) rem = 0;
                 tv.tv_sec = rem / 1000; tv.tv_usec = (long)(rem % 1000) * 1000;
             } else { tv.tv_sec = 1; tv.tv_usec = 0; }
+            /* Overview highlight frames run only while the selection moves. */
+            long ov = overview_next_ms();
+            if (ov == 0) { overview_tick(); continue; }
+            int ov_due = 0;
+            if (ov >= 0 && ov * 1000 < (long)tv.tv_sec * 1000000 + tv.tv_usec) {
+                tv.tv_sec = ov / 1000; tv.tv_usec = (ov % 1000) * 1000;
+                ov_due = 1;
+            }
             int ret = select(nfds, &rfds, NULL, NULL, &tv);
             if (ret < 0) {
                 if (errno == EINTR) continue;
@@ -504,6 +514,7 @@ int main(int argc, char **argv) {
                 break; /* fall through to blocking XNextEvent */
             }
             select_errs = 0;
+            if (ret == 0 && ov_due) { overview_tick(); continue; }
             if (ret == 0) {
                 sys_vol_update(); tray_poll(); rename_tick();
                 if (vol_pend && ms_now() >= vol_due_ms) {

@@ -275,6 +275,7 @@ reduce_motion = 0
 animation_open_ms = 140
 animation_close_ms = 100
 animation_workspace_ms = 0
+animation_overview_ms = 0
 ```
 
 Set `compositor = 1` and `animations = 1` to enable opening/remap fade-in and
@@ -307,6 +308,16 @@ switch stays instant when a fullscreen client is on the old or the new workspace
 when more than 8 windows leave, when the overview is open, and when anything is
 not ready (dani-comp falls back instantly). An external pager move of one window
 is also instant.
+
+The overview is instant by default. Set `animation_overview_ms` (integer
+**0..250 ms**, default 0) for an opt-in fade: dani-comp fades the overview in
+and out, and the WM moves the selection highlight smoothly between cards. The
+keyboard grab, Escape, commit and the selection work as before and are never
+delayed. A click in the first part of the fade-in can already open a card that
+is still faint, and a click during the fade-out goes to the window below. When
+you open a card, the overview fades out over the new workspace. Menus and other
+override-redirect windows stay instant. The highlight runs without a compositor
+too; it needs `animations = 1` and `reduce_motion = 0`.
 
 `reload_config` updates the running opted-in compositor without restarting it.
 Changing motion settings snaps live fades to final opacity, removes closing
@@ -344,6 +355,7 @@ headless math/config checks; `make check-animation-xvfb check-animation-wm`
 covers renderer, cancellation, pacing and WM reload checks on private displays.
 `make check-layout-animation` covers best-effort layout movement on a private display.
 `make check-workspace-animation` covers the workspace crossfade (copy and Present) on a private display.
+`make check-overview-animation` covers the overview fade and highlight (copy and Present) on a private display.
 No installed configuration is modified automatically.
 
 ## Config
@@ -359,7 +371,8 @@ plus bar font `size=`; fractional ok, e.g. `scale = 1.5`; reload applies live),
 `animations` (0 default), `reduce_motion` (0 default), `animation_open_ms`
 (integer 0..1000, default 140), `animation_close_ms` (integer 0..1000, default 100),
 `animation_layout_ms` (integer 0..1000, default 0; best-effort movement duration),
-`animation_workspace_ms` (integer 0..250, default 0; workspace crossfade duration).
+`animation_workspace_ms` (integer 0..250, default 0; workspace crossfade duration),
+`animation_overview_ms` (integer 0..250, default 0; overview fade and highlight duration).
 Shadow/dim are standalone compositor flags,
 not WM scalar keys; standalone fade defaults to 160 ms.
 `focus` (`hover`| `click`|`both`, default `hover` — hover-to-focus vs click-to-focus), `tray` (system tray on/off, default on),

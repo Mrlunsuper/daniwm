@@ -21,6 +21,7 @@ typedef struct {
     unsigned nclip;
     int shaped;
     int workspace; /* part of a workspace crossfade, not a close */
+    int overview;  /* overview fade-out, drawn above everything */
     double alpha, dim;
     Animation animation;
 } ExitLayer;

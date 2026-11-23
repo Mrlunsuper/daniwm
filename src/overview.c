@@ -5,11 +5,13 @@
 #include "monitor.h"
 #include "bar.h"
 #include "xerr.h"
+#include "keys.h"
 #include <X11/keysym.h>
 #include <X11/extensions/Xcomposite.h>
 #include <X11/extensions/Xrender.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #define CACHE 64
 #define TW 192
@@ -26,8 +28,34 @@ static int committing; /* view() runs from a click or key in the overview */
 static struct { int x,y,w,h,ws; Window id; } hits[HITS];
 static int nhits;
 static KeyCode commit_key;
+/* Selection highlight move: from_sel fades out while pending fades in. */
+static int from_sel=-1;
+static long long sel_start, last_frame;
+#define FRAME_MS 16
 
+static long long mono_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC,&t);
+    return (long long)t.tv_sec*1000+t.tv_nsec/1000000;
+}
+static int highlight_on(void) { return ANIMATIONS && !REDUCE_MOTION && ANIMATION_OVERVIEW_MS>0; }
+/* Selected weight 0..100 of one card; ends the move when its time is up. */
+static int highlight(int ws, long long now) {
+    if (from_sel>=0 && (!highlight_on() || now-sel_start>=ANIMATION_OVERVIEW_MS || now<sel_start))
+        from_sel=-1;
+    if (from_sel<0) return ws==pending?100:0;
+    int t=(int)((now-sel_start)*100/ANIMATION_OVERVIEW_MS);
+    return ws==pending?t:ws==from_sel?100-t:0;
+}
 int overview_is_open(void) { return active; }
+/* Milliseconds to the next highlight frame, or -1 when nothing moves. */
+long overview_next_ms(void) {
+    if (!active || from_sel<0) return -1;
+    long long left=last_frame+FRAME_MS-mono_ms();
+    return left<0?0:(long)left;
+}
+static void draw(void);
+void overview_tick(void) { if (active && from_sel>=0) { last_frame=mono_ms(); draw(); } }
 int overview_committing(void) { return committing; }
 int overview_selection(void) { return active ? pending : -1; }
 void overview_drop(Window id) {
@@ -161,6 +189,7 @@ static void draw(void) {
     unsigned long surface=blend(BAR_BG,BAR_FG,5);
     unsigned long edge=blend(BAR_BG,BAR_FG,14);
     unsigned long well=blend(BAR_BG,0,12);
+    long long now=mono_ms();
     rect(0,0,width,height,backdrop);
     if (header) {
         char summary[80];
@@ -176,16 +205,17 @@ static void draw(void) {
         if (inrow>cols) inrow=cols;
         int x=margin+(gw-(inrow*cw+(inrow-1)*gap))/2+(ws%cols)*(cw+gap);
         int y=margin+header+row*(ch+gap);
-        int selected=ws==pending;
-        unsigned long fill=selected?blend(surface,BAR_ACC,10):surface;
+        int weight=highlight(ws,now);
+        int selected=weight>=50; /* text colour and border width switch half-way */
+        unsigned long fill=blend(surface,blend(surface,BAR_ACC,10),(unsigned)weight);
         if (gap) rounded(x,y+S(3),cw,ch,radius,blend(backdrop,0,30));
-        rounded(x,y,cw,ch,radius,selected?BAR_ACC:edge);
+        rounded(x,y,cw,ch,radius,blend(edge,BAR_ACC,(unsigned)weight));
         int border=selected?2:1;
         rounded(x+border,y+border,cw-2*border,ch-2*border,radius-border,fill);
         hit(x,y,cw,ch,ws,None);
         if (cw<2*pad+line || ch<3*line+pad) continue;
         int badge=line, badgew=badge+S(8), by=y+pad;
-        rounded(x+pad,by,badgew,badge,S(6),selected?BAR_ACC:edge);
+        rounded(x+pad,by,badgew,badge,S(6),blend(edge,BAR_ACC,(unsigned)weight));
         char label[128], number[8];
         snprintf(number,sizeof number,"%d",ws+1);
         /* The badge uses the theme's active-workspace contrast pair. */
@@ -256,13 +286,13 @@ void overview_hide(int unused) {
         hover_lock_arm(); /* Destroying the cover must not change stationary hover focus. */
         XUngrabKeyboard(dpy,CurrentTime);
     }
-    active=0; commit_key=0;
+    active=0; commit_key=0; from_sel=-1;
     /* Failed asynchronous creation can leave nonzero but invalid handles. */
     trap_errors(dpy);
     if (xd) XftDrawDestroy(xd);
     if (gc) XFreeGC(dpy,gc);
     if (backing) XFreePixmap(dpy,backing);
-    if (overlay) XDestroyWindow(dpy,overlay);
+    if (overlay) { animation_overview_role(None); XDestroyWindow(dpy,overlay); }
     untrap_errors(dpy);
     xd=NULL; gc=NULL; backing=None; overlay=None;
 }
@@ -281,13 +311,18 @@ void overview_show(int unused) {
     backing=XCreatePixmap(dpy,root,width,height,DefaultDepth(dpy,screen));
     gc=XCreateGC(dpy,backing,0,NULL);
     xd=XftDrawCreate(dpy,backing,DefaultVisual(dpy,screen),DefaultColormap(dpy,screen));
+    if (overlay) animation_overview_role(overlay);
     XMapRaised(dpy,overlay);
     int ok=untrap_errors(dpy);
     if (!ok || !xd || XGrabKeyboard(dpy,overlay,False,GrabModeAsync,GrabModeAsync,CurrentTime)!=GrabSuccess) { overview_hide(0); return; }
     pending=curws; active=1; draw();
 }
 void overview_toggle(int unused) { if (active) overview_hide(unused); else overview_show(unused); }
-void overview_select(int ws) { if (active && ws>=0 && ws<NWS) { pending=ws; draw(); } }
+void overview_select(int ws) {
+    if (!active || ws<0 || ws>=NWS) return;
+    if (ws!=pending && highlight_on()) { from_sel=pending; sel_start=last_frame=mono_ms(); }
+    pending=ws; draw();
+}
 static void commit(Window id) {
     int ws=pending;
     overview_hide(0);

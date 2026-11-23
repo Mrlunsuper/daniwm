@@ -100,6 +100,11 @@ check-layout-animation:
 check-workspace-animation:
 	sh test/test-workspace-animation.sh
 
+# Phase 4 overview fade on a private Xvfb (copy and Present paths).
+.PHONY: check-overview-animation
+check-overview-animation:
+	sh test/test-overview-animation.sh
+
 .PHONY: check-overview
 check-overview:
 	sh test/test-overview.sh

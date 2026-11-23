@@ -12,7 +12,7 @@ Status (branch `feat/animation`, not released):
 | 3-P1 | Gate PASS (reviewed 2026-11-23). Test-only. No runtime code. | `ANIMATION_PHASE3_P1_REPORT.md` |
 | 3-P2 | Gate PASS (reviewed 2026-11-23): mismatch accepted with `animation_workspace_ms` capped at 0..250, default 0. Test-only. | `ANIMATION_PHASE3_P2_REPORT.md` |
 | 3-I | Gate PASS (reviewed 2026-11-23). Opt-in `animation_workspace_ms` 0..250 (default 0), reuses the exit pool. Hardware pacing not verified (Xvfb). | `ANIMATION_PHASE3_I_REPORT.md` |
-| 4 | Not started. | — |
+| 4 | Gate PASS (reviewed 2026-11-23). Opt-in `animation_overview_ms` 0..250 (default 0); 4A fade in/out, 4B highlight. Hardware pacing not verified (Xvfb). | `ANIMATION_PHASE4_REPORT.md` |
 
 Each branch is reviewed on its own and must pass its own exit gate. A Phase 3
 prototype does not mark Phase 2 complete.
@@ -267,16 +267,12 @@ animation_open_ms = 140
 animation_close_ms = 100
 animation_layout_ms = 0     # best-effort; 0 = instant
 animation_workspace_ms = 0  # 3-I crossfade; 0..250 only (3-P2 review), opt-in
-```
-
-Proposed only (not supported yet):
-
-```ini
-animation_overview_ms = 140
+animation_overview_ms = 0   # Phase 4 fade and highlight; 0..250 only, opt-in
 ```
 
 Add each setting only with its corresponding phase. Proposed duration range:
-0–1000 ms, except `animation_workspace_ms` (0–250 ms after the 3-P2 review); reject invalid/overflowing values with diagnostics. `animations = 0`
+0–1000 ms, except `animation_workspace_ms` (0–250 ms after the 3-P2 review) and
+`animation_overview_ms` (0–250 ms, Phase 4 decision); reject invalid/overflowing values with diagnostics. `animations = 0`
 or `reduce_motion = 1` overrides all durations. Workspace crossfade is the initial
 fixed effect; do not advertise slide until implemented and verified. Keep
 `compositor = 1` separate: enabling animation does not silently start a compositor.

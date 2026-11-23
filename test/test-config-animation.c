@@ -10,7 +10,7 @@ static void scalar(const char *key, const char *value) {
 int main(void) {
     assert(!COMPOSITOR && !ANIMATIONS && !REDUCE_MOTION);
     assert(ANIMATION_OPEN_MS == 140 && ANIMATION_CLOSE_MS == 100 && ANIMATION_LAYOUT_MS == 0);
-    assert(ANIMATION_WORKSPACE_MS == 0);
+    assert(ANIMATION_WORKSPACE_MS == 0 && ANIMATION_OVERVIEW_MS == 0);
     scalar("compositor", "yes"); assert(COMPOSITOR == 1);
     scalar("animations", "on"); assert(ANIMATIONS == 1);
     scalar("reduce_motion", "true"); assert(REDUCE_MOTION == 1);
@@ -24,11 +24,17 @@ int main(void) {
         scalar("animation_close_ms", bad[i]); assert(ANIMATION_CLOSE_MS == 100);
         scalar("animation_layout_ms", bad[i]); assert(ANIMATION_LAYOUT_MS == 0);
         scalar("animation_workspace_ms", bad[i]); assert(ANIMATION_WORKSPACE_MS == 0);
+        scalar("animation_overview_ms", bad[i]); assert(ANIMATION_OVERVIEW_MS == 0);
     }
     scalar("animation_workspace_ms", "251"); assert(ANIMATION_WORKSPACE_MS == 0);
     scalar("animation_workspace_ms", "250"); assert(ANIMATION_WORKSPACE_MS == 250);
     scalar("animation_workspace_ms", "1000"); assert(ANIMATION_WORKSPACE_MS == 250);
     scalar("animation_workspace_ms", "0"); assert(ANIMATION_WORKSPACE_MS == 0);
+    scalar("animation_overview_ms", "251"); assert(ANIMATION_OVERVIEW_MS == 0);
+    scalar("animation_overview_ms", "250"); assert(ANIMATION_OVERVIEW_MS == 250);
+    scalar("animation_overview_ms", "1000"); assert(ANIMATION_OVERVIEW_MS == 250);
+    scalar("animation_overview_ms", "0"); assert(ANIMATION_OVERVIEW_MS == 0);
+    assert(ANIMATION_WORKSPACE_MS == 0);
     scalar("animation_close_ms", "0"); assert(ANIMATION_CLOSE_MS == 0);
     scalar("animation_close_ms", "1000"); assert(ANIMATION_CLOSE_MS == 1000);
     scalar("animation_close_ms", "100"); assert(ANIMATION_CLOSE_MS == 100);

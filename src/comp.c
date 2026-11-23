@@ -50,12 +50,14 @@
 #include <signal.h>
 #include <sys/select.h>
 #include <stdint.h>
+#include <limits.h>
 #include "animation.h"
 #include "animation-settings.h"
 #include "animation-lifecycle.h"
 #include "layout-animation.h"
 #include "exit-layer.h"
 #include "workspace-animation.h"
+#include "overview-animation.h"
 
 static Display *dpy;
 static Window root;
@@ -93,6 +95,8 @@ static int exit_xerror;
 static unsigned exit_bpp[33], exit_pad[33];
 static Atom A_WS_SETTINGS, A_WS_TXN, A_MON_EPOCH;
 static int opt_workspace_ms;
+static Atom A_OV_SETTINGS, A_OV_ROLE;
+static int opt_overview_ms;
 /* Outgoing images of one workspace switch, held until all members unmap
  * and the desktop commits. Then they enter the exit pool together. */
 static struct {
@@ -247,6 +251,7 @@ struct Win {
     int depth;           /* depth X (32 = ARGB, có alpha từng pixel) */
     int mapped;          /* đang viewable */
     int override;        /* override_redirect (bar/tray/menu...) */
+    int overview;        /* the WM overview window, bound at map */
     int fullscreen;
     int dock;
     Atom wintype;        /* _NET_WM_WINDOW_TYPE đầu tiên, None nếu không có */
@@ -424,11 +429,14 @@ static void ws_scene_clear(void) {
     for (uint32_t i = 0; i < count; i++)
         if (held[i].bytes) exit_release(held[i].picture, held[i].pixmap);
 }
-/* keep_workspace: drop only close images (a later hide must not cut a
- * running workspace crossfade). */
-static void exits_clear_layers(int keep_workspace) {
+/* Drop exit images except the kinds in keep (a later hide must not cut a
+ * running workspace crossfade or overview fade-out). */
+#define KEEP_WORKSPACE 1
+#define KEEP_OVERVIEW 2
+static void exits_clear_layers(int keep) {
     for (unsigned i = 0; i < EXIT_COUNT; i++)
-        if (exits.layers[i].bytes && !(keep_workspace && exits.layers[i].workspace)) {
+        if (exits.layers[i].bytes && !((keep & KEEP_WORKSPACE) && exits.layers[i].workspace) &&
+            !((keep & KEEP_OVERVIEW) && exits.layers[i].overview)) {
             exit_drop(&exits, i, exit_release);
             dirty = full_dirty = 1;
         }
@@ -472,11 +480,17 @@ static Win *win_get(Window id) {
     return NULL;
 }
 
+/* The overview is the only override-redirect window that fades. */
+static int win_fades(const Win *w) {
+    if (w->overview) return opt_overview_ms > 0;
+    return opt_fade && !opt_reduce_motion && opt_fade_ms > 0 &&
+        !w->override && !w->dock && !w->fullscreen;
+}
 static void opening_start(Win *w, long long now) {
     animation_cancel(&w->opening);
-    if (opt_fade && !opt_reduce_motion && opt_fade_ms > 0 &&
-        !w->override && !w->dock && !w->fullscreen)
-        animation_start(&w->opening, w->id, w->generation, now, (unsigned)opt_fade_ms);
+    if (win_fades(w))
+        animation_start(&w->opening, w->id, w->generation, now,
+            (unsigned)(w->overview ? opt_overview_ms : opt_fade_ms));
 }
 
 /* Opt-in only. Invalid, absent, stale or deleted settings fail closed to
@@ -552,11 +566,21 @@ static void animation_settings_read(void) {
         workspace = (int)((unsigned long *)data)[2];
     if (data) XFree(data);
     if (!enabled || reduced) workspace = 0;
+    int overview = 0;
+    data = NULL;
+    if (owner && A_OV_SETTINGS && XGetWindowProperty(dpy, root, A_OV_SETTINGS, 0,
+        3, False, XA_CARDINAL, &type, &format, &n, &extra, &data) == Success &&
+        type == XA_CARDINAL && format == 32 &&
+        overview_settings_valid((unsigned long *)data, n, extra, owner))
+        overview = (int)((unsigned long *)data)[2];
+    if (data) XFree(data);
+    if (!enabled || reduced) overview = 0;
     int changed = enabled != opt_fade || reduced != opt_reduce_motion ||
         duration != opt_fade_ms || closing != opt_close_ms || owner != settings_owner ||
-        workspace != opt_workspace_ms;
+        workspace != opt_workspace_ms || overview != opt_overview_ms;
     if (owner != settings_owner) ws_last_sequence = 0;
     opt_workspace_ms = workspace;
+    opt_overview_ms = overview;
     opt_close_ms = closing;
     opt_fade = enabled; opt_reduce_motion = reduced; opt_fade_ms = duration;
     settings_owner = owner;
@@ -777,6 +801,20 @@ static void layout_transaction_read(void) {
 }
 static void win_del(Window id);
 
+/* Bind the WM overview role to this map of the window. Only the window the
+ * WM published gets it; menus and other override windows stay instant. */
+static void overview_mark(Win *w) {
+    w->overview = 0;
+    if (!w->override || opt_overview_ms <= 0 || !settings_owner) return;
+    Atom type; int format; unsigned long n = 0, extra = 0;
+    unsigned char *data = NULL;
+    if (XGetWindowProperty(dpy, root, A_OV_ROLE, 0, 3, False, XA_CARDINAL, &type, &format,
+        &n, &extra, &data) == Success && type == XA_CARDINAL && format == 32 &&
+        overview_role_window((unsigned long *)data, n, extra, settings_owner) == w->id)
+        w->overview = 1;
+    if (data) XFree(data);
+}
+
 static Win *win_add(Window id) {
     Win *w = win_get(id);
     if (w) { win_refresh_flags(w); return w; }
@@ -815,6 +853,7 @@ static Win *win_add(Window id) {
     win_refresh_flags(w);
     /* override_redirect (bar của daniwm, menu...) không fade: hiện ngay */
     if (w->override) w->born = 0;
+    overview_mark(w);
     opening_start(w, now_ms());
     return w;
 }
@@ -874,8 +913,7 @@ static void read_active(void) {
 /* alpha cuối cùng 0..1 của 1 cửa sổ */
 static double win_alpha(Win *w, long long now) {
     double a = (double)w->opacity / (double)OPAQUE;
-    if (opt_fade && !opt_reduce_motion && opt_fade_ms > 0 &&
-        !w->override && !w->dock && !w->fullscreen) {
+    if (win_fades(w)) {
         double f = animation_sample(&w->opening, w->id, w->generation, now);
         a *= f;
         if (w->opening.active) fading = 1;
@@ -917,9 +955,7 @@ static int win_is_opaque(const Win *w, long long now) {
     if (w->depth == 32) return 0; /* ARGB: trong suốt từng pixel có thể */
     if (w->opacity != OPAQUE) return 0;
     if (w->shaped) return 0;
-    if (opt_fade && !opt_reduce_motion && opt_fade_ms > 0 &&
-        !w->override && !w->dock && !w->fullscreen &&
-        animation_value(&w->opening, w->id, w->generation, now) < 1.0)
+    if (win_fades(w) && animation_value(&w->opening, w->id, w->generation, now) < 1.0)
         return 0;
     return 1;
 }
@@ -928,7 +964,7 @@ static int win_is_opaque(const Win *w, long long now) {
  * storage alive across unmap/destroy while this compositor owns references.
  * No client query, capture acknowledgment, or WM delay occurs here. */
 static int exit_layer_from(Win *w, long long now, ExitLayer *layer) {
-    if (w->override || w->dock || w->fullscreen || !w->generation || !w->painted ||
+    if ((w->override && !w->overview) || w->dock || w->fullscreen || !w->generation || !w->painted ||
         !w->pixmap || !w->pict || w->depth < 1 || w->depth > 32 ||
         w->n_clip < 0 || w->n_clip > 256 || (w->shaped && !w->n_clip)) return 0;
     /* Confirm pending Render requests on the compositor connection only.
@@ -957,7 +993,7 @@ static int exit_layer_from(Win *w, long long now, ExitLayer *layer) {
     return 1;
 }
 static void closing_detach(Win *w, long long now) {
-    if (!opt_fade || opt_reduce_motion || opt_close_ms <= 0 || w->hide_reason ||
+    if (!opt_fade || opt_reduce_motion || opt_close_ms <= 0 || w->hide_reason || w->overview ||
         (opt_wm_settings && !settings_owner) ||
         (reason_owner && !opt_wm_settings)) return;
     ExitLayer layer;
@@ -978,6 +1014,25 @@ static void closing_detach(Win *w, long long now) {
     /* A stale XID anchor is validated by generation again at paint time. */
     animation_start(&layer.animation, layer.identity, layer.generation, now, (unsigned)opt_close_ms);
     if (!exit_admit(&exits, &layer)) return;
+    w->pixmap = None; w->pict = None; w->painted = 0;
+    fading = 1; dirty = full_dirty = 1;
+}
+
+/* Overview hide: keep its painted image and fade it out above everything.
+ * The window is already gone, so the image takes no input. */
+static void overview_detach(Win *w, long long now) {
+    ExitLayer layer;
+    if (opt_overview_ms <= 0 || !exit_layer_from(w, now, &layer) || layer.alpha <= 0) return;
+    layer.overview = 1;
+    layer.rank = UINT_MAX;
+    for (unsigned i = 0; i < EXIT_COUNT; i++)
+        if (exits.layers[i].overview) exit_drop(&exits, i, exit_release);
+    animation_start(&layer.animation, layer.identity, layer.generation, now,
+        (unsigned)opt_overview_ms);
+    if (!exit_admit(&exits, &layer)) {
+        if (opt_debug) fprintf(stderr, "dani-comp: overview bypass: pool\n");
+        return;
+    }
     w->pixmap = None; w->pict = None; w->painted = 0;
     fading = 1; dirty = full_dirty = 1;
 }
@@ -1244,7 +1299,8 @@ static int ensure_win_pict(Win *w) {
     Picture pict = XRenderCreatePicture(dpy, pm, fmt, 0, NULL);
     int pict_error = untrap_errors();
     if (pict_error || !pict) { XFreePixmap(dpy, pm); return 0; }
-    if ((opt_close_ms > 0 || opt_workspace_ms > 0) && opt_fade && !opt_reduce_motion) {
+    if ((opt_close_ms > 0 || opt_workspace_ms > 0 || opt_overview_ms > 0) &&
+        opt_fade && !opt_reduce_motion) {
         Window rr; int px, py; unsigned pw, ph, pb, pd;
         trap_errors();
         int valid = XGetGeometry(dpy, pm, &rr, &px, &py, &pw, &ph, &pb, &pd);
@@ -1320,13 +1376,14 @@ static long long shape_next_wake(long long now) {
     return next;
 }
 
-static void paint_exits(Window before, long long now, unsigned char *drawn) {
+/* skip_top: leave overview images for the final call above everything. */
+static void paint_exits(Window before, long long now, unsigned char *drawn, int skip_top) {
     /* Rank order is explicit even if pool slots have been recycled. */
     for (unsigned pass = 0; pass < EXIT_COUNT; pass++) {
         unsigned best = EXIT_COUNT;
         for (unsigned i = 0; i < EXIT_COUNT; i++) {
             ExitLayer *s = &exits.layers[i];
-            if (!s->bytes || drawn[i] || s->above != before) continue;
+            if (!s->bytes || drawn[i] || s->above != before || (skip_top && s->overview)) continue;
             if (best == EXIT_COUNT || s->rank < exits.layers[best].rank) best = i;
         }
         if (best == EXIT_COUNT) break;
@@ -1435,6 +1492,8 @@ static void repaint(void) {
                 vs = (qa.map_state == IsViewable ||
                       (qa.override_redirect && qa.map_state != IsUnmapped));
             if (vs != w->mapped) {
+                if (opt_debug && w->overview && !vs)
+                    fprintf(stderr, "dani-comp: overview bypass: unmapped before its UnmapNotify\n");
                 win_free_pix(w);
                 if (vs && !w->override) w->born = now_ms();
                 w->mapped = vs;
@@ -1518,8 +1577,8 @@ static void repaint(void) {
             /* A newly mapped dock/menu/overview must stay above detached
              * normal-client visuals even if absent from the old stack. */
             if (upper && upper->mapped && (upper->dock || upper->override || upper->fullscreen))
-                paint_exits(None, now, exits_drawn);
-            paint_exits(id, now, exits_drawn);
+                paint_exits(None, now, exits_drawn, 1);
+            paint_exits(id, now, exits_drawn, 0);
         }
         if (i == nk) break;
         if (id == cm_win) continue;
@@ -1625,7 +1684,8 @@ static void repaint(void) {
             back_clip_reset(); /* trả clip về hộp damage (hoặc None) */
         /* Candidate only: closing_detach drains outstanding asynchronous
          * errors before it transfers these references out of live state. */
-        if ((opt_close_ms > 0 || opt_workspace_ms > 0) && opt_fade && !opt_reduce_motion)
+        if ((opt_close_ms > 0 || opt_workspace_ms > 0 || opt_overview_ms > 0) &&
+            opt_fade && !opt_reduce_motion)
             w->painted = 1;
     }
     /* Missing/destroyed stacking anchors cancel rather than float to top. */
@@ -1894,6 +1954,8 @@ int main(int argc, char **argv) {
     A_WS_SETTINGS = XInternAtom(dpy, WORKSPACE_SETTINGS_ATOM, False);
     A_WS_TXN = XInternAtom(dpy, WORKSPACE_ANIMATION_ATOM, False);
     A_MON_EPOCH = XInternAtom(dpy, MONITOR_EPOCH_ATOM, False);
+    A_OV_SETTINGS = XInternAtom(dpy, OVERVIEW_SETTINGS_ATOM, False);
+    A_OV_ROLE = XInternAtom(dpy, OVERVIEW_ROLE_ATOM, False);
     int formats_n;
     XPixmapFormatValues *formats = XListPixmapFormats(dpy, &formats_n);
     if (formats) {
@@ -2142,6 +2204,10 @@ int main(int argc, char **argv) {
                 if (w) {
                     if (!w->override) w->born = now_ms();
                     win_free_pix(w);
+                    overview_mark(w);
+                    /* A new overview replaces any old overview image. */
+                    if (w->overview) for (unsigned i = 0; i < EXIT_COUNT; i++)
+                        if (exits.layers[i].overview) exit_drop(&exits, i, exit_release);
                     if (hidden) animation_cancel(&w->opening);
                     else opening_start(w, now_ms());
                 }
@@ -2156,6 +2222,7 @@ int main(int argc, char **argv) {
                 Win *w = win_get(e->window);
                 if (w && w->mapped) {
                     if (ws_scene.active) ws_retain(w, now_ms());
+                    if (w->overview) overview_detach(w, now_ms());
                     closing_detach(w, now_ms());
                     w->mapped = 0;
                     animation_cancel(&w->opening);
@@ -2239,7 +2306,8 @@ int main(int argc, char **argv) {
                     animation_settings_read();
                 } else if (opt_wm_settings && e->window == root &&
                     (e->atom == A_ANIMATION_SETTINGS || e->atom == A_CLOSE_SETTINGS ||
-                     e->atom == A_LAYOUT_SETTINGS || e->atom == A_WS_SETTINGS)) {
+                     e->atom == A_LAYOUT_SETTINGS || e->atom == A_WS_SETTINGS ||
+                     e->atom == A_OV_SETTINGS)) {
                     animation_settings_read();
                 } else if (e->window == root && e->atom == A_LAYOUT_TRANSACTION) {
                     layout_transaction_read();
@@ -2247,10 +2315,14 @@ int main(int argc, char **argv) {
                     /* Only the desktop its PREPARE named commits a scene. */
                     if (ws_scene.active && !ws_scene.committed &&
                         ws_desktop() == (long)ws_scene.to) {
-                        exits_clear_layers(0);
+                        exits_clear_layers(KEEP_OVERVIEW);
                         ws_scene.committed = 1;
                         ws_admit(now_ms());
-                    } else exits_clear();
+                    } else {
+                        /* An overview commit fades the overview over the new desktop. */
+                        if (ws_scene.active) ws_scene_clear();
+                        exits_clear_layers(KEEP_OVERVIEW);
+                    }
                     for (Win *w = wins; w; w = w->next) layout_release(w);
                 } else if (e->window == root && e->atom == A_MON_EPOCH) {
                     exits_clear();
@@ -2305,7 +2377,7 @@ int main(int argc, char **argv) {
                         /* A hide invalidates close visuals: never let a recently
                          * closed app follow a workspace switch. Reload ends all. */
                         if (words[4] == ANIMATION_HIDE_RELOAD) exits_clear();
-                        else exits_clear_layers(1);
+                        else exits_clear_layers(KEEP_WORKSPACE | KEEP_OVERVIEW);
                     }
                 }
                 if (ev.xclient.window == cm_win && ev.xclient.message_type == A_ANIMATION_CONTROL &&

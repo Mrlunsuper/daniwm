@@ -2,6 +2,8 @@
 #include <X11/Xlib.h>
 int overview_is_open(void);
 int overview_committing(void);
+long overview_next_ms(void);
+void overview_tick(void);
 int overview_selection(void);
 void overview_select(int ws);
 void overview_show(int unused);
