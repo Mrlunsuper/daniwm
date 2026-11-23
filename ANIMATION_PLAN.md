@@ -26,17 +26,28 @@ Progress log:
 - **2026-11-24:** `feat/animation` was pushed to `main` as a fast-forward
   (`e05f0a9..868b2af`, 13 commits) by the user's choice. **No PR and no
   self-review were done before this push.**
+- **2026-11-24:** After-the-fact review of `e05f0a9..868b2af` (level
+  high). Fixed on `main`: layout sequence reset on WM restart (`ed2c4dd`),
+  monocle close fade (`3a51224`), layout start after a move ends
+  (`27acbd3`), comment and atom cleanup (`6c5e009`). Three minor items
+  stay open (item 5 below).
 
 Open items:
 
-1. Review the pushed range `e05f0a9..868b2af` after the fact. Fix what it
-   finds in new commits on `main`.
+1. Done (2026-11-24): review of `e05f0a9..868b2af`. See the progress log.
 2. Multi-monitor check (overview placement, crossfade on each monitor).
 3. Numbers for frame time and input latency on real hardware (plan §6,
    "Performance acceptance"). Today there is only the user's judgement.
 4. Optional, not requested: directional workspace slide; subtle overview
    scale.
-5. Not animation work: `test-urgency` is flaky before these changes
+5. Minor items from the review, not fixed:
+   - `src/overview.c` `overview_select`: a second selection change during a
+     running highlight move makes the two cards jump, not blend.
+   - `src/main.c` event loop: while the highlight moves, the one-second
+     tasks (volume flush, tray poll) can wait up to about 250 ms.
+   - `src/layout.c` `layout_animation_capture_old`: one X round trip per
+     client on each arrange when layout animation is on. Measure first.
+6. Not animation work: `test-urgency` is flaky before these changes
    (1 of 10 runs on the old HEAD); `make check` stops at `check-ai`.
 
 ## 1. Goals and boundaries
