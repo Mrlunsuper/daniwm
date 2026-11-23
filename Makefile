@@ -66,12 +66,23 @@ all: daniwm dani-comp dani-run
 .PHONY: check-animation check-animation-xvfb check-animation-wm
 check-animation:
 	sh test/test-animation.sh
+	sh test/test-layout-prototype.sh --headless
+
+# Phase 2 mandatory coordination/input prototype, never linked into binaries.
+.PHONY: check-layout-prototype
+check-layout-prototype:
+	sh test/test-layout-prototype.sh
 
 check-animation-xvfb:
 	sh test/test-animation-xvfb.sh
 
 check-animation-wm:
 	sh test/test-animation-wm.sh
+
+# Phase 2 best-effort layout movement on a private Xvfb.
+.PHONY: check-layout-animation
+check-layout-animation:
+	sh test/test-layout-animation.sh
 
 .PHONY: check-overview
 check-overview:

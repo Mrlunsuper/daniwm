@@ -54,6 +54,7 @@ int ANIMATIONS = 0;
 int REDUCE_MOTION = 0;
 int ANIMATION_OPEN_MS = ANIMATION_OPEN_DEFAULT;
 int ANIMATION_CLOSE_MS = 100; /* Phase 1B; independently zeroable. */
+int ANIMATION_LAYOUT_MS = 0; /* Phase 2 best-effort; opt-in until reviewed. */
 int SWIPE_ENABLED = 0;
 double SWIPE_THRESHOLD = 80.0;
 int SWIPE_WRAP = 0;

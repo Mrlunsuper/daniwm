@@ -281,8 +281,17 @@ close/withdraw fade-out with WM-managed dani-comp. Durations are independent
 integers in **0..1000 ms**; invalid values are rejected with diagnostics.
 `compositor = 0`, `animations = 0`, or `reduce_motion = 1` makes all WM-controlled
 effects instant; duration `0` disables the corresponding effect.
-Workspace/monocle/scratchpad hiding and return remain instant. Layout changes
-stay instant. Docks, fullscreen and override-redirect windows stay instant. Focus, input routing, geometry state, workspace state and application
+Workspace/monocle/scratchpad hiding and return remain instant. Layout movement is
+available as an explicitly opt-in **best-effort** compositor effect via
+`animation_layout_ms`: the WM commits each final geometry once and dani-comp
+moves an already-painted opaque, unshaped depth-24 picture with Render. Input is
+not delayed or intercepted, so X can deliver a click/hover to the final geometry
+while the picture is still between positions; this known visual/input mismatch is
+accepted by the best-effort policy. Set it to `0` to keep layout changes instant.
+Docks, fullscreen, direct mouse drag/resize, ARGB/translucent/shaped clients and
+override-redirect windows stay instant; unsupported or stale pictures fall back
+instantly. A drag that starts while a picture still moves shows that picture
+until its movement ends. Focus, input routing, geometry state, workspace state and application
 opacity properties are otherwise unchanged.
 
 `reload_config` updates the running opted-in compositor without restarting it.
@@ -319,6 +328,7 @@ the same X server. Deadlines reuse the compositor loop, not a WM timer/thread.
 `make check-animation` covers
 headless math/config checks; `make check-animation-xvfb check-animation-wm`
 covers renderer, cancellation, pacing and WM reload checks on private displays.
+`make check-layout-animation` covers best-effort layout movement on a private display.
 No installed configuration is modified automatically.
 
 ## Config
@@ -332,7 +342,8 @@ Scalars: `mod` (super|alt|ctrl), `border`, `border_focus/border_normal`,
 plus bar font `size=`; fractional ok, e.g. `scale = 1.5`; reload applies live),
 `bar_on/gaps_on` (1/true/yes/on), `compositor` (0 default, opt-in startup),
 `animations` (0 default), `reduce_motion` (0 default), `animation_open_ms`
-(integer 0..1000, default 140), `animation_close_ms` (integer 0..1000, default 100).
+(integer 0..1000, default 140), `animation_close_ms` (integer 0..1000, default 100),
+`animation_layout_ms` (integer 0..1000, default 0; best-effort movement duration).
 Shadow/dim are standalone compositor flags,
 not WM scalar keys; standalone fade defaults to 160 ms.
 `focus` (`hover`| `click`|`both`, default `hover` — hover-to-focus vs click-to-focus), `tray` (system tray on/off, default on),

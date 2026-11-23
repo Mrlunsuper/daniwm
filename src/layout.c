@@ -2,6 +2,10 @@
 #include "overview.h"
 #include "keys.h"
 #include "animation-lifecycle.h"
+#include "layout-animation.h"
+
+#include <stdint.h>
+#include <X11/Xatom.h>
 
 #include "bar.h"
 #include "client.h"
@@ -163,14 +167,72 @@ void monocle(void) {
  * queue drains, so a request storm costs one relayout, not one per event.
  * A direct arrange() (user actions) cancels any pending one. */
 static int arrange_dirty;
+static int layout_animation_blocked;
+static uint32_t layout_animation_sequence;
+typedef struct {
+    Window id;
+    int x, y, w, h;
+} LayoutOld;
+static LayoutOld layout_old[LAYOUT_ANIMATION_MAX_CLIENTS];
+static unsigned layout_old_count;
+
+void layout_animation_suppress(int suppressed) { layout_animation_blocked = suppressed != 0; }
+
+/* Snapshot only the old positions locally. The later property is advisory:
+ * the compositor receives it after the WM's geometry requests and uses the
+ * ConfigureNotify-updated position as the target. No WM/compositor
+ * acknowledgment or server grab is used. */
+static void layout_animation_capture_old(void) {
+    layout_old_count = 0;
+    if (layout_animation_blocked || !checkwin || !COMPOSITOR || !ANIMATIONS ||
+        REDUCE_MOTION || ANIMATION_LAYOUT_MS <= 0 || LAYOUT == L_MONOCLE) return;
+    for (Client *c = clients; c && layout_old_count < LAYOUT_ANIMATION_MAX_CLIENTS; c = c->next) {
+        XWindowAttributes a;
+        if (c->ws != curws || c->floating || c->fullscreen || c->hidden ||
+            !XGetWindowAttributes(dpy, c->win, &a) || a.map_state != IsViewable) continue;
+        layout_old[layout_old_count++] = (LayoutOld){c->win, a.x, a.y, a.width, a.height};
+    }
+}
+static void layout_animation_publish(void) {
+    unsigned long words[LAYOUT_ANIMATION_MAX_WORDS];
+    unsigned count = 0;
+    if (!layout_old_count || !checkwin || !COMPOSITOR || !ANIMATIONS ||
+        REDUCE_MOTION || ANIMATION_LAYOUT_MS <= 0) return;
+    /* Publish the old geometry after the final XMoveResizeWindow batch. The
+     * compositor observes the target through ConfigureNotify and can still
+     * retain its already-painted picture. There is deliberately no XSync,
+     * acknowledgment wait or server grab here. */
+    for (unsigned i = 0; i < layout_old_count; i++) {
+        LayoutOld *o = &layout_old[i];
+        unsigned long *q = words + LAYOUT_ANIMATION_HEADER_WORDS + count * LAYOUT_ANIMATION_ENTRY_WORDS;
+        q[0] = o->id; q[1] = (unsigned long)o->x; q[2] = (unsigned long)o->y;
+        q[3] = (unsigned long)o->w; q[4] = (unsigned long)o->h;
+        count++;
+    }
+    if (!count) { layout_old_count = 0; return; }
+    if (++layout_animation_sequence == 0) ++layout_animation_sequence;
+    words[0] = LAYOUT_ANIMATION_VERSION;
+    words[1] = (unsigned long)checkwin;
+    words[2] = (unsigned long)layout_animation_sequence;
+    words[3] = (unsigned long)ANIMATION_LAYOUT_MS;
+    words[4] = count;
+    Atom prop = XInternAtom(dpy, LAYOUT_ANIMATION_ATOM, False);
+    XChangeProperty(dpy, root, prop, XA_CARDINAL, 32, PropModeReplace,
+        (unsigned char *)words,
+        (int)(LAYOUT_ANIMATION_HEADER_WORDS + count * LAYOUT_ANIMATION_ENTRY_WORDS));
+    XFlush(dpy);
+    layout_old_count = 0;
+}
 void arrange_later(void) { arrange_dirty = 1; }
 void arrange_flush(void) {
     if (arrange_dirty) arrange();
 }
 void arrange(void) {
     arrange_dirty = 0;
+    layout_animation_capture_old();
     if (LAYOUT == L_MONOCLE) monocle();
     else tile();
+    layout_animation_publish();
     for (int m = 0; m < nmons; m++) {
         int ax, ay, aw, ah;
         getarea(m, &ax, &ay, &aw, &ah);

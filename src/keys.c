@@ -1,6 +1,7 @@
 #include "keys.h"
 #include "overview.h"
 #include "animation-settings.h"
+#include "layout-animation.h"
 #include "animation-lifecycle.h"
 #include "xerr.h"
 #include <X11/Xatom.h>
@@ -156,6 +157,10 @@ void animation_settings_publish(void) {
     unsigned long closing[] = {1, checkwin, (unsigned long)ANIMATION_CLOSE_MS};
     XChangeProperty(dpy, root, XInternAtom(dpy, ANIMATION_CLOSE_ATOM, False),
         XA_CARDINAL, 32, PropModeReplace, (unsigned char *)closing, 3);
+    unsigned long layout[] = {LAYOUT_ANIMATION_SETTINGS_VERSION, checkwin,
+        (unsigned long)ANIMATION_LAYOUT_MS};
+    XChangeProperty(dpy, root, XInternAtom(dpy, LAYOUT_ANIMATION_SETTINGS_ATOM, False),
+        XA_CARDINAL, 32, PropModeReplace, (unsigned char *)layout, 3);
     XFlush(dpy);
 }
 /* Same-connection ordering guarantees this notification is enqueued before

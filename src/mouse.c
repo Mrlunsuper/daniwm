@@ -214,7 +214,9 @@ void drag_motion(int px, int py) {
                 }
             }
         }
+        layout_animation_suppress(1);
         arrange();
+        layout_animation_suppress(0);
         return;
     }
 
@@ -281,7 +283,9 @@ void drag_end(int px, int py) {
                 clamp_float_geom(&c->fx, &c->fy, &c->fw, &c->fh);
             }
         }
+        layout_animation_suppress(1);
         arrange();
+        layout_animation_suppress(0);
         focus(c);
     }
 }

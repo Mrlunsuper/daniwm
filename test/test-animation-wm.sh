@@ -34,7 +34,7 @@ for cmd in dbus-update-activation-environment systemctl; do
 done
 for mode in instant compositor settings; do
     if [ "$mode" = settings ]; then
-        printf 'compositor = 1\nanimations = 1\nreduce_motion = 0\nanimation_open_ms = 1000\nbind = mod+Shift+r:reload_config\nbind = mod+c:compositor\n' > "$tmp/config/daniwm/config"
+        printf 'compositor = 1\nanimations = 1\nreduce_motion = 0\nanimation_open_ms = 1000\nanimation_layout_ms = 160\nbind = mod+Shift+r:reload_config\nbind = mod+c:compositor\n' > "$tmp/config/daniwm/config"
     fi
     : > "$tmp/display"
     Xvfb -displayfd 3 -screen 0 1024x768x24 -nolisten tcp -ac \

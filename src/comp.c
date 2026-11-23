@@ -53,6 +53,7 @@
 #include "animation.h"
 #include "animation-settings.h"
 #include "animation-lifecycle.h"
+#include "layout-animation.h"
 #include "exit-layer.h"
 
 static Display *dpy;
@@ -73,11 +74,16 @@ static Atom A_WM_WINTYPE_DIALOG;
 static Atom A_XROOTPMAP;  /* _XROOTPMAP_ID (feh đổi wallpaper) */
 static Atom A_XSETROOT;   /* _XSETROOT_ID */
 static Atom A_ANIMATION_SETTINGS, A_WM_CHECK, A_ANIMATION_CONTROL;
+static Atom A_LAYOUT_SETTINGS, A_LAYOUT_TRANSACTION;
 static Window settings_owner;
 static int opt_wm_settings;
 static int opt_reduce_motion;
 static int opt_force_reduce_motion;
 static int opt_close_ms; /* standalone remains opening-only unless explicitly enabled */
+static int opt_layout;
+static int opt_layout_ms;
+static unsigned layout_count;
+static size_t layout_bytes;
 static Atom A_HIDE_REASON, A_CLOSE_SETTINGS, A_CURRENT_DESKTOP;
 static Window reason_owner;
 static uint32_t reason_sequence;
@@ -234,6 +240,12 @@ struct Win {
     long long born;      /* ms, shape rechecks (separate from fade lifecycle) */
     uint64_t generation;
     Animation opening;
+    Pixmap layout_pixmap;
+    Picture layout_pict;
+    int layout_x, layout_y, layout_target_x, layout_target_y;
+    int layout_w, layout_h;
+    int layout_old_x, layout_old_y, layout_pending;
+    Animation layout;
     int painted;          /* painted candidate, validated before retention */
     int hide_reason;      /* applies only to this tracked generation */
     XRectangle *clip_rects; /* bounding shape (window coords), NULL nếu không shaped */
@@ -244,6 +256,14 @@ struct Win {
 };
 static Win *wins;
 static uint64_t next_generation;
+static void layout_release(Win *w);
+typedef struct {
+    unsigned count;
+    uint32_t sequence;
+    unsigned duration;
+    Window owner;
+} LayoutRequest;
+static LayoutRequest layout_request;
 static Window active_win = None;
 static int dirty = 1;       /* cần repaint */
 static int stack_dirty = 1; /* geometry/stacking đổi: cần pre-pass + re-query root */
@@ -444,6 +464,26 @@ static Window settings_wm(void) {
     if (untrap_errors() || !valid) return None;
     return owner;
 }
+static void layout_settings_read(Window owner) {
+    Atom type; int format; unsigned long n = 0, extra = 0;
+    unsigned char *data = NULL;
+    int duration = 0;
+    if (owner && A_LAYOUT_SETTINGS &&
+        XGetWindowProperty(dpy, root, A_LAYOUT_SETTINGS, 0, 3, False, XA_CARDINAL,
+            &type, &format, &n, &extra, &data) == Success && type == XA_CARDINAL &&
+        format == 32 && layout_animation_settings_valid((unsigned long *)data,
+            n, extra, owner)) duration = (int)((unsigned long *)data)[2];
+    if (data) XFree(data);
+    int enabled = duration > 0 && opt_fade && !opt_reduce_motion;
+    if (enabled != opt_layout || duration != opt_layout_ms) {
+        opt_layout = enabled;
+        opt_layout_ms = duration;
+        for (Win *w = wins; w; w = w->next) layout_release(w);
+        layout_request.count = 0;
+        fading = 0;
+        dirty = full_dirty = 1;
+    }
+}
 static void animation_settings_read(void) {
     if (!opt_wm_settings) return;
     Window owner = settings_wm();
@@ -472,6 +512,7 @@ static void animation_settings_read(void) {
     opt_close_ms = closing;
     opt_fade = enabled; opt_reduce_motion = reduced; opt_fade_ms = duration;
     settings_owner = owner;
+    layout_settings_read(owner);
     if (changed) {
         /* New settings affect subsequent maps only; existing images snap
          * to final alpha (including when motion is switched off mid-fade). */
@@ -483,6 +524,7 @@ static void animation_settings_read(void) {
 }
 
 static void win_free_pix(Win *w) {
+    layout_release(w);
     w->painted = 0;
     if (w->pict) { XRenderFreePicture(dpy, w->pict); w->pict = None; }
     if (w->pixmap) { XFreePixmap(dpy, w->pixmap); w->pixmap = None; }
@@ -586,6 +628,105 @@ static void win_refresh_flags(Win *w) {
     w->wintype = read_wintype(w->id);
 }
 
+static void layout_release(Win *w) {
+    if (!w) return;
+    animation_cancel(&w->layout);
+    w->layout_pending = 0;
+    if (w->layout_pict || w->layout_pixmap) {
+        if (layout_count) layout_count--;
+        size_t bytes = (size_t)w->layout_w * (size_t)w->layout_h * 4u;
+        if (bytes <= layout_bytes) layout_bytes -= bytes; else layout_bytes = 0;
+    }
+    if (w->layout_pict) { XRenderFreePicture(dpy, w->layout_pict); w->layout_pict = None; }
+    if (w->layout_pixmap) { XFreePixmap(dpy, w->layout_pixmap); w->layout_pixmap = None; }
+    w->layout_w = w->layout_h = 0;
+}
+static void layout_begin(Win *w, int target_x, int target_y, long long now) {
+    int start_x, start_y;
+    double f;
+    if (!w || !w->layout_pending || !opt_layout || opt_layout_ms <= 0 ||
+        w->override || w->dock || w->fullscreen || w->shaped || w->depth == 32 ||
+        w->opacity != OPAQUE || w->w <= 0 || w->h <= 0 ||
+        (!w->pict && !w->layout_pict)) return;
+    w->layout_pending = 0;
+    if (w->layout.active) {
+        f = animation_value(&w->layout, w->id, w->generation, now);
+        if (f < 1.0) {
+            start_x = w->layout_x + (int)((w->layout_target_x - w->layout_x) * f);
+            start_y = w->layout_y + (int)((w->layout_target_y - w->layout_y) * f);
+            w->layout_x = start_x; w->layout_y = start_y;
+        } else {
+            w->layout_x = w->x; w->layout_y = w->y;
+        }
+    } else {
+        w->layout_x = w->layout_old_x;
+        w->layout_y = w->layout_old_y;
+    }
+    w->layout_target_x = target_x;
+    w->layout_target_y = target_y;
+    if (!w->layout_pict && w->pict) {
+        int lw = w->w + 2 * w->bw, lh = w->h + 2 * w->bh;
+        size_t bytes = (size_t)lw * (size_t)lh * 4u;
+        if (layout_count >= EXIT_COUNT || bytes > EXIT_BYTES ||
+            layout_bytes > EXIT_BYTES || exits.bytes > EXIT_BYTES - layout_bytes ||
+            bytes > EXIT_BYTES - layout_bytes - exits.bytes) {
+            w->layout_pending = 0;
+            return;
+        }
+        w->layout_pict = w->pict; w->pict = None;
+        w->layout_pixmap = w->pixmap; w->pixmap = None;
+        w->layout_w = lw; w->layout_h = lh;
+        layout_count++; layout_bytes += bytes;
+    }
+    w->painted = 0;
+    animation_start(&w->layout, w->id, w->generation, now, (unsigned)opt_layout_ms);
+}
+static void layout_transaction_read(void) {
+    Atom type; int format; unsigned long n = 0, extra = 0;
+    unsigned char *data = NULL;
+    if (!opt_layout || !settings_owner || A_LAYOUT_TRANSACTION == None ||
+        XGetWindowProperty(dpy, root, A_LAYOUT_TRANSACTION, 0,
+            LAYOUT_ANIMATION_MAX_WORDS, False, XA_CARDINAL, &type, &format,
+            &n, &extra, &data) != Success || type != XA_CARDINAL || format != 32 ||
+        extra || n < LAYOUT_ANIMATION_HEADER_WORDS || !data) {
+        if (data) XFree(data);
+        return;
+    }
+    unsigned long *v = (unsigned long *)data;
+    unsigned count = (unsigned)v[4];
+    if (v[0] != LAYOUT_ANIMATION_VERSION || v[1] != (unsigned long)settings_owner ||
+        v[2] == 0 || v[3] == 0 || v[3] > LAYOUT_ANIMATION_MAX_MS ||
+        count == 0 || count > LAYOUT_ANIMATION_MAX_CLIENTS ||
+        n != LAYOUT_ANIMATION_HEADER_WORDS + count * LAYOUT_ANIMATION_ENTRY_WORDS ||
+        (layout_request.sequence && (uint32_t)v[2] <= layout_request.sequence)) {
+        XFree(data); return;
+    }
+    layout_request.count = 0;
+    layout_request.sequence = (uint32_t)v[2];
+    layout_request.duration = (unsigned)v[3];
+    layout_request.owner = settings_owner;
+    for (unsigned i = 0; i < count; i++) {
+        unsigned long *q = v + LAYOUT_ANIMATION_HEADER_WORDS +
+            i * LAYOUT_ANIMATION_ENTRY_WORDS;
+        Win *w = win_get((Window)q[0]);
+        int old_w = w && w->layout_pict ? w->layout_w - 2 * w->bw : (w ? w->w : 0);
+        int old_h = w && w->layout_pict ? w->layout_h - 2 * w->bh : (w ? w->h : 0);
+        if (!w || !w->mapped || (!w->pict && !w->layout_pict) || w->shaped || w->depth == 32 ||
+            w->opacity != OPAQUE || q[3] != (unsigned long)old_w ||
+            q[4] != (unsigned long)old_h)
+            continue;
+        /* The WM moves windows before it sets this property, so the
+         * ConfigureNotify is already applied. Not moved yet: skip. */
+        w->layout_old_x = (int)q[1]; w->layout_old_y = (int)q[2];
+        if (w->x == w->layout_old_x && w->y == w->layout_old_y) continue;
+        w->layout_pending = 1;
+        layout_begin(w, w->x, w->y, now_ms());
+        w->layout_pending = 0;
+        if (w->layout.active) layout_request.count++;
+    }
+    XFree(data);
+    if (layout_request.count) { opt_layout_ms = (int)v[3]; dirty = full_dirty = 1; fading = 1; }
+}
 static void win_del(Window id);
 
 static Win *win_add(Window id) {
@@ -724,6 +865,7 @@ static int should_shadow(const Win *w) {
  * mà property vẫn OPAQUE. Coi depth 32 là chưa đục: hướng an toàn (chỉ tốn
  * 1 blit nền, không sai hình). */
 static int win_is_opaque(const Win *w, long long now) {
+    if (w->layout.active) return 0;
     if (w->depth == 32) return 0; /* ARGB: trong suốt từng pixel có thể */
     if (w->opacity != OPAQUE) return 0;
     if (w->shaped) return 0;
@@ -1063,6 +1205,8 @@ static void repaint(void) {
     int was_fading = fading;
     exits_maintain(now);
     fading = exits.count != 0;
+    for (Win *w = wins; w; w = w->next)
+        if (w->layout.active) fading = 1;
     shape_poll(now); /* P6: recheck shape cửa sổ non tại mốc 100/400ms */
     /* P1: full-frame khi stack/geometry/nền/appearance đổi hoặc không có hộp
      * damage; ngược lại (gõ chữ, video) chỉ vẽ lại hộp bao damage. */
@@ -1224,9 +1368,33 @@ static void repaint(void) {
             if (!w) continue;
         }
         if (!w->mapped) continue; /* đã tươi sau pre-pass */
-        if (!ensure_win_pict(w)) continue;
+        if (!w->layout.active && w->layout_pict && !w->layout_pending)
+            layout_release(w);
+        int layout_visual = w->layout.active && w->layout_pict != None;
+        if (layout_visual) {
+            double done = animation_value(&w->layout, w->id, w->generation, now);
+            if (done >= 1.0) {
+                layout_release(w);
+                layout_visual = 0;
+            }
+        }
+        if (!layout_visual && !ensure_win_pict(w)) continue;
+        Picture draw_pict = layout_visual ? w->layout_pict : w->pict;
+        if (layout_visual) {
+            XTransform identity = {{{65536, 0, 0}, {0, 65536, 0}, {0, 0, 65536}}};
+            XRenderPictureAttributes pa = {0}; pa.clip_mask = None;
+            XRenderSetPictureTransform(dpy, draw_pict, &identity);
+            XRenderSetPictureFilter(dpy, draw_pict, FilterNearest, NULL, 0);
+            XRenderChangePicture(dpy, draw_pict, CPClipMask, &pa);
+        }
         int dx = w->x, dy = w->y;
         int dw = w->w, dh = w->h;
+        if (layout_visual) {
+            double lf = animation_value(&w->layout, w->id, w->generation, now);
+            dx = w->layout_x + (int)((w->layout_target_x - w->layout_x) * lf);
+            dy = w->layout_y + (int)((w->layout_target_y - w->layout_y) * lf);
+            fading = 1;
+        }
         if (dw <= 0 || dh <= 0) continue;
         if (w->shaped && w->n_clip <= 0) continue; /* empty bounding shape */
         int bw2 = w->bw;
@@ -1267,12 +1435,12 @@ static void repaint(void) {
             }
         }
         if (a >= 0.999) {
-            XRenderComposite(dpy, PictOpOver, w->pict, None, back_pict,
+            XRenderComposite(dpy, PictOpOver, draw_pict, None, back_pict,
                 0, 0, 0, 0, dx, dy, (unsigned)fw, (unsigned)fh);
         } else {
             Picture mask = alpha_mask(a);
             if (mask) {
-                XRenderComposite(dpy, PictOpOver, w->pict, mask, back_pict,
+                XRenderComposite(dpy, PictOpOver, draw_pict, mask, back_pict,
                     0, 0, 0, 0, dx, dy, (unsigned)fw, (unsigned)fh);
             }
         }
@@ -1283,7 +1451,7 @@ static void repaint(void) {
         if (dimf < 1.0) {
             Picture blk = alpha_mask((1.0 - dimf) * a);
             if (blk)
-                XRenderComposite(dpy, PictOpOver, blk, w->pict, back_pict,
+                XRenderComposite(dpy, PictOpOver, blk, draw_pict, back_pict,
                     0, 0, 0, 0, dx, dy, (unsigned)fw, (unsigned)fh);
         }
         if (had_clip)
@@ -1544,6 +1712,8 @@ int main(int argc, char **argv) {
     A_XROOTPMAP = XInternAtom(dpy, "_XROOTPMAP_ID", False);
     A_XSETROOT = XInternAtom(dpy, "_XSETROOT_ID", False);
     A_ANIMATION_CONTROL = XInternAtom(dpy, ANIMATION_CONTROL_ATOM, False);
+    A_LAYOUT_SETTINGS = XInternAtom(dpy, LAYOUT_ANIMATION_SETTINGS_ATOM, False);
+    A_LAYOUT_TRANSACTION = XInternAtom(dpy, LAYOUT_ANIMATION_ATOM, False);
     A_HIDE_REASON = XInternAtom(dpy, ANIMATION_REASON_ATOM, False);
     A_CURRENT_DESKTOP = XInternAtom(dpy, "_NET_CURRENT_DESKTOP", False);
     A_CLOSE_SETTINGS = XInternAtom(dpy, ANIMATION_CLOSE_ATOM, False);
@@ -1851,6 +2021,7 @@ int main(int argc, char **argv) {
                      * size mới ở repaint tới; đánh dấu nền phải chụp lại */
                     bg_dirty = 1;
                     exits_clear();
+                    for (Win *w = wins; w; w = w->next) layout_release(w);
                 } else {
                     /* P3: pixmap chỉ đổi khi size/border đổi (Composite spec:
                      * storage realloc khi top-level đổi size). Move thuần giữ
@@ -1880,10 +2051,14 @@ int main(int argc, char **argv) {
                     for (Win *w = wins; w; w = w->next) w->hide_reason = 0;
                     animation_settings_read();
                 } else if (opt_wm_settings && e->window == root &&
-                    (e->atom == A_ANIMATION_SETTINGS || e->atom == A_CLOSE_SETTINGS)) {
+                    (e->atom == A_ANIMATION_SETTINGS || e->atom == A_CLOSE_SETTINGS ||
+                     e->atom == A_LAYOUT_SETTINGS)) {
                     animation_settings_read();
+                } else if (e->window == root && e->atom == A_LAYOUT_TRANSACTION) {
+                    layout_transaction_read();
                 } else if (e->window == root && e->atom == A_CURRENT_DESKTOP) {
                     exits_clear();
+                    for (Win *w = wins; w; w = w->next) layout_release(w);
                 } else if (e->window == root && e->atom == A_ACTIVE) {
                     read_active();
                     dirty = 1; full_dirty = 1; /* dim đổi cả 2 cửa sổ, không có damage */
@@ -1914,6 +2089,11 @@ int main(int argc, char **argv) {
                 }
                 break;
             case ClientMessage:
+                if (ev.xclient.window == root && ev.xclient.message_type == A_LAYOUT_TRANSACTION &&
+                    ev.xclient.format == 32 && ev.xclient.data.l[0] == LAYOUT_ANIMATION_VERSION &&
+                    (Window)ev.xclient.data.l[1] == settings_owner &&
+                    (uint32_t)ev.xclient.data.l[2] > layout_request.sequence)
+                    layout_transaction_read();
                 if (ev.xclient.window == root && ev.xclient.message_type == A_HIDE_REASON &&
                     ev.xclient.format == 32) {
                     unsigned long words[5];

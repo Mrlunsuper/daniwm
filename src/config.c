@@ -238,6 +238,7 @@ void config_defaults(void) {
     COMPOSITOR = 0; ANIMATIONS = 0; REDUCE_MOTION = 0;
     ANIMATION_OPEN_MS = ANIMATION_OPEN_DEFAULT;
     ANIMATION_CLOSE_MS = ANIMATION_CLOSE_DEFAULT;
+    ANIMATION_LAYOUT_MS = 0;
     SWIPE_ENABLED = 0; SWIPE_THRESHOLD = 80.0;
     SWIPE_WRAP = 0; SWIPE_REVERSE = 0; SWIPE_DEBUG = 0;
     BORDER_FOCUS = 0x7aa2f7; BORDER_NORMAL = 0x333333;
@@ -438,13 +439,15 @@ static void parse_scalar(char *key, char *val) {
     } else if (!strcmp(key, "reduce_motion")) {
         if (parse_bool(val, &b)) REDUCE_MOTION = b;
         else fprintf(stderr, "daniwm: bad reduce_motion '%s' (want boolean)\n", val);
-    } else if (!strcmp(key, "animation_open_ms") || !strcmp(key, "animation_close_ms")) {
+    } else if (!strcmp(key, "animation_open_ms") || !strcmp(key, "animation_close_ms") ||
+               !strcmp(key, "animation_layout_ms")) {
         char *end;
         errno = 0;
         v = strtol(val, &end, 10);
         if (*val && end != val && !*end && !errno && v >= 0 && v <= 1000) {
             if (!strcmp(key, "animation_open_ms")) ANIMATION_OPEN_MS = (int)v;
-            else ANIMATION_CLOSE_MS = (int)v;
+            else if (!strcmp(key, "animation_close_ms")) ANIMATION_CLOSE_MS = (int)v;
+            else ANIMATION_LAYOUT_MS = (int)v;
         } else fprintf(stderr, "daniwm: bad %s '%s' (want integer 0..1000)\n", key, val);
     } else if (!strcmp(key, "swipe_enabled")) {
         if (parse_bool(val, &b)) SWIPE_ENABLED = b;
@@ -779,7 +782,7 @@ void load_config(const char *path) {
             strcmp(k, "tray_spacing") && strcmp(k, "tray_icons_gap") && strcmp(k, "bar_on") && strcmp(k, "focus") && strcmp(k, "gaps_on") &&
             strcmp(k, "compositor") && strcmp(k, "animations") &&
             strcmp(k, "reduce_motion") && strcmp(k, "animation_open_ms") &&
-            strcmp(k, "animation_close_ms") &&
+            strcmp(k, "animation_close_ms") && strcmp(k, "animation_layout_ms") &&
             strcmp(k, "swipe_enabled") && strcmp(k, "swipe_threshold") &&
             strcmp(k, "swipe_wrap") && strcmp(k, "swipe_reverse") &&
             strcmp(k, "swipe_debug") &&
