@@ -728,7 +728,7 @@ static void layout_begin(Win *w, int target_x, int target_y, long long now) {
             start_y = w->layout_y + (int)((w->layout_target_y - w->layout_y) * f);
             w->layout_x = start_x; w->layout_y = start_y;
         } else {
-            w->layout_x = w->x; w->layout_y = w->y;
+            w->layout_x = w->layout_target_x; w->layout_y = w->layout_target_y;
         }
     } else {
         w->layout_x = w->layout_old_x;
