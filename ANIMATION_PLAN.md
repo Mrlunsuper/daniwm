@@ -1,6 +1,6 @@
 # daniwm animation roadmap
 
-Status (branch `feat/animation`, not released):
+Status (on `main` since 2026-11-24, all effects opt-in and off by default):
 
 | Phase | Status | Evidence |
 | --- | --- | --- |
@@ -16,6 +16,28 @@ Status (branch `feat/animation`, not released):
 
 Each branch is reviewed on its own and must pass its own exit gate. A Phase 3
 prototype does not mark Phase 2 complete.
+
+Progress log:
+
+- **2026-11-23:** 3-P1, 3-P2, 3-I and Phase 4 gates passed after review.
+- **2026-11-24:** Real-session check by the user (commit `591a2de`,
+  workspace and overview at 180 ms): "smooth", overview works. Recorded in
+  the 3-I and Phase 4 reports.
+- **2026-11-24:** `feat/animation` was pushed to `main` as a fast-forward
+  (`e05f0a9..868b2af`, 13 commits) by the user's choice. **No PR and no
+  self-review were done before this push.**
+
+Open items:
+
+1. Review the pushed range `e05f0a9..868b2af` after the fact. Fix what it
+   finds in new commits on `main`.
+2. Multi-monitor check (overview placement, crossfade on each monitor).
+3. Numbers for frame time and input latency on real hardware (plan §6,
+   "Performance acceptance"). Today there is only the user's judgement.
+4. Optional, not requested: directional workspace slide; subtle overview
+   scale.
+5. Not animation work: `test-urgency` is flaky before these changes
+   (1 of 10 runs on the old HEAD); `make check` stops at `check-ai`.
 
 ## 1. Goals and boundaries
 
@@ -170,7 +192,7 @@ stale images, change focus or accidentally fade every workspace switch.
 
 ### Phase 2 — Layout and discrete window movement — best-effort implemented
 
-Status: implemented on `feat/animation`, opt-in, best-effort. Not released. The
+Status: implemented, opt-in, best-effort, on `main` since 2026-11-24. The
 strict gate is unmet. See `ANIMATION_PHASE2_BESTEFFORT_REPORT.md`.
 
 Phase 2 is implemented as an explicitly opt-in **best-effort** branch under the
@@ -307,7 +329,7 @@ targets from Phase 0 rather than inventing hardware-independent FPS guarantees.
 **Release order:** small commits/PRs for baseline tests, sampler, fade settings,
 exit snapshots, and the separately reviewed protocol/layout/workspace/overview
 branches. Phase 2 strict input-safe effects remain unmet; its opt-in best-effort
-implementation is a separate commit on `feat/animation` and is not released. Phase 3 may be requested through 3-P1
+implementation is a separate commit, now on `main` (opt-in). Phase 3 may be requested through 3-P1
 capture/protocol, 3-P2 input/render/resource, then 3-I integration;
 none is implied by this roadmap amendment. Update `README.md`, example `config`
 and launcher documentation only as each corresponding feature ships. Keep
