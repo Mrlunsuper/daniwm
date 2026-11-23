@@ -19,6 +19,7 @@
 #define RED 0xcc0000UL
 #define BLUE 0x0000ccUL
 #define GREEN 0x00cc00UL
+#define CYAN 0x00ccccUL
 #define FADE_MS 250
 #define CX 512
 #define CY 384
@@ -52,7 +53,7 @@ static void config(int workspace_ms, int close_ms, int reduce) {
         "animation_open_ms = 0\nanimation_close_ms = %d\nanimation_layout_ms = 0\n"
         "animation_workspace_ms = %d\nbar_on = 0\ngaps_on = 0\nborder = 0\nfocus = click\n"
         "bind = mod+Shift+r:reload_config\nbind = mod+m:monocle\nbind = mod+t:tile\n"
-        "bind = mod+o:overview_toggle\n", reduce, close_ms, workspace_ms);
+        "bind = mod+o:overview_toggle\nbind = mod+s:scratch\n", reduce, close_ms, workspace_ms);
     assert(fclose(f) == 0);
 }
 static Time server_time(void) {
@@ -158,6 +159,21 @@ static Window map_client(unsigned long color) {
         sleep_ms(10);
     }
     fprintf(stderr, "FAIL: client did not map\n");
+    exit(1);
+}
+
+/* The WM finds the scratchpad by its class name. */
+static Window map_scratch(void) {
+    Window w = XCreateSimpleWindow(d, root, 10, 10, 200, 120, 0, 0, CYAN);
+    char name[] = "scratchpad";
+    XClassHint hint = {name, name};
+    XSetClassHint(d, w, &hint);
+    XMapWindow(d, w); XFlush(d);
+    for (unsigned i = 0; i < 300; i++) {
+        if (geometry(w).map_state == IsViewable) { sleep_ms(300); return w; }
+        sleep_ms(10);
+    }
+    fprintf(stderr, "FAIL: scratchpad did not map\n");
     exit(1);
 }
 
@@ -452,7 +468,48 @@ int main(int argc, char **argv) {
     check(sent == 10 && trace.p[trace.n - 1] == BLUE && settle(BLUE) <= FADE_MS + 120,
         "switch storm: newest wins, exact final frame");
 
-    /* 11. Three members: every tile fades, then shows the exact final frame. */
+    /* 11. Scratchpad: a member when shown; its hide does not cut a fade. */
+    desktop_wait(0);
+    sleep_ms(400);
+    {
+        Window sp = map_scratch();
+        XWindowAttributes g0 = geometry(sp);
+        int sx = g0.x + g0.width / 2, sy = g0.y + g0.height / 2;
+        unsigned long shown_sp = pixel(sx, sy);
+        seq = prepare_sequence();
+        switch_and_sample(1, sx, sy, 500);
+        report("scratchpad 0->1", shown_sp, BLUE);
+        check(shown_sp == CYAN && prepare_sequence() != seq && prepare_members() == 2 &&
+            crossfade_ok(CYAN, BLUE),
+            "shown scratchpad is a member: crossfade, then the exact final frame");
+        /* Show it on desktop 1, then switch 0 -> 1 and hide it mid-fade. */
+        key(XK_s, Mod4Mask);
+        sleep_ms(300);
+        XWindowAttributes g1 = geometry(sp);
+        check(g1.map_state == IsViewable, "scratchpad toggles onto desktop 1");
+        desktop_wait(0);
+        sleep_ms(400);
+        int qx = 40, qy = 40; /* outside the scratchpad on both desktops */
+        assert(qx < g1.x && qy < g1.y && pixel(qx, qy) == RED);
+        desktop(1);
+        long long t0 = now_ms();
+        unsigned long q = RED;
+        while (now_ms() - t0 < 120 && !is_blend(q, RED, BLUE)) q = pixel(qx, qy);
+        key(XK_s, Mod4Mask);
+        sample(qx, qy, 400);
+        unsigned after_hide = blends(RED, BLUE);
+        for (unsigned i = 0; i < 100 && geometry(sp).map_state == IsViewable; i++) sleep_ms(5);
+        printf("METRIC: scratchpad hide mid-fade: blend before=%06lx blends after=%u/%u settle=%lldms\n",
+            q, after_hide, trace.n, settle(BLUE));
+        /* Fade cut by the hide would settle within a few frames. */
+        check(geometry(sp).map_state != IsViewable && is_blend(q, RED, BLUE) && after_hide > 0 &&
+            settle(BLUE) >= 120 && trace.p[trace.n - 1] == BLUE,
+            "scratchpad hide during a fade: the fade continues, exact final frame");
+        XDestroyWindow(d, sp); XFlush(d);
+        sleep_ms(300);
+    }
+
+    /* 12. Three members: every tile fades, then shows the exact final frame. */
     desktop_wait(0);
     sleep_ms(400);
     {
@@ -491,7 +548,7 @@ int main(int argc, char **argv) {
         XDestroyWindow(d, tiles[0]); XDestroyWindow(d, tiles[1]); XFlush(d);
     }
 
-    /* 12. More than 8 leaving clients (the pool size): no PREPARE. */
+    /* 13. More than 8 leaving clients (the pool size): no PREPARE. */
     desktop_wait(0);
     sleep_ms(400);
     Window many[8];
@@ -503,7 +560,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 8; i++) XDestroyWindow(d, many[i]);
     XFlush(d);
 
-    /* 13. Resources return to the baseline. */
+    /* 14. Resources return to the baseline. */
     sleep_ms(1500);
     resources(owner, &count, &bytes, "final");
     printf("METRIC: dani-comp XRes resources (less root children)=%llu/%llu pixmap_bytes=%llu/%llu\n",

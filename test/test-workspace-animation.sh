@@ -41,7 +41,7 @@ done
 cfg="$tmp/config/daniwm/config"
 run() {
     mode=$1
-    printf 'compositor = 1\nanimations = 1\nreduce_motion = 0\nanimation_open_ms = 0\nanimation_close_ms = 0\nanimation_layout_ms = 0\nanimation_workspace_ms = 250\nbar_on = 0\ngaps_on = 0\nborder = 0\nfocus = click\nbind = mod+Shift+r:reload_config\nbind = mod+m:monocle\nbind = mod+t:tile\nbind = mod+o:overview_toggle\n' > "$cfg"
+    printf 'compositor = 1\nanimations = 1\nreduce_motion = 0\nanimation_open_ms = 0\nanimation_close_ms = 0\nanimation_layout_ms = 0\nanimation_workspace_ms = 250\nbar_on = 0\ngaps_on = 0\nborder = 0\nfocus = click\nbind = mod+Shift+r:reload_config\nbind = mod+m:monocle\nbind = mod+t:tile\nbind = mod+o:overview_toggle\nbind = mod+s:scratch\n' > "$cfg"
     rm -f "$tmp/display"
     Xvfb -displayfd 3 -screen 0 1024x768x24 -nolisten tcp \
         +extension COMPOSITE +extension DAMAGE +extension RENDER +extension XFIXES \

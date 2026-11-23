@@ -92,6 +92,8 @@ Present path). Copy numbers are first, Present numbers are second.
 | 9 | Commit from the overview (real Left + Return keys): no PREPARE, exact final frame | PASS |
 | 9 | Switch right after the overview closes: exact final frame | PASS (bypass, see Findings 2) |
 | 10 | Storm, 10 switches 25 ms apart: 10 PREPAREs, newest wins, exact final frame | PASS (settle 232 / 241 ms) |
+| 11 | Shown scratchpad is a member (2 members): crossfade, exact final frame | PASS (settle 252 / 277 ms) |
+| 11 | Scratchpad hide during a fade: the fade continues, exact final frame | PASS (settle 231–246 ms after the hide) |
 | 11 | 3 tiled members: each tile crossfades, then the exact final frame | PASS (settle 252–261 / 263–284 ms) |
 | 12 | 9 leaving clients: no PREPARE, instant | PASS |
 | 13 | dani-comp XRes after all of the above | PASS (36/36 and 38/38 resources; pixmap bytes equal) |
@@ -121,6 +123,11 @@ only `test/ws-capture-prototype.h` from this repository.
 Bypass count (6 extra runs with `DANI_COMP_DEBUG=1`, both paths): the
 3-member switch never bypassed. Each copy run had 1 bypass (Findings 2).
 Each Present run had 2 (Findings 2 and 3).
+
+Mutation check for the scratchpad hide row: with dani-comp changed so that a
+scratchpad hide clears everything, that row fails (the fade settles 3–33 ms
+after the hide). `src/` was restored after the check (`git diff` empty), and
+the real code then passed 3 runs in a row.
 
 ## Changes from the plan statement
 
@@ -163,10 +170,17 @@ Each Present run had 2 (Findings 2 and 3).
   `XRRSetMonitor` sends no RandR event (3-P2 Finding 5), so the WM bump in
   `on_monitors_changed()` is not run by this test. It is the same call path
   as for any monitor change. Not measured.
-- Scratchpad as a member and ARGB/shaped members are not tested here. They
-  use the same image path as close (3-P2 covered them in the model).
+- ARGB and shaped members are not tested here. They use the same image path
+  as close (3-P2 covered them in the model).
 - Hardware pacing, tearing and real input latency: SKIP (Xvfb).
 
-## Next step
+## Decision: gate PASS (reviewed 2026-11-23)
 
-Review. If accepted, commit. Push needs a separate approval.
+The user reviewed this report and accepted:
+
+1. No crossfade when the overview is open or commits the switch.
+2. A scratchpad hide clears only close images; a running workspace fade
+   continues. Only reload clears everything.
+
+Tearing, vsync pacing and real input latency are still not verified (Xvfb
+only). Check them on real hardware before release.
