@@ -21,6 +21,8 @@ void push_key_fn(KeySym ks, unsigned int mod, void (*fn)(int), int arg);
 void k_reload(int unused);
 void animation_settings_publish(void);
 void animation_unmap(Window window, unsigned reason);
+void animation_workspace_prepare(int old, int new);
+void animation_monitor_epoch_bump(void);
 void compositor_start(void);
 void k_exec(int idx);
 int push_exec_cmd(char **argv);

@@ -3,8 +3,10 @@
 #include "animation-settings.h"
 #include "layout-animation.h"
 #include "animation-lifecycle.h"
+#include "workspace-animation.h"
 #include "xerr.h"
 #include <X11/Xatom.h>
+#include <time.h>
 
 #include <X11/Xutil.h>
 #include <X11/XF86keysym.h>
@@ -143,6 +145,7 @@ static void k_bar(int unused) {
 }
 static void k_fullscreen(int unused) { (void)unused; if (sel) setfullscreen(sel, !sel->fullscreen); }
 static Atom animation_hide_atom;
+static unsigned long monitor_epoch = 1;
 /* Settings only, not a geometry/capture protocol. The WM never waits for
  * an acknowledgment or restarts a compositor on animation-setting reload. */
 void animation_settings_publish(void) {
@@ -161,14 +164,62 @@ void animation_settings_publish(void) {
         (unsigned long)ANIMATION_LAYOUT_MS};
     XChangeProperty(dpy, root, XInternAtom(dpy, LAYOUT_ANIMATION_SETTINGS_ATOM, False),
         XA_CARDINAL, 32, PropModeReplace, (unsigned char *)layout, 3);
+    unsigned long workspace[] = {WORKSPACE_ANIMATION_VERSION, checkwin,
+        (unsigned long)ANIMATION_WORKSPACE_MS};
+    XChangeProperty(dpy, root, XInternAtom(dpy, WORKSPACE_SETTINGS_ATOM, False),
+        XA_CARDINAL, 32, PropModeReplace, (unsigned char *)workspace, 3);
+    XChangeProperty(dpy, root, XInternAtom(dpy, MONITOR_EPOCH_ATOM, False),
+        XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&monitor_epoch, 1);
     XFlush(dpy);
+}
+/* Monitor geometry changed: any workspace image from before is stale. */
+void animation_monitor_epoch_bump(void) {
+    if (++monitor_epoch == 0) ++monitor_epoch;
+    if (!dpy || !checkwin) return;
+    XChangeProperty(dpy, root, XInternAtom(dpy, MONITOR_EPOCH_ATOM, False),
+        XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&monitor_epoch, 1);
+}
+/* Before a workspace switch publishes the desktop: tell dani-comp which
+ * viewable clients leave. Never reads from or waits for the compositor;
+ * any doubt means no PREPARE, so the switch stays instant. */
+void animation_workspace_prepare(int old, int new) {
+    static Atom atom;
+    static uint32_t sequence;
+    if (!dpy || !checkwin || !COMPOSITOR || !ANIMATIONS || REDUCE_MOTION ||
+        ANIMATION_WORKSPACE_MS <= 0) return;
+    unsigned long words[WORKSPACE_ANIMATION_WORDS];
+    unsigned long count = 0;
+    for (Client *c = clients; c; c = c->next) {
+        if ((c->ws == old || c->ws == new) && c->fullscreen) return;
+        if (c->ws != old || c->hidden) continue;
+        if (count == WORKSPACE_ANIMATION_MEMBERS) return;
+        words[WORKSPACE_ANIMATION_HEADER + count++] = c->win;
+    }
+    if (!atom) atom = XInternAtom(dpy, WORKSPACE_ANIMATION_ATOM, False);
+    if (++sequence == 0) ++sequence;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    words[0] = WORKSPACE_ANIMATION_VERSION; words[1] = checkwin; words[2] = monitor_epoch;
+    words[3] = sequence; words[4] = (unsigned long)old; words[5] = (unsigned long)new;
+    words[6] = (uint32_t)(now.tv_sec * 1000 + now.tv_nsec / 1000000);
+    words[7] = count;
+    XChangeProperty(dpy, root, atom, XA_CARDINAL, 32, PropModeReplace,
+        (unsigned char *)words, (int)(WORKSPACE_ANIMATION_HEADER + count));
+    XEvent event = {0};
+    event.xclient.type = ClientMessage; event.xclient.window = root;
+    event.xclient.message_type = atom; event.xclient.format = 32;
+    event.xclient.data.l[0] = WORKSPACE_ANIMATION_VERSION;
+    event.xclient.data.l[1] = (long)checkwin;
+    event.xclient.data.l[2] = (long)sequence;
+    XSendEvent(dpy, root, False, SubstructureNotifyMask, &event);
 }
 /* Same-connection ordering guarantees this notification is enqueued before
  * the unmap event. No capture, acknowledgment, XSync or server grab. */
 void animation_unmap(Window window, unsigned reason) {
     static uint32_t sequence;
     if (COMPOSITOR && ANIMATIONS && !REDUCE_MOTION &&
-        (ANIMATION_CLOSE_MS > 0 || ANIMATION_OPEN_MS > 0) && checkwin && animation_hide_atom) {
+        (ANIMATION_CLOSE_MS > 0 || ANIMATION_OPEN_MS > 0 || ANIMATION_WORKSPACE_MS > 0) &&
+        checkwin && animation_hide_atom) {
         /* RFC1982-style serial ordering; zero is reserved. */
         if (++sequence == 0) ++sequence;
         {

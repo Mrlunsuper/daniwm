@@ -20,6 +20,7 @@ typedef struct {
     struct { int16_t x, y; uint16_t width, height; } clip[256];
     unsigned nclip;
     int shaped;
+    int workspace; /* part of a workspace crossfade, not a close */
     double alpha, dim;
     Animation animation;
 } ExitLayer;

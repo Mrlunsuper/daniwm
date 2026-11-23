@@ -67,7 +67,8 @@ extern char vol_cache[16];
 extern time_t vol_ts;
 
 /* ---- config ---- */
-extern int COMPOSITOR, ANIMATIONS, REDUCE_MOTION, ANIMATION_OPEN_MS, ANIMATION_CLOSE_MS, ANIMATION_LAYOUT_MS;
+extern int COMPOSITOR, ANIMATIONS, REDUCE_MOTION, ANIMATION_OPEN_MS, ANIMATION_CLOSE_MS, ANIMATION_LAYOUT_MS,
+    ANIMATION_WORKSPACE_MS;
 extern Rule *rules;
 extern unsigned nrules, caprules;
 extern char **termcmd;

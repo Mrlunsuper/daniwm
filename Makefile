@@ -95,6 +95,11 @@ check-animation-wm:
 check-layout-animation:
 	sh test/test-layout-animation.sh
 
+# Phase 3-I workspace crossfade on a private Xvfb (copy and Present paths).
+.PHONY: check-workspace-animation
+check-workspace-animation:
+	sh test/test-workspace-animation.sh
+
 .PHONY: check-overview
 check-overview:
 	sh test/test-overview.sh

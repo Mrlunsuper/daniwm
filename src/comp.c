@@ -55,6 +55,7 @@
 #include "animation-lifecycle.h"
 #include "layout-animation.h"
 #include "exit-layer.h"
+#include "workspace-animation.h"
 
 static Display *dpy;
 static Window root;
@@ -90,6 +91,19 @@ static uint32_t reason_sequence;
 static ExitPool exits;
 static int exit_xerror;
 static unsigned exit_bpp[33], exit_pad[33];
+static Atom A_WS_SETTINGS, A_WS_TXN, A_MON_EPOCH;
+static int opt_workspace_ms;
+/* Outgoing images of one workspace switch, held until all members unmap
+ * and the desktop commits. Then they enter the exit pool together. */
+static struct {
+    int active, committed;
+    uint32_t to, count, kept;
+    long long prepared;
+    Window members[WORKSPACE_ANIMATION_MEMBERS];
+    ExitLayer layers[WORKSPACE_ANIMATION_MEMBERS];
+} ws_scene;
+static uint32_t ws_last_sequence;
+static int ws_xerror;
 
 /* options */
 static int opt_shadow = 1;
@@ -400,12 +414,34 @@ static void exit_release(unsigned long picture, unsigned long pixmap) {
     if (picture) XRenderFreePicture(dpy, picture);
     if (pixmap) XFreePixmap(dpy, pixmap);
 }
+static void ws_scene_clear(void) {
+    /* Unpublish before issuing asynchronous resource releases. */
+    ExitLayer held[WORKSPACE_ANIMATION_MEMBERS];
+    uint32_t count = ws_scene.count;
+    memcpy(held, ws_scene.layers, sizeof(held));
+    memset(&ws_scene, 0, sizeof(ws_scene));
+    ws_xerror = 0;
+    for (uint32_t i = 0; i < count; i++)
+        if (held[i].bytes) exit_release(held[i].picture, held[i].pixmap);
+}
+/* keep_workspace: drop only close images (a later hide must not cut a
+ * running workspace crossfade). */
+static void exits_clear_layers(int keep_workspace) {
+    for (unsigned i = 0; i < EXIT_COUNT; i++)
+        if (exits.layers[i].bytes && !(keep_workspace && exits.layers[i].workspace)) {
+            exit_drop(&exits, i, exit_release);
+            dirty = full_dirty = 1;
+        }
+}
 static void exits_clear(void) {
+    if (ws_scene.active) ws_scene_clear();
     if (!exits.count) return;
     exit_clear(&exits, exit_release);
     dirty = full_dirty = 1;
 }
 static void exits_maintain(long long now) {
+    if (ws_scene.active && (ws_xerror || now - ws_scene.prepared >= EXIT_TTL_MS ||
+        now < ws_scene.prepared)) ws_scene_clear();
     if (!exits.count && !exit_xerror) return;
     unsigned before = exits.count;
     if (exit_xerror) { exits_clear(); exit_xerror = 0; }
@@ -507,8 +543,20 @@ static void animation_settings_read(void) {
         animation_close_valid((unsigned long *)data, n, extra, owner))
         closing = (int)((unsigned long *)data)[2];
     if (data) XFree(data);
+    int workspace = 0;
+    data = NULL;
+    if (owner && A_WS_SETTINGS && XGetWindowProperty(dpy, root, A_WS_SETTINGS, 0,
+        3, False, XA_CARDINAL, &type, &format, &n, &extra, &data) == Success &&
+        type == XA_CARDINAL && format == 32 &&
+        workspace_settings_valid((unsigned long *)data, n, extra, owner))
+        workspace = (int)((unsigned long *)data)[2];
+    if (data) XFree(data);
+    if (!enabled || reduced) workspace = 0;
     int changed = enabled != opt_fade || reduced != opt_reduce_motion ||
-        duration != opt_fade_ms || closing != opt_close_ms || owner != settings_owner;
+        duration != opt_fade_ms || closing != opt_close_ms || owner != settings_owner ||
+        workspace != opt_workspace_ms;
+    if (owner != settings_owner) ws_last_sequence = 0;
+    opt_workspace_ms = workspace;
     opt_close_ms = closing;
     opt_fade = enabled; opt_reduce_motion = reduced; opt_fade_ms = duration;
     settings_owner = owner;
@@ -879,36 +927,41 @@ static int win_is_opaque(const Win *w, long long now) {
 /* Transfer only an already painted named pixmap. The server keeps its
  * storage alive across unmap/destroy while this compositor owns references.
  * No client query, capture acknowledgment, or WM delay occurs here. */
-static void closing_detach(Win *w, long long now) {
-    if (!opt_fade || opt_reduce_motion || opt_close_ms <= 0 || w->hide_reason ||
-        (opt_wm_settings && !settings_owner) ||
-        (reason_owner && !opt_wm_settings) ||
-        w->override || w->dock || w->fullscreen || !w->generation || !w->painted ||
+static int exit_layer_from(Win *w, long long now, ExitLayer *layer) {
+    if (w->override || w->dock || w->fullscreen || !w->generation || !w->painted ||
         !w->pixmap || !w->pict || w->depth < 1 || w->depth > 32 ||
-        w->n_clip < 0 || w->n_clip > 256 || (w->shaped && !w->n_clip)) return;
+        w->n_clip < 0 || w->n_clip > 256 || (w->shaped && !w->n_clip)) return 0;
     /* Confirm pending Render requests on the compositor connection only.
      * The WM has already committed removal; this never queries the client. */
     XSync(dpy, False);
-    if (!w->painted || exit_xerror) return;
-    ExitLayer layer = {0};
-    layer.identity = w->id; layer.generation = w->generation;
-    layer.pixmap = w->pixmap; layer.picture = w->pict;
-    layer.x = w->x; layer.y = w->y;
-    layer.width = w->w + 2 * w->bw; layer.height = w->h + 2 * w->bh;
-    if (layer.width <= 0 || layer.height <= 0 ||
-        !exit_size((unsigned)layer.width, (unsigned)layer.height,
-            exit_bpp[w->depth], exit_pad[w->depth], &layer.bytes)) return;
-    layer.retained = now;
-    layer.alpha = (double)w->opacity / OPAQUE *
+    if (!w->painted || exit_xerror || ws_xerror) return 0;
+    memset(layer, 0, sizeof(*layer));
+    layer->identity = w->id; layer->generation = w->generation;
+    layer->pixmap = w->pixmap; layer->picture = w->pict;
+    layer->x = w->x; layer->y = w->y;
+    layer->width = w->w + 2 * w->bw; layer->height = w->h + 2 * w->bh;
+    if (layer->width <= 0 || layer->height <= 0 ||
+        !exit_size((unsigned)layer->width, (unsigned)layer->height,
+            exit_bpp[w->depth], exit_pad[w->depth], &layer->bytes)) return 0;
+    layer->retained = now;
+    layer->alpha = (double)w->opacity / OPAQUE *
         animation_value(&w->opening, w->id, w->generation, now);
-    layer.dim = win_dim(w);
-    layer.shaped = w->shaped; layer.nclip = (unsigned)w->n_clip;
-    for (unsigned i = 0; i < layer.nclip; i++) {
-        layer.clip[i].x = w->clip_rects[i].x;
-        layer.clip[i].y = w->clip_rects[i].y;
-        layer.clip[i].width = w->clip_rects[i].width;
-        layer.clip[i].height = w->clip_rects[i].height;
+    layer->dim = win_dim(w);
+    layer->shaped = w->shaped; layer->nclip = (unsigned)w->n_clip;
+    for (unsigned i = 0; i < layer->nclip; i++) {
+        layer->clip[i].x = w->clip_rects[i].x;
+        layer->clip[i].y = w->clip_rects[i].y;
+        layer->clip[i].width = w->clip_rects[i].width;
+        layer->clip[i].height = w->clip_rects[i].height;
     }
+    return 1;
+}
+static void closing_detach(Win *w, long long now) {
+    if (!opt_fade || opt_reduce_motion || opt_close_ms <= 0 || w->hide_reason ||
+        (opt_wm_settings && !settings_owner) ||
+        (reason_owner && !opt_wm_settings)) return;
+    ExitLayer layer;
+    if (!exit_layer_from(w, now, &layer)) return;
     /* Anchor immediately below the next surviving live generation. Unknown
      * stacking means skip rather than arbitrarily put an image on top. */
     int found = 0;
@@ -927,6 +980,120 @@ static void closing_detach(Win *w, long long now) {
     if (!exit_admit(&exits, &layer)) return;
     w->pixmap = None; w->pict = None; w->painted = 0;
     fading = 1; dirty = full_dirty = 1;
+}
+
+static int ws_member(Window id) {
+    for (uint32_t i = 0; i < ws_scene.count; i++) if (ws_scene.members[i] == id) return (int)i;
+    return -1;
+}
+/* All members kept and the desktop committed: start every image at once.
+ * Ranks come from the server stack now, so a restack after PREPARE still
+ * draws in order. Any failure frees all images: the switch stays instant. */
+static void ws_admit(long long now) {
+    if (!ws_scene.active || !ws_scene.committed || ws_scene.kept != ws_scene.count) return;
+    Window r, p, *kids = NULL;
+    unsigned nk = 0;
+    int ok = XQueryTree(dpy, root, &r, &p, &kids, &nk) &&
+        exits.count + ws_scene.count <= EXIT_COUNT;
+    size_t bytes = 0;
+    for (uint32_t i = 0; ok && i < ws_scene.count; i++) {
+        ExitLayer *l = &ws_scene.layers[i];
+        unsigned k = 0;
+        while (k < nk && kids[k] != l->identity) k++;
+        if (k == nk || l->bytes > EXIT_BYTES - bytes) ok = 0;
+        l->rank = k;
+        bytes += l->bytes;
+    }
+    if (kids) XFree(kids);
+    if (!ok || bytes > EXIT_BYTES - exits.bytes) {
+        if (opt_debug) fprintf(stderr, "dani-comp: workspace bypass: pool\n");
+        ws_scene_clear();
+        return;
+    }
+    for (uint32_t i = 0; i < ws_scene.count; i++) {
+        ExitLayer *l = &ws_scene.layers[i];
+        l->retained = now;
+        animation_start(&l->animation, l->identity, l->generation, now,
+            (unsigned)opt_workspace_ms);
+        if (exit_admit(&exits, l)) memset(l, 0, sizeof(*l));
+        else ok = 0;
+    }
+    ws_scene_clear();
+    if (!ok) for (unsigned i = 0; i < EXIT_COUNT; i++)
+        if (exits.layers[i].workspace) exit_drop(&exits, i, exit_release);
+    fading = 1; dirty = full_dirty = 1;
+}
+/* Member UnmapNotify: keep its already painted image. Anything unexpected
+ * ends the scene. */
+static void ws_retain(Win *w, long long now) {
+    int i = ws_member(w->id);
+    if (i < 0) return;
+    ExitLayer layer;
+    if (ws_scene.layers[i].bytes || w->hide_reason != ANIMATION_HIDE_WORKSPACE ||
+        !exit_layer_from(w, now, &layer)) {
+        if (opt_debug) fprintf(stderr, "dani-comp: workspace bypass: member 0x%lx reason=%d painted=%d\n",
+            (unsigned long)w->id, w->hide_reason, w->painted);
+        ws_scene_clear();
+        return;
+    }
+    layer.workspace = 1;
+    ws_scene.layers[i] = layer;
+    ws_scene.kept++;
+    w->pixmap = None; w->pict = None; w->painted = 0;
+    ws_admit(now);
+}
+static long ws_desktop(void) {
+    Atom type; int format; unsigned long n = 0, extra = 0;
+    unsigned char *data = NULL;
+    long desktop = -1;
+    if (XGetWindowProperty(dpy, root, A_CURRENT_DESKTOP, 0, 1, False, XA_CARDINAL,
+        &type, &format, &n, &extra, &data) == Success && type == XA_CARDINAL &&
+        format == 32 && n == 1 && !extra && data)
+        desktop = (long)(uint32_t)*(unsigned long *)data;
+    if (data) XFree(data);
+    return desktop;
+}
+/* PREPARE from the WM. Newest wins: every earlier image ends here. Any
+ * doubt means no scene, so the switch is instant. */
+static void ws_prepare(uint32_t sequence) {
+    if (!workspace_sequence_newer(sequence, ws_last_sequence)) return;
+    ws_last_sequence = sequence;
+    exits_clear();
+    if (opt_workspace_ms <= 0 || !settings_owner || reason_owner != settings_owner) return;
+    Atom type; int format; unsigned long n = 0, extra = 0;
+    unsigned char *data = NULL;
+    unsigned long epoch = 0;
+    if (XGetWindowProperty(dpy, root, A_MON_EPOCH, 0, 1, False, XA_CARDINAL,
+        &type, &format, &n, &extra, &data) == Success && type == XA_CARDINAL &&
+        format == 32 && n == 1 && !extra && data) epoch = *(unsigned long *)data;
+    if (data) XFree(data);
+    if (!epoch) return;
+    data = NULL; n = extra = 0;
+    WorkspaceTxn t;
+    int valid = XGetWindowProperty(dpy, root, A_WS_TXN, 0, WORKSPACE_ANIMATION_WORDS, False,
+        XA_CARDINAL, &type, &format, &n, &extra, &data) == Success &&
+        type == XA_CARDINAL && format == 32 &&
+        workspace_txn_decode(&t, (unsigned long *)data, n, extra, settings_owner, epoch);
+    if (data) XFree(data);
+    long long now = now_ms();
+    if (!valid || t.sequence != sequence || !t.count ||
+        (uint32_t)((uint32_t)now - t.sent_ms) > WORKSPACE_ANIMATION_DEADLINE_MS) {
+        if (opt_debug) fprintf(stderr, "dani-comp: workspace bypass: PREPARE %u\n", sequence);
+        return;
+    }
+    for (uint32_t i = 0; i < t.count; i++) {
+        Win *w = win_get(t.members[i]);
+        if (!w || !w->mapped || w->override || w->dock || w->fullscreen) {
+            if (opt_debug) fprintf(stderr, "dani-comp: workspace bypass: member 0x%lx\n",
+                (unsigned long)t.members[i]);
+            return;
+        }
+    }
+    ws_scene.active = 1;
+    ws_scene.to = t.to;
+    ws_scene.count = t.count;
+    ws_scene.prepared = now;
+    for (uint32_t i = 0; i < t.count; i++) ws_scene.members[i] = t.members[i];
 }
 
 /* đảm bảo back buffer + snapshot nền đúng size root hiện tại */
@@ -1077,7 +1244,7 @@ static int ensure_win_pict(Win *w) {
     Picture pict = XRenderCreatePicture(dpy, pm, fmt, 0, NULL);
     int pict_error = untrap_errors();
     if (pict_error || !pict) { XFreePixmap(dpy, pm); return 0; }
-    if (opt_close_ms > 0 && opt_fade && !opt_reduce_motion) {
+    if ((opt_close_ms > 0 || opt_workspace_ms > 0) && opt_fade && !opt_reduce_motion) {
         Window rr; int px, py; unsigned pw, ph, pb, pd;
         trap_errors();
         int valid = XGetGeometry(dpy, pm, &rr, &px, &py, &pw, &ph, &pb, &pd);
@@ -1350,7 +1517,7 @@ static void repaint(void) {
             Win *upper = id ? win_get(id) : NULL;
             /* A newly mapped dock/menu/overview must stay above detached
              * normal-client visuals even if absent from the old stack. */
-            if (upper && (upper->dock || upper->override || upper->fullscreen))
+            if (upper && upper->mapped && (upper->dock || upper->override || upper->fullscreen))
                 paint_exits(None, now, exits_drawn);
             paint_exits(id, now, exits_drawn);
         }
@@ -1458,7 +1625,8 @@ static void repaint(void) {
             back_clip_reset(); /* trả clip về hộp damage (hoặc None) */
         /* Candidate only: closing_detach drains outstanding asynchronous
          * errors before it transfers these references out of live state. */
-        if (opt_close_ms > 0 && opt_fade && !opt_reduce_motion) w->painted = 1;
+        if ((opt_close_ms > 0 || opt_workspace_ms > 0) && opt_fade && !opt_reduce_motion)
+            w->painted = 1;
     }
     /* Missing/destroyed stacking anchors cancel rather than float to top. */
     if (exits.count) for (unsigned i = 0; i < EXIT_COUNT; i++)
@@ -1547,6 +1715,11 @@ static int xerror_ignore(Display *d, XErrorEvent *e) {
         ExitLayer *s = &exits.layers[i];
         if (s->bytes && (e->resourceid == s->pixmap || e->resourceid == s->picture))
             exit_xerror = 1;
+    }
+    for (uint32_t i = 0; i < ws_scene.count; i++) {
+        ExitLayer *s = &ws_scene.layers[i];
+        if (s->bytes && (e->resourceid == s->pixmap || e->resourceid == s->picture))
+            ws_xerror = 1;
     }
     for (Win *w = wins; w; w = w->next)
         if (e->resourceid == w->id || e->resourceid == w->pixmap || e->resourceid == w->pict)
@@ -1718,6 +1891,9 @@ int main(int argc, char **argv) {
     A_CURRENT_DESKTOP = XInternAtom(dpy, "_NET_CURRENT_DESKTOP", False);
     A_CLOSE_SETTINGS = XInternAtom(dpy, ANIMATION_CLOSE_ATOM, False);
     A_WM_CHECK = XInternAtom(dpy, "_NET_SUPPORTING_WM_CHECK", False);
+    A_WS_SETTINGS = XInternAtom(dpy, WORKSPACE_SETTINGS_ATOM, False);
+    A_WS_TXN = XInternAtom(dpy, WORKSPACE_ANIMATION_ATOM, False);
+    A_MON_EPOCH = XInternAtom(dpy, MONITOR_EPOCH_ATOM, False);
     int formats_n;
     XPixmapFormatValues *formats = XListPixmapFormats(dpy, &formats_n);
     if (formats) {
@@ -1863,6 +2039,11 @@ int main(int argc, char **argv) {
             if (left < 0) left = 0;
             if (budget < 0 || left * 1000 < budget) budget = (long)(left * 1000);
         }
+        if (ws_scene.active) {
+            long long left = ws_scene.prepared + EXIT_TTL_MS - now_ms();
+            if (left < 0) left = 0;
+            if (budget < 0 || left * 1000 < budget) budget = (long)(left * 1000);
+        }
         /* GC zombie window chết sót: wake tối đa 5s để quét 1 lần. */
         {
             long long gdue = last_gc + 5000 - now_ms();
@@ -1948,6 +2129,7 @@ int main(int argc, char **argv) {
                 if (e->event != root || e->window == cm_win) break;
                 if (opt_debug) fprintf(stderr, "dani-comp: Map 0x%lx\n", (unsigned long)e->window);
                 if (exits.count) exit_cancel_identity(&exits, e->window, exit_release);
+                if (ws_member(e->window) >= 0) ws_scene_clear();
                 Win *prior = win_get(e->window);
                 int hidden = prior && prior->hide_reason;
                 Win *w = win_add(e->window);
@@ -1973,6 +2155,7 @@ int main(int argc, char **argv) {
                     (unsigned long)e->window, win_get(e->window) != NULL);
                 Win *w = win_get(e->window);
                 if (w && w->mapped) {
+                    if (ws_scene.active) ws_retain(w, now_ms());
                     closing_detach(w, now_ms());
                     w->mapped = 0;
                     animation_cancel(&w->opening);
@@ -1990,6 +2173,8 @@ int main(int argc, char **argv) {
                 }
                 if (opt_wm_settings && ev.xdestroywindow.window == settings_owner)
                     animation_settings_read();
+                int member = ws_member(ev.xdestroywindow.window);
+                if (member >= 0 && !ws_scene.layers[member].bytes) ws_scene_clear();
                 Win *w = win_get(ev.xdestroywindow.window);
                 if (w && w->mapped) closing_detach(w, now_ms());
                 win_del(ev.xdestroywindow.window);
@@ -1999,10 +2184,12 @@ int main(int argc, char **argv) {
             case CreateNotify:
                 /* An XID beginning another lifetime cannot inherit a ghost. */
                 if (exits.count) exit_cancel_identity(&exits, ev.xcreatewindow.window, exit_release);
+                if (ws_member(ev.xcreatewindow.window) >= 0) ws_scene_clear();
                 break;
             case ReparentNotify: {
                 XReparentEvent *e = &ev.xreparent;
                 if (exits.count) exit_cancel_identity(&exits, e->window, exit_release);
+                if (ws_member(e->window) >= 0) ws_scene_clear();
                 /* daniwm không reparent, nhưng transients có thể */
                 Win *w = win_get(e->window);
                 if (e->parent == root) {
@@ -2052,13 +2239,21 @@ int main(int argc, char **argv) {
                     animation_settings_read();
                 } else if (opt_wm_settings && e->window == root &&
                     (e->atom == A_ANIMATION_SETTINGS || e->atom == A_CLOSE_SETTINGS ||
-                     e->atom == A_LAYOUT_SETTINGS)) {
+                     e->atom == A_LAYOUT_SETTINGS || e->atom == A_WS_SETTINGS)) {
                     animation_settings_read();
                 } else if (e->window == root && e->atom == A_LAYOUT_TRANSACTION) {
                     layout_transaction_read();
                 } else if (e->window == root && e->atom == A_CURRENT_DESKTOP) {
-                    exits_clear();
+                    /* Only the desktop its PREPARE named commits a scene. */
+                    if (ws_scene.active && !ws_scene.committed &&
+                        ws_desktop() == (long)ws_scene.to) {
+                        exits_clear_layers(0);
+                        ws_scene.committed = 1;
+                        ws_admit(now_ms());
+                    } else exits_clear();
                     for (Win *w = wins; w; w = w->next) layout_release(w);
+                } else if (e->window == root && e->atom == A_MON_EPOCH) {
+                    exits_clear();
                 } else if (e->window == root && e->atom == A_ACTIVE) {
                     read_active();
                     dirty = 1; full_dirty = 1; /* dim đổi cả 2 cửa sổ, không có damage */
@@ -2094,6 +2289,11 @@ int main(int argc, char **argv) {
                     (Window)ev.xclient.data.l[1] == settings_owner &&
                     (uint32_t)ev.xclient.data.l[2] > layout_request.sequence)
                     layout_transaction_read();
+                if (ev.xclient.window == root && ev.xclient.message_type == A_WS_TXN &&
+                    ev.xclient.format == 32 &&
+                    ev.xclient.data.l[0] == WORKSPACE_ANIMATION_VERSION && settings_owner &&
+                    (Window)ev.xclient.data.l[1] == settings_owner)
+                    ws_prepare((uint32_t)ev.xclient.data.l[2]);
                 if (ev.xclient.window == root && ev.xclient.message_type == A_HIDE_REASON &&
                     ev.xclient.format == 32) {
                     unsigned long words[5];
@@ -2102,9 +2302,10 @@ int main(int argc, char **argv) {
                         reason_sequence = (uint32_t)words[3];
                         Win *w = win_get(words[2]);
                         if (w) w->hide_reason = (int)words[4];
-                        /* A hide invalidates all outgoing visuals: never let a
-                         * recently closed app follow a workspace switch. */
-                        exits_clear();
+                        /* A hide invalidates close visuals: never let a recently
+                         * closed app follow a workspace switch. Reload ends all. */
+                        if (words[4] == ANIMATION_HIDE_RELOAD) exits_clear();
+                        else exits_clear_layers(1);
                     }
                 }
                 if (ev.xclient.window == cm_win && ev.xclient.message_type == A_ANIMATION_CONTROL &&

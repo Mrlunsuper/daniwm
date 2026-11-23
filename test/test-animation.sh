@@ -19,3 +19,6 @@ $CC $CFLAGS -D_DEFAULT_SOURCE -std=c11 -Wall -Wextra -Werror \
     $(pkg-config --cflags xft) -ffunction-sections -fdata-sections \
     test/test-config-animation.c src/state.c -Wl,--gc-sections -lm -o "$tmp/config"
 "$tmp/config"
+$CC $CFLAGS -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Werror \
+    test/test-workspace-protocol.c -o "$tmp/workspace"
+"$tmp/workspace"

@@ -226,6 +226,8 @@ void focus_step(int dir) {
 }
 
 void view(int n) {
+    /* Old workspace not on screen: no crossfade. */
+    int covered = overview_is_open() || overview_committing();
     overview_hide(0);
     for (Client *c=clients;c;c=c->next) if (c->ws==curws) overview_capture(c->win);
     if (n < 0 || n >= NWS || n == curws) return;
@@ -234,6 +236,7 @@ void view(int n) {
     prevws = old;
     curws = n;
     sel = ws_sel[n] && find(ws_sel[n]->win) && ws_sel[n]->ws == n ? ws_sel[n] : first_in_ws(n);
+    if (!covered) animation_workspace_prepare(old, n);
     ewmh_desktops();
     /* Unmap old ws first: fewer transient double-mapped windows and a
      * smaller UnmapNotify burst (H1A ignores it via ws mismatch). */
@@ -249,6 +252,7 @@ void view(int n) {
 }
 
 void send_to(int n) {
+    int covered = overview_is_open() || overview_committing();
     overview_hide(0);
     for (Client *c=clients;c;c=c->next) if (c->ws==curws) overview_capture(c->win);
     if (!sel || n < 0 || n >= NWS || n == curws) return;
@@ -264,6 +268,7 @@ void send_to(int n) {
     prevws = old;
     curws = n;
     sel = s;
+    if (!covered) animation_workspace_prepare(old, n);
     ewmh_desktops();
     /* Unmap old ws first, like view(). */
     for (Client *c = clients; c; c = c->next)

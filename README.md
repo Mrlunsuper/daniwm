@@ -274,6 +274,7 @@ animations = 0
 reduce_motion = 0
 animation_open_ms = 140
 animation_close_ms = 100
+animation_workspace_ms = 0
 ```
 
 Set `compositor = 1` and `animations = 1` to enable opening/remap fade-in and
@@ -281,7 +282,7 @@ close/withdraw fade-out with WM-managed dani-comp. Durations are independent
 integers in **0..1000 ms**; invalid values are rejected with diagnostics.
 `compositor = 0`, `animations = 0`, or `reduce_motion = 1` makes all WM-controlled
 effects instant; duration `0` disables the corresponding effect.
-Workspace/monocle/scratchpad hiding and return remain instant. Layout movement is
+Monocle/scratchpad hiding and return remain instant. Layout movement is
 available as an explicitly opt-in **best-effort** compositor effect via
 `animation_layout_ms`: the WM commits each final geometry once and dani-comp
 moves an already-painted opaque, unshaped depth-24 picture with Render. Input is
@@ -293,6 +294,19 @@ override-redirect windows stay instant; unsupported or stale pictures fall back
 instantly. A drag that starts while a picture still moves shows that picture
 until its movement ends. Focus, input routing, geometry state, workspace state and application
 opacity properties are otherwise unchanged.
+
+Workspace switches are instant by default. Set `animation_workspace_ms`
+(integer **0..250 ms**, default 0) for an opt-in crossfade: dani-comp keeps the
+already-painted images of the outgoing windows and fades them out above the new
+workspace. The WM sends one PREPARE message before the switch and never waits for
+the compositor. Input, focus and the real window state change at once, so a click
+in the first part of the fade goes to the new workspace while the old image is
+still the stronger one (at most about half the duration, so about 125 ms). The cap
+of 250 ms keeps this short. Docks and override-redirect windows stay on top. The
+switch stays instant when a fullscreen client is on the old or the new workspace,
+when more than 8 windows leave, when the overview is open, and when anything is
+not ready (dani-comp falls back instantly). An external pager move of one window
+is also instant.
 
 `reload_config` updates the running opted-in compositor without restarting it.
 Changing motion settings snaps live fades to final opacity, removes closing
@@ -329,6 +343,7 @@ the same X server. Deadlines reuse the compositor loop, not a WM timer/thread.
 headless math/config checks; `make check-animation-xvfb check-animation-wm`
 covers renderer, cancellation, pacing and WM reload checks on private displays.
 `make check-layout-animation` covers best-effort layout movement on a private display.
+`make check-workspace-animation` covers the workspace crossfade (copy and Present) on a private display.
 No installed configuration is modified automatically.
 
 ## Config
@@ -343,7 +358,8 @@ plus bar font `size=`; fractional ok, e.g. `scale = 1.5`; reload applies live),
 `bar_on/gaps_on` (1/true/yes/on), `compositor` (0 default, opt-in startup),
 `animations` (0 default), `reduce_motion` (0 default), `animation_open_ms`
 (integer 0..1000, default 140), `animation_close_ms` (integer 0..1000, default 100),
-`animation_layout_ms` (integer 0..1000, default 0; best-effort movement duration).
+`animation_layout_ms` (integer 0..1000, default 0; best-effort movement duration),
+`animation_workspace_ms` (integer 0..250, default 0; workspace crossfade duration).
 Shadow/dim are standalone compositor flags,
 not WM scalar keys; standalone fade defaults to 160 ms.
 `focus` (`hover`| `click`|`both`, default `hover` — hover-to-focus vs click-to-focus), `tray` (system tray on/off, default on),

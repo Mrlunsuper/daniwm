@@ -22,11 +22,13 @@ static Pixmap backing;
 static GC gc;
 static XftDraw *xd;
 static int active, pending, width, height, cols;
+static int committing; /* view() runs from a click or key in the overview */
 static struct { int x,y,w,h,ws; Window id; } hits[HITS];
 static int nhits;
 static KeyCode commit_key;
 
 int overview_is_open(void) { return active; }
+int overview_committing(void) { return committing; }
 int overview_selection(void) { return active ? pending : -1; }
 void overview_drop(Window id) {
     for (int i=0;i<CACHE;i++) if (cache[i].id==id) {
@@ -289,7 +291,7 @@ void overview_select(int ws) { if (active && ws>=0 && ws<NWS) { pending=ws; draw
 static void commit(Window id) {
     int ws=pending;
     overview_hide(0);
-    view(ws);
+    committing=1; view(ws); committing=0;
     Client *c=id?find(id):NULL;
     if (c && c->ws==ws) focus(c);
 }
