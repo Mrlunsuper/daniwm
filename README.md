@@ -170,6 +170,16 @@ existing files are kept. With `DESTDIR` set (packaging) the user-config step is
 skipped; examples land in `$(PREFIX)/share/daniwm/config.example` +
 `run.config.example` + `autostart.sh.example` for manual copy.
 
+The sample `config` uses a macOS dark look. It overrides some built-in defaults:
+
+- Bar: `bar_h = 32`, `font = Noto Sans:size=9` (icons still come from the Nerd Font fallback).
+- Colors: `bar_bg = 1C1C1E`, `bar_fg = F5F5F7`, `bar_acc = 0A84FF`, `bar_urgent = FF453A`.
+- Left side: `bar_show_title = 1`, `bar_show_tasks = 0` (focused window title, no task buttons).
+- Right side: `bar_sep_str =` (empty, spaces only), `clock_fmt = %a %d %b  %H:%M`.
+- Windows: `border = 1`, `border_focus = 0A84FF`, `gap_outer = 12`, `gap_inner = 12`.
+
+To get the task buttons back, set `bar_show_tasks = 1` and reload with Super+Shift+r.
+
 Requires X11 + Xinerama + Xrandr + Xft headers (`libX11-devel libXinerama-devel libXrandr-devel libXft-devel` on Fedora).
 `dani-comp` additionally needs Composite/Damage/Render/Fixes (`libXcomposite-devel libXdamage-devel libXrender-devel libXfixes-devel` — usually preinstalled with libX11-devel).
 
