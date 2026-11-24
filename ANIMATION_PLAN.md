@@ -41,13 +41,14 @@ Open items:
    "Performance acceptance"). Today there is only the user's judgement.
 4. Optional, not requested: directional workspace slide; subtle overview
    scale.
-5. Minor items from the review, not fixed:
-   - `src/overview.c` `overview_select`: a second selection change during a
-     running highlight move makes the two cards jump, not blend.
-   - `src/main.c` event loop: while the highlight moves, the one-second
-     tasks (volume flush, tray poll) can wait up to about 250 ms.
-   - `src/layout.c` `layout_animation_capture_old`: one X round trip per
-     client on each arrange when layout animation is on. Measure first.
+5. Done (2026-11-24): minor items from the review.
+   - Highlight jump on a second selection change: fixed (`514ce6c`).
+   - Volume batch delayed by highlight frames: fixed (`b2d6e0a`). No
+     automatic check.
+   - One X round trip per client in `layout_animation_capture_old`: not
+     changed. Measured on Xvfb 1920x1080, 300 swaps, two runs: median swap
+     latency 1.15/1.14 ms off and 1.17/1.12 ms on with 20 clients. The p90
+     varied between runs (on: 7.79/4.17 ms, off: 3.22/2.48 ms).
 6. Not animation work: `test-urgency` is flaky before these changes
    (1 of 10 runs on the old HEAD); `make check` stops at `check-ai`.
 
