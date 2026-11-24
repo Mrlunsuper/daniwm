@@ -514,7 +514,10 @@ int main(int argc, char **argv) {
                 break; /* fall through to blocking XNextEvent */
             }
             select_errs = 0;
-            if (ret == 0 && ov_due) { overview_tick(); continue; }
+            if (ret == 0 && ov_due) {
+                overview_tick();
+                if (!vol_pend || ms_now() < vol_due_ms) continue; /* else flush now */
+            }
             if (ret == 0) {
                 sys_vol_update(); tray_poll(); rename_tick();
                 if (vol_pend && ms_now() >= vol_due_ms) {
