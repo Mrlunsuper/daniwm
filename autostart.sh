@@ -3,6 +3,9 @@
 # Xft.dpi=144 trong ~/.Xresources không bao giờ apply -> Thunar/Telegram bé tí.
 xrdb -merge "$HOME/.Xresources" 2>/dev/null
 
+# amdgpu: TearFree "auto" = tắt trên màn hình laptop -> bỏ # để hết xé hình (đổi eDP theo xrandr).
+#xrandr --output eDP --set TearFree on >/dev/null 2>&1
+
 # Đưa DISPLAY vào systemd để gnome-terminal-server mở được display.
 systemctl --user import-environment DISPLAY XAUTHORITY 2>/dev/null
 dbus-update-activation-environment --systemd DISPLAY XAUTHORITY 2>/dev/null
