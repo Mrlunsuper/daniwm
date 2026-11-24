@@ -35,7 +35,8 @@ Progress log:
 Open items:
 
 1. Done (2026-11-24): review of `e05f0a9..868b2af`. See the progress log.
-2. Multi-monitor check (overview placement, crossfade on each monitor).
+2. SKIPPED (2026-11-24): multi-monitor check. The user has one monitor,
+   and Xvfb cannot fake a side-by-side layout. Not verified.
 3. Numbers for frame time and input latency on real hardware (plan §6,
    "Performance acceptance"). Today there is only the user's judgement.
 4. Optional, not requested: directional workspace slide; subtle overview
