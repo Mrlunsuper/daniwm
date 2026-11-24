@@ -544,9 +544,10 @@ void drawbar(void) {
                     else vi = pick_icon(ICO_VOL_HIGH, "V");
                 }
                 segs[nsegs].icon = vi;
+                /* muted: icon only (dim); keep the word if the icon fell back to ASCII */
                 snprintf(segs[nsegs].val, sizeof(segs[nsegs].val), "%.15s",
-                    mute ? "MUTE" : vol);
-                segs[nsegs].alert = mute; segs[nsegs].draw = 1; segs[nsegs].isvol = 1; nsegs++;
+                    !mute ? vol : strcmp(vi, "V") ? "" : "MUTE");
+                segs[nsegs].alert = 0; segs[nsegs].draw = 1; segs[nsegs].isvol = 1; nsegs++;
             }
         } else if (nsegs == 4) {
             /* slots full and no room for vol: vol dropped, like before when
@@ -580,7 +581,7 @@ void drawbar(void) {
     int nright = nsegs + (*clk ? 1 : 0);
     if (clk_icon_w > 0) right_w += clk_icon_w + space_w; /* icon + gap */
     for (int i = 0; i < nsegs; i++)
-        right_w += bar_textw(segs[i].icon) + space_w + bar_textw(segs[i].val);
+        right_w += bar_textw(segs[i].icon) + (segs[i].val[0] ? space_w : 0) + bar_textw(segs[i].val);
     if (nright > 1) right_w += (nright - 1) * mid_w;
     if (trayw > 0) right_w += mid_w; /* separator between clock and tray */
 
@@ -739,11 +740,12 @@ void drawbar(void) {
     {
         int x = barw - right_w - trayw - pad_r;
         for (int i = 0; i < nsegs; i++) {
-            XftColor *ic = segs[i].alert ? &barcol.urgent : &barcol.ws_act;
-            XftColor *vc = segs[i].alert ? &barcol.urgent : &barcol.sys;
+            int muted = segs[i].isvol && (!segs[i].val[0] || !strcmp(segs[i].val, "MUTE"));
+            XftColor *ic = segs[i].alert ? &barcol.urgent : muted ? &barcol.ws_emp : &barcol.ws_act;
+            XftColor *vc = segs[i].alert ? &barcol.urgent : muted ? &barcol.ws_emp : &barcol.sys;
             int seg_x0 = x;
             bar_text(ic, x, baseline, segs[i].icon);
-            x += bar_textw(segs[i].icon) + space_w;
+            x += bar_textw(segs[i].icon) + (segs[i].val[0] ? space_w : 0);
             bar_text(vc, x, baseline, segs[i].val);
             x += bar_textw(segs[i].val);
             /* mute zone: icon + value only, not the trailing separator */
@@ -869,11 +871,13 @@ void bar_style(void) {
                 if (v >= 1.0 && v <= 128.0) base_sz = v;
             }
         }
-        char nerd1[96], nerd2[96];
+        char nerd0[96], nerd1[96], nerd2[96];
         double isz = base_sz * (double)ui_scale * ICON_FONT_SCALE;
+        /* non-Mono first: its icons are not squeezed into one cell */
+        snprintf(nerd0, sizeof(nerd0), "JetBrainsMono Nerd Font:size=%.1f", isz);
         snprintf(nerd1, sizeof(nerd1), "JetBrainsMono Nerd Font Mono:size=%.1f", isz);
         snprintf(nerd2, sizeof(nerd2), "Symbols Nerd Font Mono:size=%.1f", isz);
-        const char *fb_cands[] = { nerd1, nerd2, NULL };
+        const char *fb_cands[] = { nerd0, nerd1, nerd2, NULL };
         for (int i = 0; fb_cands[i] && bar_nfb < 6; i++) {
             XftFont *f = XftFontOpenName(dpy, screen, fb_cands[i]);
             if (f) barfont_fbs[bar_nfb++] = f;

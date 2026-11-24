@@ -77,6 +77,7 @@ int sys_bat(char *chg, size_t n) { /* capacity %, chg="+"/"-"/" " */
  * (vol_backend) so later ticks probe only one tool; total failure backs
  * off 30s. vol_set_cmd() picks the matching setter for keys/bar clicks. */
 static int vol_backend = 0; /* 0=unknown, 1=amixer, 2=wpctl, 3=pactl */
+static char vol_pct[16]; /* last "NN%", kept while muted for optimistic unmute */
 const char *sys_vol(void) { /* "40%" / "MUTE" / "" */
     return vol_cache[0] ? vol_cache : "";
 }
@@ -98,6 +99,7 @@ static int vol_parse_amixer(const char *buf) {
         else if (!strncmp(lb, "[off]", 5)) snprintf(st, sizeof(st), "off");
     }
     if (!pct[0]) return 0;
+    snprintf(vol_pct, sizeof(vol_pct), "%s", pct);
     if (!strcmp(st, "off")) snprintf(vol_cache, sizeof(vol_cache), "MUTE");
     else snprintf(vol_cache, sizeof(vol_cache), "%.10s", pct);
     return 1;
@@ -106,6 +108,7 @@ static int vol_parse_wpctl(const char *buf) {
     /* "Volume: 0.75" or "Volume: 0.75 [MUTED]" */
     float v = -1;
     if (sscanf(buf, "Volume: %f", &v) != 1 || v < 0) return 0;
+    snprintf(vol_pct, sizeof(vol_pct), "%d%%", (int)(v * 100 + 0.5f));
     if (strstr(buf, "MUTED")) snprintf(vol_cache, sizeof(vol_cache), "MUTE");
     else snprintf(vol_cache, sizeof(vol_cache), "%d%%", (int)(v * 100 + 0.5f));
     return 1;
@@ -117,6 +120,7 @@ static int vol_parse_pactl(const char *buf) {
     const char *q = pc;
     while (q > buf && isdigit((unsigned char)q[-1])) q--;
     if (q == pc) return 0;
+    snprintf(vol_pct, sizeof(vol_pct), "%d%%", atoi(q));
     const char *m = strstr(buf, "Mute:");
     if (m && strstr(m, "yes")) snprintf(vol_cache, sizeof(vol_cache), "MUTE");
     else snprintf(vol_cache, sizeof(vol_cache), "%d%%", atoi(q));
@@ -213,6 +217,14 @@ void sys_vol_adjust(int delta) {
     if (nv < 0) nv = 0;
     if (nv > 100) nv = 100;
     snprintf(vol_cache, sizeof(vol_cache), "%ld%%", nv);
+}
+/* Optimistic mute toggle: flip the cached state so the bar changes at
+ * once. An in-flight sample predates the toggle, so drop it. */
+void sys_vol_toggle_mute(void) {
+    if (!vol_cache[0]) return;
+    if (vol_fd >= 0) vol_job_close(1);
+    if (strncmp(vol_cache, "MUTE", 4)) snprintf(vol_cache, sizeof(vol_cache), "MUTE");
+    else if (vol_pct[0]) snprintf(vol_cache, sizeof(vol_cache), "%s", vol_pct);
 }
 void sys_vol_update(void) {
     time_t now = time(NULL);

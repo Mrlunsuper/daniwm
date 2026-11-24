@@ -326,7 +326,13 @@ void k_vol_delta(int delta) {
 }
 void k_vol_up(int unused)   { (void)unused; k_vol_delta(5); }
 void k_vol_down(int unused) { (void)unused; k_vol_delta(-5); }
-void k_vol_mute(int unused) { (void)unused; spawn(vol_set_cmd(vol_mute_am, vol_mute_wp, vol_mute_pa)); vol_ts = 0; }
+void k_vol_mute(int unused) {
+    (void)unused;
+    spawn(vol_set_cmd(vol_mute_am, vol_mute_wp, vol_mute_pa));
+    sys_vol_toggle_mute(); /* bar flips now; next tick re-samples */
+    vol_ts = 0;
+    drawbar();
+}
 /* Keyboard float move/resize: 20px steps, key repeat = smooth.
  * Tiled windows promote to floating first (same as mouse drag). */
 static void float_promote(void) {
