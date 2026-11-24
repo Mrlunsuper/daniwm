@@ -46,12 +46,12 @@ ws_icon_6 = 
 ws_icon_7 = 
 mfact = 0.50                        # master chiếm 0.1..0.9 chiều ngang
 nmaster = 1                          # số cửa sổ master
-border = 2
-border_focus = 8CCF7E                # Everblush green (focused)
-border_normal = 232A2D               # gần như nền (unfocused)
+border = 1                           # viền mảnh như macOS
+border_focus = 0A84FF                # macOS blue (focused)
+border_normal = 2C2C2E               # gần như nền (unfocused)
 gaps_on = 1
-gap_outer = 4
-gap_inner = 8
+gap_outer = 12
+gap_inner = 12
 # ---------- dani-comp (compositor của nhà trồng, thay picom) ----------
 # Phases 1A/1B: mặc định tắt. Bật compositor=1 + animations=1 để fade-in/out.
 # Không chạy đồng thời fastcompmgr/picom trong autostart.sh.
@@ -69,39 +69,40 @@ animation_overview_ms = 0          # overview fade in/out + highlight ô chọn;
 bar_on = 1
 tray = 1                          # system tray XEmbed ở mép phải bar (1/0)
 tray_gap = 8                     # khoảng cách giữa các icon tray (px, 0..32)
-bar_h = 48
+bar_h = 32                          # mỏng như menu bar macOS
 bar_ws_pad = 12                   # padding chữ 2 bên trong ô workspace có tên (px, 0..32)
 ws_w = 36
 bar_pad_l = 8
 bar_pad_r = 16
 # màu bar: hex 6 số, có thể có #. Áp ngay khi reload.
-# Everblush:
-bar_bg = 141B1E
-bar_fg = DADADA
-bar_acc = 8CCF7E
-bar_dim = A8AFB2
+# macOS dark:
+bar_bg = 1C1C1E
+bar_fg = F5F5F7
+bar_acc = 0A84FF
+bar_dim = 98989D
 # style active ws: pill (default, gọn) | underline | block (khối fill kiểu cũ)
 bar_ws_style       = pill
-bar_ws_active      = 232A2D   # pill / underline / block của ws đang xem
-bar_ws_active_text = DADADA   # chữ ws đang xem (sáng, nổi trên pill tối)
-bar_ws_occ         = DADADA   # chữ workspace có cửa sổ
-bar_ws_empty       = A8AFB2   # chữ workspace trống (muted)
-bar_urgent         = E57474   # ws urgent + pin yếu + MUTE (đỏ trầm)
-bar_sep            = 2C3333   # separator + bottom border (mảnh, tối)
-bar_gap            = 1        # spaces quanh separator giữa các module phải (0..8)
-bar_sep_str        = |       # separator phải (vd: · | / • : — để trống = chỉ cách spaces)
+bar_ws_active      = 3A3A3C   # pill của ws đang xem
+bar_ws_active_text = FFFFFF   # chữ ws đang xem
+bar_ws_occ         = F5F5F7   # chữ workspace có cửa sổ
+bar_ws_empty       = 636366   # chữ workspace trống (muted)
+bar_urgent         = FF453A   # ws urgent + pin yếu + MUTE (macOS red)
+bar_sep            = 2C2C2E   # bottom border (mảnh, tối)
+bar_gap            = 2        # spaces giữa các module phải (0..8)
+# separator phải (vd: · | / •). Để trống = chỉ cách spaces (kiểu macOS)
+bar_sep_str        =
 bar_modules        = cpu mem bat vol clock  # thứ tự + ẩn/hiện (xóa tên là ẩn, default đủ: "cpu mem bat vol clock"; máy bàn không pin thì `bat` tự ẩn)
-clock_fmt          = %d/%m | %H:%M  # strftime (vd: "%H:%M" gọn, "%a %d/%m %H:%M" đầy đủ)
-bar_show_title     = 0       # tiêu đề cửa sổ trái (1/0)
-bar_show_tasks     = 1        # nút task Awesome: click-trái focus, click-giữa đóng (1/0)
+clock_fmt          = %a %d %b  %H:%M  # kiểu macOS: Mon 24 Nov  10:51
+bar_show_title     = 1       # tiêu đề cửa sổ đang focus bên trái (1/0)
+bar_show_tasks     = 0        # nút task Awesome: click-trái focus, click-giữa đóng (1/0)
 bar_task_w         = 280     # rộng mỗi nút task (px, 0 = auto chia đều; vd 160)
 bar_task_pad       = 12        # padding chữ trong nút task (px, 0..32)
 bar_ws_task_gap    = 32        # vùng chết giữa ws và tasklist + vạch chia (px, 0..64; click vào đây = no-op)
-# style task list: đồng bộ với ws (pill + iris) | đổi pill->underline/block/none nếu thích
+# style task list (khi bar_show_tasks = 1): pill | underline | block | none
 bar_task_style        = pill
-bar_task_active       = 8CCF7E   # nền xanh nổi bật cho task đang focus
-bar_task_active_text  = 141B1E   # chữ tối tương phản trên nền xanh
-bar_task_text         = A8AFB2   # task thường dịu hơn; urgent vẫn dùng bar_urgent
+bar_task_active       = 3A3A3C   # nền task đang focus (= bar_ws_active)
+bar_task_active_text  = FFFFFF   # chữ task đang focus
+bar_task_text         = 98989D   # chữ task thường; urgent vẫn dùng bar_urgent
 bar_show_layout    = 0        # icon tile/monocle + số cửa sổ (1/0)
 # icon cụm phải: mặc định là icon Nerd Font (đẹp nhất với font Nerd bên dưới),
 # tự rớt về C/M/B/V nếu máy thiếu font. Muốn chữ thường thì mở 3 dòng này:
@@ -109,11 +110,11 @@ bar_show_layout    = 0        # icon tile/monocle + số cửa sổ (1/0)
 # ico_vol = VOL
 # ico_mem = MEM
 
-bar_mode           = DADADA   # số cửa sổ (icon tile/monocle dùng bar_acc)
-bar_title          = A8AFB2   # tiêu đề cửa sổ trái, chìm để nhường sysmon
-bar_sys            = DADADA   # giá trị sysmon sáng dễ đọc (icon dùng bar_acc)
-# font bar: fontconfig pattern. bar_h=36 hợp với size=11.
-font = JetBrainsMono Nerd Font:size=9
+bar_mode           = F5F5F7   # số cửa sổ (icon tile/monocle dùng bar_acc)
+bar_title          = F5F5F7   # tiêu đề cửa sổ đang focus (sáng như macOS)
+bar_sys            = F5F5F7   # giá trị sysmon (icon dùng bar_acc)
+# font bar: fontconfig pattern. bar_h=32 hợp với size=9.
+font = Noto Sans:size=9          # chữ sans như macOS; icon tự lấy từ Nerd Font
 # Không có Nerd Font vẫn đẹp (tự rớt về chữ C/M/B/V).
 
 # ---------- rules ----------
