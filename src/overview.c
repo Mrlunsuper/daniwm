@@ -28,8 +28,9 @@ static int committing; /* view() runs from a click or key in the overview */
 static struct { int x,y,w,h,ws; Window id; } hits[HITS];
 static int nhits;
 static KeyCode commit_key;
-/* Selection highlight move: from_sel fades out while pending fades in. */
+/* Selection highlight move: each card blends from start_w to its target. */
 static int from_sel=-1;
+static int start_w[MAXWS];
 static long long sel_start, last_frame;
 #define FRAME_MS 16
 
@@ -43,9 +44,10 @@ static int highlight_on(void) { return ANIMATIONS && !REDUCE_MOTION && ANIMATION
 static int highlight(int ws, long long now) {
     if (from_sel>=0 && (!highlight_on() || now-sel_start>=ANIMATION_OVERVIEW_MS || now<sel_start))
         from_sel=-1;
-    if (from_sel<0) return ws==pending?100:0;
+    int target=ws==pending?100:0;
+    if (from_sel<0 || ws<0 || ws>=MAXWS) return target;
     int t=(int)((now-sel_start)*100/ANIMATION_OVERVIEW_MS);
-    return ws==pending?t:ws==from_sel?100-t:0;
+    return start_w[ws]+(target-start_w[ws])*t/100;
 }
 int overview_is_open(void) { return active; }
 /* Milliseconds to the next highlight frame, or -1 when nothing moves. */
@@ -320,7 +322,11 @@ void overview_show(int unused) {
 void overview_toggle(int unused) { if (active) overview_hide(unused); else overview_show(unused); }
 void overview_select(int ws) {
     if (!active || ws<0 || ws>=NWS) return;
-    if (ws!=pending && highlight_on()) { from_sel=pending; sel_start=last_frame=mono_ms(); }
+    if (ws!=pending && highlight_on()) {
+        long long now=mono_ms();
+        for (int i=0;i<MAXWS;i++) start_w[i]=highlight(i,now);
+        from_sel=pending; sel_start=last_frame=now;
+    }
     pending=ws; draw();
 }
 static void commit(Window id) {

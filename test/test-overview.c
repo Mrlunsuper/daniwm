@@ -369,6 +369,16 @@ int main(void) {
     int v0=views;
     overview_select(2); assert(from_sel==1 && curws==0 && views==v0);
     commit(None); assert(curws==2 && from_sel<0 && overview_next_ms()==-1);
+    /* A second change mid-move starts from the current weights: no jump. */
+    curws=0; overview_show(0); overview_select(1);
+    sel_start-=100;
+    overview_select(2);
+    long long t1=sel_start;
+    int w0=highlight(0,t1), w1=highlight(1,t1), w2=highlight(2,t1);
+    assert(w0>=45 && w0<=55 && w1>=45 && w1<=55 && w2==0);
+    assert(highlight(2,t1+100)==50 && highlight(0,t1+100)<=w0/2+1 && highlight(1,t1+100)<=w1/2+1);
+    assert(highlight(0,t1+200)==0 && highlight(1,t1+200)==0 && highlight(2,t1+200)==100);
+    clean();
     /* Hide in the middle stops the move. */
     overview_show(0); overview_select(3); assert(from_sel>=0);
     overview_hide(0); assert(from_sel<0 && overview_next_ms()==-1);
