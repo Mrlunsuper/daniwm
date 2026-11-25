@@ -74,6 +74,7 @@ extern unsigned nrules, caprules;
 extern char **termcmd;
 extern char **menucmd;
 extern char **scratchcmd;
+extern char **desktopcmd;
 extern unsigned int MOD;
 extern int BORDER;
 extern unsigned long BORDER_FOCUS;

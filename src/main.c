@@ -879,6 +879,11 @@ int main(int argc, char **argv) {
                  * clicks on floating windows are observed via XI2 raw
                  * events instead (see xi_raw_click()), so the app keeps
                  * every button event untouched. */
+                if (e->window == root && e->subwindow == None && e->button == Button3 &&
+                    desktopcmd) {
+                    spawn(desktopcmd); /* empty desktop or gap between windows */
+                    break;
+                }
                 Client *c = e->window == root ? find(e->subwindow) : find(e->window);
                 if (c && c->ws == curws) {
                     focus(c);

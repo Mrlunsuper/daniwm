@@ -433,6 +433,8 @@ fallback — `ico_clk` falls back to nothing, preserving the old clock look),
 vertical padding: text/icons are always vertically centered, so top/bottom air is just
 `bar_h` (taller bar = more air; tray icons stay `bar_h-10`, capped at 22px),
 `term/menu/scratch` (commands split with `wordexp`, quotes work),
+`desktop_click` (command for a right click on the empty desktop or a gap, e.g.
+`desktop_click = dani-run --fav`; unset = no action),
 `rename_cmd` (shell cmd for `ws_rename`, default `rofi -dmenu -i -p rename`;
 current name on stdin, stdout = new name; env `$DANIWM_WS_CUR`/`$DANIWM_WS_NUM`
 available, e.g. `rename_cmd = rofi -dmenu -p "rename ws$DANIWM_WS_NUM"`).

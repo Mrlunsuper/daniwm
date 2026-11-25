@@ -276,6 +276,7 @@ void config_defaults(void) {
     set_cmd(&termcmd, "xterm");
     set_cmd(&menucmd, "dmenu_run");
     set_cmd(&scratchcmd, "xterm -name scratchpad");
+    free_argv(desktopcmd); desktopcmd = NULL;
     push_rule(xstrdup("scratchpad"), NULL, 1, -1, -1);
     push_rule(xstrdup("Gimp"), NULL, 1, -1, -1);
     push_rule(xstrdup("mpv"), NULL, 1, -1, -1);
@@ -504,6 +505,8 @@ static void parse_scalar(char *key, char *val) {
         set_cmd(&menucmd, val);
     } else if (!strcmp(key, "scratch")) {
         set_cmd(&scratchcmd, val);
+    } else if (!strcmp(key, "desktop_click")) {
+        set_cmd(&desktopcmd, val);
     }
 }
 static void parse_rule(const char *val, int lineno, const char *path) {
@@ -806,7 +809,7 @@ void load_config(const char *path) {
             strncmp(k, "ws_name", 7) && strncmp(k, "wsname", 6) &&
             strncmp(k, "ws_icon", 7) && strncmp(k, "wsicon", 6) &&
             strcmp(k, "term") &&
-            strcmp(k, "menu") && strcmp(k, "scratch")) {
+            strcmp(k, "menu") && strcmp(k, "scratch") && strcmp(k, "desktop_click")) {
             fprintf(stderr, "daniwm: %s:%u: unknown key '%s'\n", path, i + 1, k);
         }
     }
