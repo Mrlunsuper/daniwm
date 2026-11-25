@@ -229,7 +229,6 @@ void view(int n) {
     /* Old workspace not on screen: no crossfade. */
     int covered = overview_is_open() || overview_committing();
     overview_hide(0);
-    for (Client *c=clients;c;c=c->next) if (c->ws==curws) overview_capture(c->win);
     if (n < 0 || n >= NWS || n == curws) return;
     ws_sel[curws] = sel;
     int old = curws;
@@ -254,7 +253,6 @@ void view(int n) {
 void send_to(int n) {
     int covered = overview_is_open() || overview_committing();
     overview_hide(0);
-    for (Client *c=clients;c;c=c->next) if (c->ws==curws) overview_capture(c->win);
     if (!sel || n < 0 || n >= NWS || n == curws) return;
     Client *s = sel;
     int old = curws;
@@ -279,7 +277,6 @@ void send_to(int n) {
 /* external pager move: same as send_to but stays on current ws */
 void move_to(Client *c, int n) {
     overview_hide(0);
-    if (c) overview_capture(c->win);
     int old;
     if (!c || n < 0 || n >= NWS || n == c->ws) return;
     old = c->ws;
@@ -593,7 +590,6 @@ void manage(Window w) {
 }
 
 void unmanage(Window w) {
-    overview_drop(w);
     Client *c = find(w);
     if (!c) return;
     overview_hide(0);

@@ -347,12 +347,14 @@ int main(int argc, char **argv) {
     check(fade_ok(RED, ov), "open: blend frames, then the exact overview frame");
     check(fb >= 0 && channel(trace.p[fb], 16) > channel(trace.p[fb], 8),
         "open: the early frame still shows the workspace below");
-    /* Linear alpha over the live workspace crosses over near the middle. A
-     * build-up on the last frame (overview taken as an opaque occluder)
-     * crosses over within a few frames. */
+    /* Linear alpha over the live workspace crosses the red midpoint between
+     * the two colours near the middle. A build-up on the last frame (overview
+     * taken as an opaque occluder) crosses within a few frames. The overview
+     * backdrop is a dimmed screen copy, so compare red, not green vs red. */
     long cross = -1;
+    unsigned mid = (channel(RED, 16) + channel(ov, 16)) / 2;
     for (unsigned i = 0; i < trace.n && cross < 0; i++)
-        if (channel(trace.p[i], 8) > channel(trace.p[i], 16)) cross = (long)i;
+        if (channel(trace.p[i], 16) < mid) cross = (long)i;
     long long cross_ms = cross >= 0 && fb >= 0 ? trace.t[cross] - trace.t[fb] : -1;
     printf("METRIC: open crossover %lldms after the first blend\n", cross_ms);
     check(cross_ms >= 70, "open: linear blend over the live workspace (no build-up)");

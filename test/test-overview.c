@@ -182,7 +182,6 @@ static void test_detach(Client *c) { assert(clients==c); clients=c->next; }
 
 static void clean(void) {
     overview_hide(0);
-    for(int i=0;i<CACHE;i++) overview_drop(cache[i].id);
     assert(!pixmaps && !windows && !gcs && !draws && !big_open);
 }
 static void key(KeySym k) {
@@ -199,7 +198,7 @@ static void click_card(Window id) {
     }
     assert(!"missing card");
 }
-/* Preview copies and click targets must stay inside their workspace/card. */
+/* Click targets must stay inside their workspace card. */
 static void check_geometry(void) {
     int workspaces=0;
     for (int i=0;i<nhits;i++) {
@@ -216,15 +215,6 @@ static void check_geometry(void) {
         assert(parent);
     }
     if (width>=cols && height>=(NWS+cols-1)/cols) assert(workspaces==NWS);
-    for (int i=0;i<ncopy;i++) if (copy_rects[i].dst==backing) {
-        int inside=0;
-        for (int j=0;j<nhits;j++) if (hits[j].id &&
-            copy_rects[i].x>=hits[j].x && copy_rects[i].y>=hits[j].y &&
-            copy_rects[i].x+copy_rects[i].w<=hits[j].x+hits[j].w &&
-            copy_rects[i].y+copy_rects[i].h<=hits[j].y+hits[j].h-barfont->height)
-            inside=1;
-        assert(inside);
-    }
 }
 int main(void) {
     font.height=16; font.ascent=12; font.descent=4;
@@ -261,12 +251,6 @@ int main(void) {
     overview_show(0); clients=NULL; click_card(42); assert(curws==1 && focuses==0); clean();
     clients=&c; overview_show(0); c.ws=3; click_card(42); assert(curws==1 && focuses==0); clean();
     c.ws=1; overview_show(0); click_card(42); assert(focuses==1); clean();
-    compositor=1;
-    for(int i=0;i<CACHE+17;i++) { c.win=1000+i; overview_capture(c.win); }
-    assert(pixmaps==CACHE);
-    c.win=1000+CACHE+16; overview_capture(c.win); assert(pixmaps==CACHE);
-    overview_drop(c.win); assert(pixmaps==CACHE-1); overview_drop(c.win); assert(pixmaps==CACHE-1);
-    trap_ok=0; require_trap=1; c.win=9000; overview_capture(c.win); assert(pixmaps==CACHE-1); trap_ok=1; require_trap=0;
     clean(); clients=NULL;
     overview_show(0); XEvent e={0}; e.type=GenericEvent; assert(!overview_event(&e));
     key(XK_x);
@@ -290,10 +274,10 @@ int main(void) {
     assert(!overview_event(&e));
     overview_show(0); key(XK_KP_Enter); key(XK_Escape); assert(!active && !commit_key);
     overview_show(0);
-    text(0,20,100,"ok\xc0\xaf\xed\xa0\x80\xf4\x90\x80\x80");
+    text_fit(barfont,0,20,100000,"ok\xc0\xaf\xed\xa0\x80\xf4\x90\x80\x80",&barcol.title,0);
     assert(rendered_len==11 && !memcmp(rendered,"ok?????????",11));
     char bounded[513]; memset(bounded,'a',sizeof bounded); bounded[511]='\xe2'; bounded[512]=0;
-    text(0,20,100,bounded); assert(rendered_len==512 && rendered[511]=='?');
+    text_fit(barfont,0,20,100000,bounded,&barcol.title,0); assert(rendered_len==512 && rendered[511]=='?');
     clean();
     Client full={0}, fl={0}; Dock dock={0};
     full.win=400; full.ws=curws; full.fullscreen=1; full.next=&fl;
@@ -305,32 +289,52 @@ int main(void) {
     NWS=9; mons[0].w=1280; mons[0].h=720;
     Client nine[9]={0};
     for (int i=0;i<9;i++) { nine[i].win=200+i; nine[i].ws=i; nine[i].next=i<8?&nine[i+1]:NULL; }
-    clients=nine; copies=ncopy=0; overview_show(0); assert(copies==9);
+    clients=nine; overview_show(0);
+    int rows9=0; for (int i=0;i<nhits;i++) if (hits[i].id) rows9++;
+    assert(rows9==9 && pixmaps==2); /* backing + dimmed screen copy, no previews */
     check_geometry(); clean(); clients=NULL;
     /* Default config has NULL workspace names: always render numbered labels. */
     workspace_name=NULL; text_log[0]=0;
     overview_show(0);
     assert(strstr(text_log,"Workspace 1\n") && strstr(text_log,"Workspace 9\n"));
-    assert(strstr(text_log,"Empty workspace") && strstr(text_log,"Esc: cancel"));
+    assert(strstr(text_log,"No windows"));
     clean(); workspace_name="Development"; text_log[0]=0;
     overview_show(0); assert(strstr(text_log,"Development\n")); clean();
     workspace_name="workspace";
-    /* Dense workspaces show an overflow count, never overlapping cards. */
+    /* Dense workspaces list as many windows as fit, then "+N more". */
     Client many[30]={0};
     NWS=5; mons[0].w=1920; mons[0].h=1080;
     for (int i=0;i<30;i++) { many[i].win=500+i; many[i].ws=0; many[i].next=i<29?&many[i+1]:NULL; }
-    clients=many; compositor=0; text_log[0]=0; ncopy=0;
+    clients=many; text_log[0]=0;
     overview_show(0); check_geometry();
-    assert(strstr(text_log,"30 windows  /  +") && strstr(text_log,"Preview unavailable"));
+    assert(strstr(text_log,"more\n"));
     int cards=0; for (int i=0;i<nhits;i++) if (hits[i].id) cards++;
-    assert(cards>=2 && cards<30);
+    assert(cards>=3 && cards<30);
+    for (int i=0;i<nhits;i++) for (int j=i+1;j<nhits;j++) if (hits[i].id && hits[j].id)
+        assert(hits[i].x+hits[i].w<=hits[j].x || hits[j].x+hits[j].w<=hits[i].x ||
+               hits[i].y+hits[i].h<=hits[j].y || hits[j].y+hits[j].h<=hits[i].y);
+    clean();
+    /* Three windows on the reported 1920x1200, 7-workspace setup all show. */
+    NWS=7; mons[0].w=1920; mons[0].h=1200; many[2].next=NULL; text_log[0]=0;
+    overview_show(0); check_geometry();
+    cards=0; for (int i=0;i<nhits;i++) if (hits[i].id) cards++;
+    assert(cards==3 && !strstr(text_log,"more\n"));
+    clean();
+    many[2].next=&many[3];
+    NWS=5; mons[0].w=1920; mons[0].h=1080;
+    overview_show(0);
     int firstcard=-1, secondcard=-1;
     for (int i=0;i<nhits;i++) if (hits[i].id) {
         if (firstcard<0) firstcard=i;
         else { secondcard=i; break; }
     }
-    assert(secondcard>=0 && hits[firstcard].y==hits[secondcard].y);
-    assert(hits[firstcard].x+hits[firstcard].w<hits[secondcard].x);
+    /* One line per window: the second line sits right below the first. */
+    assert(secondcard>=0 && hits[firstcard].x==hits[secondcard].x);
+    assert(hits[firstcard].y+hits[firstcard].h<=hits[secondcard].y);
+    /* Hovering a card selects its workspace. */
+    XEvent hv={0}; hv.type=MotionNotify; hv.xmotion.window=overlay;
+    for (int i=0;i<nhits;i++) if (!hits[i].id && hits[i].ws==2) { hv.xmotion.x=hits[i].x+1; hv.xmotion.y=hits[i].y+1; }
+    assert(overview_event(&hv) && pending==2);
     /* Gutters are not workspace targets; clicking them does not commit. */
     XEvent gutter={0}; gutter.type=ButtonPress; gutter.xbutton.window=overlay;
     assert(overview_event(&gutter) && overview_is_open());

@@ -150,7 +150,6 @@ void monocle_mon(int m) {
             XMapWindow(dpy, c->win);
             if (c->hidden) { c->hidden = 0; ewmh_update_state(c); }
         } else {
-            overview_capture(c->win);
             /* Hide reason only on a new hide: it clears pending close fades. */
             if (!c->hidden) {
                 animation_unmap(c->win, ANIMATION_HIDE_MONOCLE);
