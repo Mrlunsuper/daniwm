@@ -42,6 +42,25 @@ int XISelectEvents(Display *d, Window w, XIEventMask *m, int n)
     selected++;
     return status;
 }
+static int grabbed, grabs;
+int XIGrabSwipeGestureBegin(Display *d, int dev, Window w, int gm, int pm,
+                            Bool owner, XIEventMask *m, int n, XIGrabModifiers *mods)
+{
+    (void)d; (void)w; (void)gm; (void)pm; (void)owner;
+    assert(SWIPE_ENABLED && status == Success && !grabbed);
+    assert(dev == XIAllMasterDevices && m->deviceid == XIAllMasterDevices);
+    assert(XIMaskIsSet(m->mask, XI_GestureSwipeBegin) && XIMaskIsSet(m->mask, XI_GestureSwipeEnd));
+    assert(n == 1 && mods[0].modifiers == (int)XIAnyModifier);
+    grabbed = 1; grabs++;
+    return 0;
+}
+int XIUngrabSwipeGestureBegin(Display *d, int dev, Window w, int n, XIGrabModifiers *mods)
+{
+    (void)d; (void)w;
+    assert(dev == XIAllMasterDevices && n == 1 && mods[0].modifiers == (int)XIAnyModifier);
+    grabbed = 0;
+    return 0;
+}
 static void event(int type, int fingers, double dx)
 {
     XIGestureSwipeEvent ev = {.deviceid=2, .sourceid=7, .detail=fingers,
@@ -97,8 +116,8 @@ int main(void)
     puts("gestures disabled: ok");
     return 0;
 #endif
-    gestures_init(2, 3); gesture(3); assert(!selected && !calls);
-    gestures_init(2, 4); assert(selected == 1);
+    gestures_init(2, 3); gesture(3); assert(!selected && !calls && !grabs);
+    gestures_init(2, 4); assert(selected == 1 && grabbed && grabs == 1);
     event(XI_GestureSwipeEnd, 3, -100); assert(!calls);
     gesture(2); assert(!calls);
     drag.win = 9; gesture(3); drag.win = None; assert(!calls);
@@ -112,10 +131,10 @@ int main(void)
     event(XI_GestureSwipeBegin, 3, 0);
     event(XI_DeviceChanged, 0, 0);
     event(XI_GestureSwipeEnd, 3, -100); assert(!calls);
-    status = BadValue; gestures_configure(); gesture(3); assert(!calls);
+    status = BadValue; gestures_configure(); gesture(3); assert(!calls && !grabbed);
     status = Success; clean = 0; gestures_configure(); gesture(3); assert(!calls);
-    clean = 1; SWIPE_ENABLED = 0; gestures_configure(); gesture(3); assert(!calls);
-    SWIPE_ENABLED = 1; gestures_configure(); gesture(3);
+    clean = 1; SWIPE_ENABLED = 0; gestures_configure(); gesture(3); assert(!calls && !grabbed);
+    SWIPE_ENABLED = 1; gestures_configure(); assert(grabbed); gesture(3);
     assert(calls == 1 && target == 2 && last_evtime == 123);
     capture_end(NULL);
     SWIPE_DEBUG = 1;

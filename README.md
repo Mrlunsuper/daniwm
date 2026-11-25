@@ -55,10 +55,12 @@ values are rejected. `swipe_wrap` permits crossing the first/last workspace;
 loading settings and reconfigures delivery after workspace arrays are rebuilt.
 
 XI2.4 headers/server support and actual touchpad gesture delivery are required;
-compilation and offline tests do not establish physical delivery. Root observation
-may not deliver over application windows; applications or competing grabs may
-consume gestures. The Phase 1 adapter only selects events: it never grabs,
-freezes, or replays input. Run `make check-swipe` for its offline tests.
+compilation and offline tests do not establish physical delivery. Some apps
+(for example Qt6 apps such as Telegram) select swipe events on their own windows
+and would take them before root. So, when swipe is enabled, the WM also sets an
+async passive swipe grab on root. Apps then get no 3- or 4-finger swipes. The XI
+API has no finger-count filter, and the WM does not replay input. Run
+`make check-swipe` for its offline tests.
 Passive grabs in the separate diagnostic may intercept non-three-
 finger swipes too: the XI API has no finger-count grab filter, and rejecting them
 in the classifier cannot restore input to applications. Keep this opt-in off
