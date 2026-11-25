@@ -119,13 +119,10 @@ void overview_capture(Window id) {
     cache[slot].id=id; cache[slot].pm=dst;
     cache[slot].w=dw; cache[slot].h=dh;
 }
-static void text_color(int x,int y,int w,const char *s,const XftColor *color) {
-    if (!xd || !barfont || !s || w<=0) return;
-    XRectangle clip={(short)x,(short)(y-barfont->ascent),(unsigned short)w,(unsigned short)barfont->height};
-    XftDrawSetClipRectangles(xd,0,0,&clip,1);
+/* Validate untrusted properties, including overlongs and surrogate codepoints.
+ * Copies at most 512 bytes of s into safe; returns the byte count. */
+static size_t utf8_safe(const char *s,FcChar8 *safe) {
     size_t n=strnlen(s,512), used=0;
-    FcChar8 safe[512];
-    /* Validate untrusted properties, including overlongs and surrogate codepoints. */
     for (size_t i=0;i<n;) {
         unsigned char c=(unsigned char)s[i];
         size_t len=c<0x80?1:c>=0xc2 && c<=0xdf?2:c>=0xe0 && c<=0xef?3:c>=0xf0 && c<=0xf4?4:0;
@@ -140,7 +137,55 @@ static void text_color(int x,int y,int w,const char *s,const XftColor *color) {
         if (valid) { memcpy(safe+used,s+i,len); used+=len; i+=len; }
         else { safe[used++]='?'; i++; }
     }
+    return used;
+}
+static void text_color(int x,int y,int w,const char *s,const XftColor *color) {
+    if (!xd || !barfont || !s || w<=0) return;
+    XRectangle clip={(short)x,(short)(y-barfont->ascent),(unsigned short)w,(unsigned short)barfont->height};
+    XftDrawSetClipRectangles(xd,0,0,&clip,1);
+    FcChar8 safe[512];
+    size_t used=utf8_safe(s,safe);
     XftDrawStringUtf8(xd,color,barfont,x,y,safe,(int)used);
+    XftDrawSetClip(xd,NULL);
+}
+static int text_w(XftFont *f,const FcChar8 *s,size_t n) {
+    XGlyphInfo g;
+    XftTextExtentsUtf8(dpy,f,s,(int)n,&g);
+    return g.xOff;
+}
+/* Draw s centered in [x, x+w); a too-wide string ends with an ellipsis. */
+static void text_center(XftFont *f,int x,int y,int w,const char *s,const XftColor *color) {
+    if (!xd || !f || !s || w<=0) return;
+    static const FcChar8 ell[]="\xe2\x80\xa6";
+    FcChar8 safe[512+sizeof ell];
+    size_t n=utf8_safe(s,safe), m=0;
+    /* No per-glyph fallback here: drop characters the font cannot draw
+     * (e.g. the Claude Code status mark) and the space they leave twice. */
+    int dropped=0;
+    for (size_t i=0;i<n;) {
+        unsigned char c=safe[i];
+        size_t len=c<0x80?1:c<0xe0?2:c<0xf0?3:4;
+        FcChar32 cp=len==1?c:len==2?c&0x1fu:len==3?c&0x0fu:c&0x07u;
+        for (size_t j=1;j<len;j++) cp=(cp<<6)|(safe[i+j]&0x3fu);
+        if (!XftCharExists(dpy,f,cp)) dropped=1;
+        else if (!(dropped && c==' ' && m>0 && safe[m-1]==' ')) {
+            memmove(safe+m,safe+i,len); m+=len; dropped=0;
+        }
+        i+=len;
+    }
+    n=m;
+    int tw=text_w(f,safe,n);
+    if (tw>w) {
+        int ew=text_w(f,ell,3);
+        while (n>0 && tw+ew>w) {
+            do n--; while (n>0 && (safe[n]&0xc0)==0x80);
+            tw=text_w(f,safe,n);
+        }
+        memcpy(safe+n,ell,3); n+=3; tw+=ew;
+    }
+    XRectangle clip={(short)x,(short)(y-f->ascent),(unsigned short)w,(unsigned short)f->height};
+    XftDrawSetClipRectangles(xd,0,0,&clip,1);
+    XftDrawStringUtf8(xd,color,f,x+(tw<w?(w-tw)/2:0),y,safe,(int)n);
     XftDrawSetClip(xd,NULL);
 }
 static void text(int x,int y,int w,const char *s) {
@@ -158,11 +203,36 @@ static void rect(int x,int y,int w,int h,unsigned long color) {
     XSetForeground(dpy,gc,color);
     XFillRectangle(dpy,backing,gc,x,y,(unsigned)w,(unsigned)h);
 }
+static Picture bpic; /* backing as a Render picture, for antialiased corners */
+/* cos(i*90/16 degrees); the sine is the same table read backwards. */
+static const double quarter[17]={1,0.99518473,0.98078528,0.95694034,0.92387953,0.88192126,
+    0.83146961,0.77301045,0.70710678,0.63439328,0.55557023,0.47139674,0.38268343,
+    0.29028468,0.19509032,0.09801714,0};
 static void rounded(int x,int y,int w,int h,int r,unsigned long color) {
     if (w<=0 || h<=0) return;
     if (r>w/2) r=w/2;
     if (r>h/2) r=h/2;
     if (r<1) { rect(x,y,w,h,color); return; }
+    if (bpic) {
+        /* Triangle fan around the center; the A8 mask smooths the arcs. */
+        XPointFixed pt[2+4*17];
+        int n=0;
+        const double cx[4]={x+w-r,x+w-r,x+r,x+r}, cy[4]={y+r,y+h-r,y+h-r,y+r};
+        pt[n].x=XDoubleToFixed(x+w/2.0); pt[n++].y=XDoubleToFixed(y+h/2.0);
+        for (int k=0;k<4;k++) for (int i=0;i<=16;i++) {
+            double c=quarter[i], sn=quarter[16-i];
+            double dx=k==0?sn:k==1?c:k==2?-sn:-c, dy=k==0?-c:k==1?sn:k==2?c:-sn;
+            pt[n].x=XDoubleToFixed(cx[k]+dx*r); pt[n++].y=XDoubleToFixed(cy[k]+dy*r);
+        }
+        pt[n++]=pt[1];
+        XRenderColor rc={(unsigned short)((color>>16&255)*257),(unsigned short)((color>>8&255)*257),
+                         (unsigned short)((color&255)*257),0xffff};
+        Picture fill=XRenderCreateSolidFill(dpy,&rc);
+        XRenderCompositeTriFan(dpy,PictOpOver,fill,bpic,XRenderFindStandardFormat(dpy,PictStandardA8),
+                               0,0,pt,n);
+        XRenderFreePicture(dpy,fill);
+        return;
+    }
     rect(x+r,y,w-2*r,h,color);
     rect(x,y+r,w,h-2*r,color);
     XSetForeground(dpy,gc,color);
@@ -191,57 +261,122 @@ static void card(int cx,int cy,int cardw,int cardh,int ws,Client *c,unsigned lon
         }
         break;
     }
-    trap_errors(dpy);
-    if (!cached && imageh>=line) {
-        /* Exposé shows the window class instead, e.g. one zellij per repo. */
-        XClassHint ch={0};
-        const char *s="Preview unavailable";
-        if (expose && XGetClassHint(dpy,c->win,&ch) && ch.res_class) s=ch.res_class;
+    if (!cached && imageh>=line)
         text_color(cx+inset,cy+inset+imageh/2+barfont->ascent/2,
-                   cardw-2*inset,s,expose?&barcol.title:&barcol.sep);
-        if (ch.res_class) XFree(ch.res_class);
-        if (ch.res_name) XFree(ch.res_name);
-    }
+                   cardw-2*inset,"Preview unavailable",&barcol.sep);
     unsigned char *title=NULL; Atom type; int format; unsigned long n,after;
+    trap_errors(dpy);
     if (XGetWindowProperty(dpy,c->win,A_NET_WM_NAME,0,128,False,AnyPropertyType,&type,&format,&n,&after,&title)==Success && title && format==8)
         text(cx+inset,cy+cardh-inset-barfont->descent,cardw-2*inset,(char *)title);
     else text(cx+inset,cy+cardh-inset-barfont->descent,cardw-2*inset,"Window");
     if (title) XFree(title);
     untrap_errors(dpy);
 }
-/* Exposé: the current workspace's windows as one grid over the output. */
+/* Semibold face of the bar font for exposé tiles; NULL = barfont. */
+static XftFont *bigfont;
+static XftFont *big(void) {
+    if (!bigfont) {
+        /* pixelsize overrides any size= in the configured pattern. */
+        char pat[320];
+        snprintf(pat,sizeof pat,"%.256s:pixelsize=%d:weight=demibold",
+                 font_name?font_name:"sans",barfont->height*3/2);
+        bigfont=XftFontOpenName(dpy,screen,pat);
+    }
+    return bigfont?bigfont:barfont;
+}
+/* Dimmed copy of the screen under the exposé panel; None = solid backdrop. */
+static Pixmap snap;
+static void snapshot(int mx,int my) {
+    XRenderPictFormat *fmt=XRenderFindVisualFormat(dpy,DefaultVisual(dpy,screen));
+    if (!fmt) return;
+    snap=XCreatePixmap(dpy,root,width,height,DefaultDepth(dpy,screen));
+    XSetSubwindowMode(dpy,gc,IncludeInferiors);
+    XCopyArea(dpy,root,snap,gc,mx,my,width,height,0,0);
+    XSetSubwindowMode(dpy,gc,ClipByChildren);
+    Picture p=XRenderCreatePicture(dpy,snap,fmt,0,NULL);
+    XRenderColor dim={0,0,0,0xb400};
+    XRenderFillRectangle(dpy,PictOpOver,p,&dim,0,0,width,height);
+    XRenderFreePicture(dpy,p);
+}
+/* Tile label: up to 4 capitals of the class (WCVF, ST), else 2 letters. */
+static void abbrev(const char *cls,char out[5]) {
+    int n=0;
+    for (const char *p=cls;*p && n<4;p++) if (*p>='A' && *p<='Z') out[n++]=*p;
+    if (n<2) {
+        n=0;
+        for (const char *p=cls;*p && n<2;p++)
+            if ((*p>='a' && *p<='z') || (*p>='A' && *p<='Z') || (*p>='0' && *p<='9'))
+                out[n++]=(char)(*p>='a' && *p<='z'?*p-32:*p);
+    }
+    out[n]=0;
+}
+/* Stable tile color per class from the macOS system palette. */
+static unsigned long tile_color(const char *cls) {
+    static const unsigned long pal[]={0x0A84FF,0x5E5CE6,0xBF5AF2,0xFF375F,0xFF453A,
+                                      0xFF9F0A,0x30D158,0x40C8E0,0xAC8E68};
+    unsigned h=5381;
+    for (const char *p=cls;*p;p++) h=h*33u+(unsigned char)*p;
+    return blend(pal[h%(sizeof pal/sizeof pal[0])],0,18);
+}
+/* Exposé: a centered Cmd+Tab style panel, one tile per window. The
+ * workspace name sits on top and the selected window's title below. */
 static void draw_expose(void) {
-    int margin=S(28), gap=S(16), ring=S(2);
-    int line=barfont->height+S(8), header=line+S(16), footer=line+S(12);
-    unsigned long backdrop=blend(BAR_BG,0,22), well=blend(BAR_BG,BAR_FG,5);
+    XftFont *f=big();
+    int tile=S(88), cellw=tile+S(36), pad=S(18), r=S(22), fh=barfont->height;
+    int cellh=S(12)+tile+S(10)+fh+S(12), headh=fh+S(14), footh=fh+S(22);
+    unsigned long panel=blend(BAR_BG,BAR_FG,9), rule=blend(panel,BAR_FG,10);
     int n=0;
     for (Client *c=clients;c;c=c->next) if (c->ws==curws) n++;
-    if (width<2*margin+S(96) || height<2*margin+header+footer+3*line)
-        margin=gap=header=footer=0;
-    int gw=width-2*margin, gh=height-2*margin-header-footer;
-    rect(0,0,width,height,backdrop);
-    if (header) {
-        char label[160];
-        const char *name=ws_name(curws);
-        snprintf(label,sizeof label,"%s  /  %d window%s",name && *name?name:"Workspace",n,n==1?"":"s");
-        text(margin,margin+barfont->ascent,gw,label);
-    }
-    if (footer)
-        text_color(margin,height-margin-barfont->descent,gw,
-                   "Arrow keys: select    Enter / click: focus    Esc: cancel",&barcol.sep);
-    ecols=1;
-    while (ecols*ecols<n) ecols++;
-    int erows=n?(n+ecols-1)/ecols:1;
-    int cw=(gw-(ecols-1)*gap)/ecols, ch=(gh-(erows-1)*gap)/erows;
-    if (!n && gh>=line)
-        text_color(margin,margin+header+gh/2,gw,"Empty workspace",&barcol.sep);
+    if (snap) XCopyArea(dpy,snap,backing,gc,0,0,width,height,0,0);
+    else rect(0,0,width,height,blend(BAR_BG,0,30));
+    int maxcols=(width-2*S(48)-2*pad)/cellw;
+    if (maxcols<1) maxcols=1;
+    ecols=n<maxcols?(n>0?n:1):maxcols;
+    int rows=n?(n+ecols-1)/ecols:1;
+    int pw=ecols*cellw+2*pad, ph=pad+headh+rows*cellh+footh+pad/2;
+    if (pw<S(420)) pw=S(420);
+    if (pw>width) pw=width;
+    int px=(width-pw)/2, py=(height-ph)/2;
+    rounded(px-1,py-1,pw+2,ph+2,r+1,rule);
+    rounded(px,py,pw,ph,r,panel);
+    char head[160];
+    const char *name=ws_name(curws);
+    snprintf(head,sizeof head,"%s  \xc2\xb7  %d window%s",name && *name?name:"Workspace",n,n==1?"":"s");
+    text_center(barfont,px+pad,py+pad+barfont->ascent,pw-2*pad,head,&barcol.task_text);
+    int fy=py+ph-pad/2-footh;
+    rect(px+pad,fy,pw-2*pad,1,rule);
+    int ty=fy+(footh-fh)/2+barfont->ascent;
+    if (!n) text_center(barfont,px+pad,ty,pw-2*pad,"No windows",&barcol.task_text);
     int i=0;
-    for (Client *c=clients;c && cw>2*ring && ch>2*ring;c=c->next) if (c->ws==curws) {
-        int x=margin+(i%ecols)*(cw+gap), y=margin+header+(i/ecols)*(ch+gap);
-        if (i==esel) rounded(x,y,cw,ch,S(10),BAR_ACC);
-        card(x+ring,y+ring,cw-2*ring,ch-2*ring,curws,c,well);
+    trap_errors(dpy);
+    for (Client *c=clients;c;c=c->next) if (c->ws==curws) {
+        int row=i/ecols, inrow=n-row*ecols;
+        if (inrow>ecols) inrow=ecols;
+        int x=px+(pw-inrow*cellw)/2+(i%ecols)*cellw, y=py+pad+headh+row*cellh;
+        int selected=i==esel;
+        if (selected) rounded(x+S(4),y,cellw-S(8),cellh,S(16),blend(panel,BAR_FG,14));
+        hit(x,y,cellw,cellh,curws,c->win);
+        XClassHint hint={0};
+        const char *cls=XGetClassHint(dpy,c->win,&hint) && hint.res_class?hint.res_class:"?";
+        char ab[5];
+        abbrev(cls,ab);
+        int tx=x+(cellw-tile)/2, tyy=y+S(12);
+        rounded(tx,tyy,tile,tile,S(20),tile_color(cls));
+        text_center(f,tx+S(4),tyy+(tile-f->height)/2+f->ascent,tile-S(8),ab,&barcol.ws_acttx);
+        text_center(barfont,x+S(6),tyy+tile+S(10)+barfont->ascent,cellw-S(12),cls,
+                    selected?&barcol.title:&barcol.task_text);
+        if (selected) {
+            unsigned char *title=NULL; Atom type; int format; unsigned long nn,after;
+            if (XGetWindowProperty(dpy,c->win,A_NET_WM_NAME,0,128,False,AnyPropertyType,&type,&format,&nn,&after,&title)==Success && title && format==8)
+                text_center(barfont,px+pad,ty,pw-2*pad,(char *)title,&barcol.title);
+            else text_center(barfont,px+pad,ty,pw-2*pad,cls,&barcol.title);
+            if (title) XFree(title);
+        }
+        if (hint.res_class) XFree(hint.res_class);
+        if (hint.res_name) XFree(hint.res_name);
         i++;
     }
+    untrap_errors(dpy);
     XCopyArea(dpy,backing,overlay,gc,0,0,width,height,0,0);
 }
 /* Window of the selected exposé card, or None. */
@@ -348,14 +483,17 @@ void overview_hide(int unused) {
         XUngrabKeyboard(dpy,CurrentTime);
     }
     active=0; commit_key=0; from_sel=-1; expose=0;
+    if (bigfont) { XftFontClose(dpy,bigfont); bigfont=NULL; }
     /* Failed asynchronous creation can leave nonzero but invalid handles. */
     trap_errors(dpy);
     if (xd) XftDrawDestroy(xd);
     if (gc) XFreeGC(dpy,gc);
+    if (bpic) XRenderFreePicture(dpy,bpic);
     if (backing) XFreePixmap(dpy,backing);
+    if (snap) XFreePixmap(dpy,snap);
     if (overlay) { animation_overview_role(None); XDestroyWindow(dpy,overlay); }
     untrap_errors(dpy);
-    xd=NULL; gc=NULL; backing=None; overlay=None;
+    xd=NULL; gc=NULL; backing=None; snap=None; bpic=None; overlay=None;
 }
 void overview_show(int unused) {
     (void)unused;
@@ -372,6 +510,9 @@ void overview_show(int unused) {
     backing=XCreatePixmap(dpy,root,width,height,DefaultDepth(dpy,screen));
     gc=XCreateGC(dpy,backing,0,NULL);
     xd=XftDrawCreate(dpy,backing,DefaultVisual(dpy,screen),DefaultColormap(dpy,screen));
+    XRenderPictFormat *pf=XRenderFindVisualFormat(dpy,DefaultVisual(dpy,screen));
+    bpic=pf?XRenderCreatePicture(dpy,backing,pf,0,NULL):None;
+    if (expose && gc) snapshot(mons[m].x,mons[m].y); /* before the overlay covers it */
     if (overlay) animation_overview_role(overlay);
     XMapRaised(dpy,overlay);
     int ok=untrap_errors(dpy);
@@ -443,7 +584,15 @@ int overview_event(XEvent *e) {
             pending=hits[i].ws; commit(hits[i].id); break;
         }
         return 1;
-    case MotionNotify: case EnterNotify: case LeaveNotify: case FocusIn: case FocusOut: case ButtonRelease: return 1;
+    case MotionNotify:
+        /* Exposé: the card under the pointer becomes the selection. */
+        if (expose && e->xmotion.window==overlay)
+            for (int i=0;i<nhits;i++) if (e->xmotion.x>=hits[i].x && e->xmotion.x<hits[i].x+hits[i].w && e->xmotion.y>=hits[i].y && e->xmotion.y<hits[i].y+hits[i].h) {
+                if (i!=esel) { esel=i; draw(); }
+                break;
+            }
+        return 1;
+    case EnterNotify: case LeaveNotify: case FocusIn: case FocusOut: case ButtonRelease: return 1;
     default: return 0; /* GenericEvent cookie remains owned by main. */
     }
 }

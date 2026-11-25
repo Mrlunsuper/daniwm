@@ -119,6 +119,18 @@ static int class_hint(XClassHint *ch) {
     ch->res_class=strdup(fake_class); ch->res_name=NULL; return 1;
 }
 #define XGetClassHint(d,w,ch) class_hint(ch)
+static XftFont big_stub;
+static int big_open;
+char *font_name;
+#define XftFontOpenName(...) (big_open++, &big_stub)
+#define XftFontClose(d,f) (assert((f)==&big_stub), big_open--)
+#define XftTextExtentsUtf8(d,f,s,n,g) ((g)->xOff=(short)((n)*7))
+#define XftCharExists(d,f,cp) ((cp)!=0x2733)
+#define XSetSubwindowMode(...) 0
+static int solid_fills, trifans;
+#define XRenderCreateSolidFill(...) (solid_fills++, ++serial)
+#define XRenderCompositeTriFan(d,op,src,dst,mf,xs,ys,pts,n) (assert((n)==70 && (dst)==bpic), (void)trifans++)
+#define XRenderFindStandardFormat(...) ((XRenderPictFormat *)1)
 #include "../src/overview.c"
 static Window role_window;
 void animation_overview_role(Window w) { role_window=w; }
@@ -171,7 +183,7 @@ static void test_detach(Client *c) { assert(clients==c); clients=c->next; }
 static void clean(void) {
     overview_hide(0);
     for(int i=0;i<CACHE;i++) overview_drop(cache[i].id);
-    assert(!pixmaps && !windows && !gcs && !draws);
+    assert(!pixmaps && !windows && !gcs && !draws && !big_open);
 }
 static void key(KeySym k) {
     XEvent e={0}; e.type=KeyPress;
@@ -216,6 +228,7 @@ static void check_geometry(void) {
 }
 int main(void) {
     font.height=16; font.ascent=12; font.descent=4;
+    big_stub.height=32; big_stub.ascent=24; big_stub.descent=8;
     /* Fake display also makes accidental Default* macro dereferences harmless. */
     fake_display=calloc(1,sizeof *fake_display); assert(fake_display);
     fake_display->screens=&fake_screen; dpy=(Display *)fake_display;
@@ -390,12 +403,14 @@ int main(void) {
     overview_show(0); overview_select(3); assert(from_sel>=0);
     overview_hide(0); assert(from_sel<0 && overview_next_ms()==-1);
     clean();
-    /* Exposé: one card per window of the current workspace only. */
+    /* Exposé: one tile per window of the current workspace only. */
     ANIMATIONS=0; curws=0;
     Client ex[5]={0};
     for (int i=0;i<5;i++) { ex[i].win=700+i; ex[i].ws=i<4?0:1; ex[i].next=i<4?&ex[i+1]:NULL; }
     clients=ex; sel=&ex[2]; compositor=0; fake_class="WCVF"; text_log[0]=0;
-    expose_toggle(0); assert(overview_is_open() && expose && esel==2 && ecols==2);
+    int px0=pixmaps;
+    expose_toggle(0); assert(overview_is_open() && expose && esel==2 && ecols==4);
+    assert(snap && pixmaps==px0+2); /* backing + dimmed screen copy */
     assert(nhits==4 && strstr(text_log,"WCVF\n") && strstr(text_log,"4 windows"));
     for (int i=0;i<nhits;i++) {
         assert(hits[i].id==(Window)(700+i) && hits[i].ws==0);
@@ -403,13 +418,32 @@ int main(void) {
     }
     overview_select(3); assert(pending==0);
     key(XK_Right); assert(esel==3); key(XK_Right); assert(esel==3);
-    key(XK_Up); assert(esel==1); key(XK_Left); assert(esel==0); key(XK_Left); assert(esel==0);
-    key(XK_Down); assert(esel==2);
+    key(XK_Up); assert(esel==3); key(XK_Down); assert(esel==3);
+    key(XK_Left); key(XK_Left); key(XK_Left); assert(esel==0); key(XK_Left); assert(esel==0);
+    key(XK_Right); key(XK_Right); assert(esel==2);
     int f0=focuses;
     key(XK_Return);
     XEvent er={0}; er.type=KeyRelease; er.xkey.keycode=36; er.xkey.time=300; queue_count=0;
     assert(overview_event(&er));
     assert(!overview_is_open() && !expose && focuses==f0+1 && focused==702 && curws==0);
+    expose_toggle(0); assert(big_open==1);
+    XEvent mv={0}; mv.type=MotionNotify; mv.xmotion.window=overlay;
+    mv.xmotion.x=hits[3].x+1; mv.xmotion.y=hits[3].y+1;
+    assert(overview_event(&mv) && esel==3);
+    mv.xmotion.x=0; mv.xmotion.y=0; assert(overview_event(&mv) && esel==3);
+    text_center(barfont,0,20,50,"abcdefghijkl",&barcol.title);
+    assert(rendered_len==7 && !memcmp(rendered,"abcd\xe2\x80\xa6",7));
+    text_center(barfont,0,20,500,"A \xe2\x9c\xb3 B",&barcol.title);
+    assert(rendered_len==3 && !memcmp(rendered,"A B",3));
+    overview_hide(0); assert(big_open==0 && !snap && pixmaps==px0);
+    char ab[5];
+    abbrev("WCVF",ab); assert(!strcmp(ab,"WCVF"));
+    abbrev("SaveTo",ab); assert(!strcmp(ab,"ST"));
+    abbrev("WCVStripe",ab); assert(!strcmp(ab,"WCVS"));
+    abbrev("Alacritty",ab); assert(!strcmp(ab,"AL"));
+    abbrev("brave-browser",ab); assert(!strcmp(ab,"BR"));
+    abbrev("",ab); assert(!strcmp(ab,""));
+    assert(tile_color("WCVF")==tile_color("WCVF"));
     expose_toggle(0); click_card(701); assert(!expose && focused==701 && curws==0);
     expose_toggle(0); key(XK_w); assert(!overview_is_open() && !expose);
     expose_toggle(0); key(XK_Escape); assert(!overview_is_open() && !expose);
@@ -418,7 +452,7 @@ int main(void) {
     grab_result=GrabSuccess;
     overview_show(0); assert(overview_is_open() && !expose); clean();
     curws=3; text_log[0]=0;
-    expose_toggle(0); assert(nhits==0 && strstr(text_log,"Empty workspace")); clean();
+    expose_toggle(0); assert(nhits==0 && strstr(text_log,"No windows")); clean();
     clients=NULL; sel=NULL; fake_class=NULL; curws=0;
     free(fake_display);
     puts("overview offline tests: OK");

@@ -157,7 +157,7 @@ Actions: `overview_show`, `overview_hide`, `overview_toggle`. Configurations wit
 
 ### Exposé (current workspace)
 
-The action `expose_toggle` shows all windows of the current workspace as one large grid. The focused window is selected first. Arrow keys move the selection. Enter or a click focuses the window. Escape or `Super+w` closes the grid. Without a preview, a card shows the window class (for example `WCVF`). There is no default key. Add it to your config:
+The action `expose_toggle` shows the windows of the current workspace in a centered panel, like the macOS app switcher. The screen behind the panel is dimmed. Each window is a colored tile with a short label (for example `WCVF` or `ST` for `SaveTo`) and its class name below. The panel shows the workspace name on top and the title of the selected window at the bottom. The focused window is selected first. Arrow keys or the mouse pointer move the selection. Enter or a click focuses the window. Escape or `Super+w` closes the panel. There is no default key. Add it to your config:
 
 ```ini
 bind+ = mod+w:expose_toggle
