@@ -137,33 +137,57 @@ static Picture bpic; /* backing as a Render picture, for antialiased corners */
 static const double quarter[17]={1,0.99518473,0.98078528,0.95694034,0.92387953,0.88192126,
     0.83146961,0.77301045,0.70710678,0.63439328,0.55557023,0.47139674,0.38268343,
     0.29028468,0.19509032,0.09801714,0};
+/* Antialiased circle masks, one per radius. Triangles are slow on the
+ * server (3-8 ms per call), so each radius is drawn only once per open. */
+#define NMASKS 8
+static struct { int r; Pixmap pix; Picture pic; } masks[NMASKS];
+static Picture circle_mask(int r) {
+    int k=0;
+    while (k<NMASKS && masks[k].r && masks[k].r!=r) k++;
+    if (k==NMASKS) return None;
+    if (masks[k].r) return masks[k].pic;
+    XRenderPictFormat *a8=XRenderFindStandardFormat(dpy,PictStandardA8);
+    if (!a8) return None;
+    Pixmap pix=XCreatePixmap(dpy,root,(unsigned)(2*r),(unsigned)(2*r),8);
+    Picture pic=XRenderCreatePicture(dpy,pix,a8,0,NULL);
+    XRenderColor clear={0,0,0,0}, white={0xffff,0xffff,0xffff,0xffff};
+    XRenderFillRectangle(dpy,PictOpSrc,pic,&clear,0,0,(unsigned)(2*r),(unsigned)(2*r));
+    /* Triangle fan around the center; the A8 mask format smooths the arc. */
+    XPointFixed pt[2+4*17];
+    int n=0;
+    pt[n].x=pt[n].y=XDoubleToFixed(r); n++;
+    for (int q=0;q<4;q++) for (int i=0;i<=16;i++) {
+        double c=quarter[i], sn=quarter[16-i];
+        double dx=q==0?sn:q==1?c:q==2?-sn:-c, dy=q==0?-c:q==1?sn:q==2?c:-sn;
+        pt[n].x=XDoubleToFixed(r+dx*r); pt[n++].y=XDoubleToFixed(r+dy*r);
+    }
+    pt[n++]=pt[1];
+    Picture fill=XRenderCreateSolidFill(dpy,&white);
+    XRenderCompositeTriFan(dpy,PictOpOver,fill,pic,a8,0,0,pt,n);
+    XRenderFreePicture(dpy,fill);
+    masks[k].r=r; masks[k].pix=pix; masks[k].pic=pic;
+    return pic;
+}
 static void rounded(int x,int y,int w,int h,int r,unsigned long color) {
     if (w<=0 || h<=0) return;
     if (r>w/2) r=w/2;
     if (r>h/2) r=h/2;
     if (r<1) { rect(x,y,w,h,color); return; }
-    if (bpic) {
-        /* Triangle fan around the center; the A8 mask smooths the arcs. */
-        XPointFixed pt[2+4*17];
-        int n=0;
-        const double cx[4]={x+w-r,x+w-r,x+r,x+r}, cy[4]={y+r,y+h-r,y+h-r,y+r};
-        pt[n].x=XDoubleToFixed(x+w/2.0); pt[n++].y=XDoubleToFixed(y+h/2.0);
-        for (int k=0;k<4;k++) for (int i=0;i<=16;i++) {
-            double c=quarter[i], sn=quarter[16-i];
-            double dx=k==0?sn:k==1?c:k==2?-sn:-c, dy=k==0?-c:k==1?sn:k==2?c:-sn;
-            pt[n].x=XDoubleToFixed(cx[k]+dx*r); pt[n++].y=XDoubleToFixed(cy[k]+dy*r);
-        }
-        pt[n++]=pt[1];
+    rect(x+r,y,w-2*r,h,color);
+    rect(x,y+r,w,h-2*r,color);
+    Picture m=bpic?circle_mask(r):None;
+    if (m) {
+        /* Each corner is one quadrant of the circle mask. */
         XRenderColor rc={(unsigned short)((color>>16&255)*257),(unsigned short)((color>>8&255)*257),
                          (unsigned short)((color&255)*257),0xffff};
         Picture fill=XRenderCreateSolidFill(dpy,&rc);
-        XRenderCompositeTriFan(dpy,PictOpOver,fill,bpic,XRenderFindStandardFormat(dpy,PictStandardA8),
-                               0,0,pt,n);
+        XRenderComposite(dpy,PictOpOver,fill,m,bpic,0,0,0,0,x,y,(unsigned)r,(unsigned)r);
+        XRenderComposite(dpy,PictOpOver,fill,m,bpic,0,0,r,0,x+w-r,y,(unsigned)r,(unsigned)r);
+        XRenderComposite(dpy,PictOpOver,fill,m,bpic,0,0,0,r,x,y+h-r,(unsigned)r,(unsigned)r);
+        XRenderComposite(dpy,PictOpOver,fill,m,bpic,0,0,r,r,x+w-r,y+h-r,(unsigned)r,(unsigned)r);
         XRenderFreePicture(dpy,fill);
         return;
     }
-    rect(x+r,y,w-2*r,h,color);
-    rect(x,y+r,w,h-2*r,color);
     XSetForeground(dpy,gc,color);
     int d=2*r;
     XFillArc(dpy,backing,gc,x,y,d,d,90*64,90*64);
@@ -396,6 +420,11 @@ void overview_hide(int unused) {
     if (xd) XftDrawDestroy(xd);
     if (gc) XFreeGC(dpy,gc);
     if (bpic) XRenderFreePicture(dpy,bpic);
+    for (int k=0;k<NMASKS && masks[k].r;k++) {
+        XRenderFreePicture(dpy,masks[k].pic);
+        XFreePixmap(dpy,masks[k].pix);
+        masks[k].r=0;
+    }
     if (backing) XFreePixmap(dpy,backing);
     if (snap) XFreePixmap(dpy,snap);
     if (overlay) { animation_overview_role(None); XDestroyWindow(dpy,overlay); }

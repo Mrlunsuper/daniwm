@@ -44,6 +44,7 @@ static void record_text(const FcChar8 *s, int n) {
         memcpy(text_log+used,s,n); text_log[used+n]='\n'; text_log[used+n+1]=0;
     }
 }
+static int live_masks(void);
 static int free_pixmap(void) { assert(!require_trap || trapped); return --pixmaps; }
 static int grab_result=GrabSuccess, trap_ok=1, compositor=1, draw_ok=1;
 static unsigned long serial=100;
@@ -129,9 +130,10 @@ char *font_name;
 #define XSetSubwindowMode(...) 0
 static int solid_fills, trifans;
 #define XRenderCreateSolidFill(...) (solid_fills++, ++serial)
-#define XRenderCompositeTriFan(d,op,src,dst,mf,xs,ys,pts,n) (assert((n)==70 && (dst)==bpic), (void)trifans++)
+#define XRenderCompositeTriFan(d,op,src,dst,mf,xs,ys,pts,n) (assert((n)==70 && (dst)!=bpic), (void)trifans++)
 #define XRenderFindStandardFormat(...) ((XRenderPictFormat *)1)
 #include "../src/overview.c"
+static int live_masks(void) { int n=0; for (int k=0;k<NMASKS;k++) if (masks[k].r) n++; return n; }
 static Window role_window;
 void animation_overview_role(Window w) { role_window=w; }
 
@@ -291,7 +293,7 @@ int main(void) {
     for (int i=0;i<9;i++) { nine[i].win=200+i; nine[i].ws=i; nine[i].next=i<8?&nine[i+1]:NULL; }
     clients=nine; overview_show(0);
     int rows9=0; for (int i=0;i<nhits;i++) if (hits[i].id) rows9++;
-    assert(rows9==9 && pixmaps==2); /* backing + dimmed screen copy, no previews */
+    assert(rows9==9 && pixmaps==2+live_masks()); /* backing + dimmed screen copy, no previews */
     check_geometry(); clean(); clients=NULL;
     /* Default config has NULL workspace names: always render numbered labels. */
     workspace_name=NULL; text_log[0]=0;
@@ -412,9 +414,9 @@ int main(void) {
     Client ex[5]={0};
     for (int i=0;i<5;i++) { ex[i].win=700+i; ex[i].ws=i<4?0:1; ex[i].next=i<4?&ex[i+1]:NULL; }
     clients=ex; sel=&ex[2]; compositor=0; fake_class="WCVF"; text_log[0]=0;
-    int px0=pixmaps;
+    int px0=pixmaps, tf0=trifans;
     expose_toggle(0); assert(overview_is_open() && expose && esel==2 && ecols==4);
-    assert(snap && pixmaps==px0+2); /* backing + dimmed screen copy */
+    assert(snap && pixmaps==px0+2+live_masks()); /* backing + dimmed screen copy */
     assert(nhits==4 && strstr(text_log,"WCVF\n") && strstr(text_log,"4 windows"));
     for (int i=0;i<nhits;i++) {
         assert(hits[i].id==(Window)(700+i) && hits[i].ws==0);
@@ -425,6 +427,7 @@ int main(void) {
     key(XK_Up); assert(esel==3); key(XK_Down); assert(esel==3);
     key(XK_Left); key(XK_Left); key(XK_Left); assert(esel==0); key(XK_Left); assert(esel==0);
     key(XK_Right); key(XK_Right); assert(esel==2);
+    assert(live_masks()>0 && trifans==tf0+live_masks()); /* one fan per radius, not per redraw */
     int f0=focuses;
     key(XK_Return);
     XEvent er={0}; er.type=KeyRelease; er.xkey.keycode=36; er.xkey.time=300; queue_count=0;
