@@ -426,6 +426,7 @@ const KeyAction actions[] = {
     { "focus_next", k_focusnext }, { "focus_prev", k_focusprev },
     { "zoom", zoom }, { "ws_toggle", ws_toggle }, { "kill", k_kill }, { "tile", k_tile }, { "monocle", k_monocle },
     { "overview_toggle", overview_toggle }, { "overview_show", overview_show }, { "overview_hide", overview_hide },
+    { "expose_toggle", expose_toggle },
     { "toggle", k_toggle }, { "spawn_term", k_spawnterm },
     { "spawn_menu", k_spawnmenu }, { "quit", k_quit }, { "float", k_float },
     { "mfact_dec", k_mfactdec }, { "mfact_inc", k_mfactinc },

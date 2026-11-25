@@ -9,6 +9,7 @@ void overview_select(int ws);
 void overview_show(int unused);
 void overview_hide(int unused);
 void overview_toggle(int unused);
+void expose_toggle(int unused);
 int overview_event(XEvent *event);
 void overview_capture(Window win);
 void overview_drop(Window win);

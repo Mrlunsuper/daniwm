@@ -27,7 +27,7 @@ static struct { Pixmap dst; int x,y,w,h; } copy_rects[1024];
 static int ncopy;
 static char text_log[16384];
 static Window last_raised;
-static KeySym keymap[256]={[36]=XK_Return,[104]=XK_KP_Enter,[113]=XK_Left,[114]=XK_Right,[111]=XK_Up,[116]=XK_Down,[9]=XK_Escape,[32]=XK_o,[53]=XK_x};
+static KeySym keymap[256]={[36]=XK_Return,[104]=XK_KP_Enter,[113]=XK_Left,[114]=XK_Right,[111]=XK_Up,[116]=XK_Down,[9]=XK_Escape,[32]=XK_o,[53]=XK_x,[25]=XK_w};
 static void copy_area(Pixmap src, Pixmap dst, unsigned w, unsigned h, int x, int y) {
     assert(w>0 && h>0);
     if (src>1 && w<=192 && h<=108) copies++;
@@ -62,7 +62,8 @@ Client *clients;
 struct MonitorGeom mons[MAXMONS]={{0,0,1000,800}};
 Client *find(Window w) { for(Client *c=clients;c;c=c->next) if(c->win==w) return c; return NULL; }
 void view(int ws) { assert(!overview_is_open()); curws=ws; views++; }
-void focus(Client *c) { assert(c && c->ws==curws); focuses++; }
+static Window focused;
+void focus(Client *c) { assert(c && c->ws==curws); focuses++; focused=c->win; }
 int mon_by_pointer(void) { return 0; }
 static const char *workspace_name="workspace";
 const char *ws_name(int ws) { (void)ws; return workspace_name; }
@@ -112,6 +113,12 @@ int untrap_errors(Display *d) { (void)d; assert(trapped); trapped=0; return trap
 #define XRenderSetPictureTransform(...) ((void)0)
 #define XRenderSetPictureFilter(...) ((void)0)
 #define XRenderComposite(...) ((void)0)
+static const char *fake_class;
+static int class_hint(XClassHint *ch) {
+    if (!fake_class) return 0;
+    ch->res_class=strdup(fake_class); ch->res_name=NULL; return 1;
+}
+#define XGetClassHint(d,w,ch) class_hint(ch)
 #include "../src/overview.c"
 static Window role_window;
 void animation_overview_role(Window w) { role_window=w; }
@@ -382,7 +389,38 @@ int main(void) {
     /* Hide in the middle stops the move. */
     overview_show(0); overview_select(3); assert(from_sel>=0);
     overview_hide(0); assert(from_sel<0 && overview_next_ms()==-1);
-    clean(); free(fake_display);
+    clean();
+    /* Exposé: one card per window of the current workspace only. */
+    ANIMATIONS=0; curws=0;
+    Client ex[5]={0};
+    for (int i=0;i<5;i++) { ex[i].win=700+i; ex[i].ws=i<4?0:1; ex[i].next=i<4?&ex[i+1]:NULL; }
+    clients=ex; sel=&ex[2]; compositor=0; fake_class="WCVF"; text_log[0]=0;
+    expose_toggle(0); assert(overview_is_open() && expose && esel==2 && ecols==2);
+    assert(nhits==4 && strstr(text_log,"WCVF\n") && strstr(text_log,"4 windows"));
+    for (int i=0;i<nhits;i++) {
+        assert(hits[i].id==(Window)(700+i) && hits[i].ws==0);
+        assert(hits[i].x>=0 && hits[i].y>=0 && hits[i].x+hits[i].w<=width && hits[i].y+hits[i].h<=height);
+    }
+    overview_select(3); assert(pending==0);
+    key(XK_Right); assert(esel==3); key(XK_Right); assert(esel==3);
+    key(XK_Up); assert(esel==1); key(XK_Left); assert(esel==0); key(XK_Left); assert(esel==0);
+    key(XK_Down); assert(esel==2);
+    int f0=focuses;
+    key(XK_Return);
+    XEvent er={0}; er.type=KeyRelease; er.xkey.keycode=36; er.xkey.time=300; queue_count=0;
+    assert(overview_event(&er));
+    assert(!overview_is_open() && !expose && focuses==f0+1 && focused==702 && curws==0);
+    expose_toggle(0); click_card(701); assert(!expose && focused==701 && curws==0);
+    expose_toggle(0); key(XK_w); assert(!overview_is_open() && !expose);
+    expose_toggle(0); key(XK_Escape); assert(!overview_is_open() && !expose);
+    expose_toggle(0); expose_toggle(0); assert(!overview_is_open() && !expose);
+    grab_result=AlreadyGrabbed; expose_toggle(0); assert(!overview_is_open() && !expose);
+    grab_result=GrabSuccess;
+    overview_show(0); assert(overview_is_open() && !expose); clean();
+    curws=3; text_log[0]=0;
+    expose_toggle(0); assert(nhits==0 && strstr(text_log,"Empty workspace")); clean();
+    clients=NULL; sel=NULL; fake_class=NULL; curws=0;
+    free(fake_display);
     puts("overview offline tests: OK");
     return 0;
 }

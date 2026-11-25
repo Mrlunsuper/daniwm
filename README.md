@@ -155,6 +155,14 @@ The WM takes actual XComposite/XRender downscaled snapshots only when a composit
 
 Actions: `overview_show`, `overview_hide`, `overview_toggle`. Configurations with explicit `bind` entries replace defaults, so an existing live config needs `bind = mod+o:overview_toggle`; this repository's example includes it. No installed configuration is changed automatically. With `swipe_enabled = 1`, three-finger up/down show/hide this UI and left/right move its pending selection without switching the physical workspace. `make check-overview` runs isolated controller/cache tests; real X rendering and compositor compatibility still need private-display visual verification.
 
+### Exposé (current workspace)
+
+The action `expose_toggle` shows all windows of the current workspace as one large grid. The focused window is selected first. Arrow keys move the selection. Enter or a click focuses the window. Escape or `Super+w` closes the grid. Without a preview, a card shows the window class (for example `WCVF`). There is no default key. Add it to your config:
+
+```ini
+bind+ = mod+w:expose_toggle
+```
+
 ## Build
 
 ```sh

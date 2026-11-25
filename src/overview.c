@@ -28,6 +28,7 @@ static int committing; /* view() runs from a click or key in the overview */
 static struct { int x,y,w,h,ws; Window id; } hits[HITS];
 static int nhits;
 static KeyCode commit_key;
+static int expose, esel, ecols=1; /* exposé mode, selected card, grid columns */
 /* Selection highlight move: each card blends from start_w to its target. */
 static int from_sel=-1;
 static int start_w[MAXWS];
@@ -174,9 +175,90 @@ static void rounded(int x,int y,int w,int h,int r,unsigned long color) {
 static void hit(int x,int y,int w,int h,int ws,Window id) {
     if (w>0 && h>0 && nhits<HITS) { hits[nhits].x=x; hits[nhits].y=y; hits[nhits].w=w; hits[nhits].h=h; hits[nhits].ws=ws; hits[nhits++].id=id; }
 }
+/* One window card: cached preview (or a placeholder) above the title. */
+static void card(int cx,int cy,int cardw,int cardh,int ws,Client *c,unsigned long well) {
+    int line=barfont->height+S(8), inset=S(8), imageh=cardh-line-2*inset;
+    rounded(cx,cy,cardw,cardh,S(8),well);
+    hit(cx,cy,cardw,cardh,ws,c->win);
+    int cached=0;
+    for (int i=0;i<CACHE;i++) if (cache[i].id==c->win && cache[i].pm) {
+        int w=cache[i].w; if (w>cardw-2*inset) w=cardw-2*inset;
+        int h=cache[i].h; if (h>imageh) h=imageh;
+        if (w>0 && h>0) {
+            XCopyArea(dpy,cache[i].pm,backing,gc,(cache[i].w-w)/2,(cache[i].h-h)/2,
+                      w,h,cx+(cardw-w)/2,cy+inset+(imageh-h)/2);
+            cached=1;
+        }
+        break;
+    }
+    trap_errors(dpy);
+    if (!cached && imageh>=line) {
+        /* Exposé shows the window class instead, e.g. one zellij per repo. */
+        XClassHint ch={0};
+        const char *s="Preview unavailable";
+        if (expose && XGetClassHint(dpy,c->win,&ch) && ch.res_class) s=ch.res_class;
+        text_color(cx+inset,cy+inset+imageh/2+barfont->ascent/2,
+                   cardw-2*inset,s,expose?&barcol.title:&barcol.sep);
+        if (ch.res_class) XFree(ch.res_class);
+        if (ch.res_name) XFree(ch.res_name);
+    }
+    unsigned char *title=NULL; Atom type; int format; unsigned long n,after;
+    if (XGetWindowProperty(dpy,c->win,A_NET_WM_NAME,0,128,False,AnyPropertyType,&type,&format,&n,&after,&title)==Success && title && format==8)
+        text(cx+inset,cy+cardh-inset-barfont->descent,cardw-2*inset,(char *)title);
+    else text(cx+inset,cy+cardh-inset-barfont->descent,cardw-2*inset,"Window");
+    if (title) XFree(title);
+    untrap_errors(dpy);
+}
+/* Exposé: the current workspace's windows as one grid over the output. */
+static void draw_expose(void) {
+    int margin=S(28), gap=S(16), ring=S(2);
+    int line=barfont->height+S(8), header=line+S(16), footer=line+S(12);
+    unsigned long backdrop=blend(BAR_BG,0,22), well=blend(BAR_BG,BAR_FG,5);
+    int n=0;
+    for (Client *c=clients;c;c=c->next) if (c->ws==curws) n++;
+    if (width<2*margin+S(96) || height<2*margin+header+footer+3*line)
+        margin=gap=header=footer=0;
+    int gw=width-2*margin, gh=height-2*margin-header-footer;
+    rect(0,0,width,height,backdrop);
+    if (header) {
+        char label[160];
+        const char *name=ws_name(curws);
+        snprintf(label,sizeof label,"%s  /  %d window%s",name && *name?name:"Workspace",n,n==1?"":"s");
+        text(margin,margin+barfont->ascent,gw,label);
+    }
+    if (footer)
+        text_color(margin,height-margin-barfont->descent,gw,
+                   "Arrow keys: select    Enter / click: focus    Esc: cancel",&barcol.sep);
+    ecols=1;
+    while (ecols*ecols<n) ecols++;
+    int erows=n?(n+ecols-1)/ecols:1;
+    int cw=(gw-(ecols-1)*gap)/ecols, ch=(gh-(erows-1)*gap)/erows;
+    if (!n && gh>=line)
+        text_color(margin,margin+header+gh/2,gw,"Empty workspace",&barcol.sep);
+    int i=0;
+    for (Client *c=clients;c && cw>2*ring && ch>2*ring;c=c->next) if (c->ws==curws) {
+        int x=margin+(i%ecols)*(cw+gap), y=margin+header+(i/ecols)*(ch+gap);
+        if (i==esel) rounded(x,y,cw,ch,S(10),BAR_ACC);
+        card(x+ring,y+ring,cw-2*ring,ch-2*ring,curws,c,well);
+        i++;
+    }
+    XCopyArea(dpy,backing,overlay,gc,0,0,width,height,0,0);
+}
+/* Window of the selected exposé card, or None. */
+static Window expose_pick(void) {
+    int i=0;
+    for (Client *c=clients;c;c=c->next) if (c->ws==curws && i++==esel) return c->win;
+    return None;
+}
+static void expose_move(int d) {
+    int n=0;
+    for (Client *c=clients;c;c=c->next) if (c->ws==curws) n++;
+    if (esel+d>=0 && esel+d<n) { esel+=d; draw(); }
+}
 static void draw(void) {
     if (!active) return;
     nhits=0;
+    if (expose) { draw_expose(); return; }
     int pad=S(12), gap=S(16), radius=S(12);
     int fh=barfont->height, line=fh+S(8);
     int margin=S(28), header=2*line+S(16), footer=line+S(12);
@@ -249,30 +331,7 @@ static void draw(void) {
         for (Client *c=clients;c && shown<capacity;c=c->next) if (c->ws==ws) {
             int cx=x+pad+(shown%cardcols)*(cardw+cardgap);
             int cy=top+(shown/cardcols)*(cardh+cardgap);
-            int inset=S(8), imageh=cardh-line-2*inset;
-            rounded(cx,cy,cardw,cardh,S(8),well);
-            hit(cx,cy,cardw,cardh,ws,c->win);
-            int cached=0;
-            for (int i=0;i<CACHE;i++) if (cache[i].id==c->win && cache[i].pm) {
-                int w=cache[i].w; if (w>cardw-2*inset) w=cardw-2*inset;
-                int h=cache[i].h; if (h>imageh) h=imageh;
-                if (w>0 && h>0) {
-                    XCopyArea(dpy,cache[i].pm,backing,gc,(cache[i].w-w)/2,(cache[i].h-h)/2,
-                              w,h,cx+(cardw-w)/2,cy+inset+(imageh-h)/2);
-                    cached=1;
-                }
-                break;
-            }
-            if (!cached && imageh>=line)
-                text_color(cx+inset,cy+inset+imageh/2+barfont->ascent/2,
-                           cardw-2*inset,"Preview unavailable",&barcol.sep);
-            unsigned char *title=NULL; Atom type; int format; unsigned long n,after;
-            trap_errors(dpy);
-            if (XGetWindowProperty(dpy,c->win,A_NET_WM_NAME,0,128,False,AnyPropertyType,&type,&format,&n,&after,&title)==Success && title && format==8)
-                text(cx+inset,cy+cardh-inset-barfont->descent,cardw-2*inset,(char *)title);
-            else text(cx+inset,cy+cardh-inset-barfont->descent,cardw-2*inset,"Window");
-            if (title) XFree(title);
-            untrap_errors(dpy);
+            card(cx,cy,cardw,cardh,ws,c,well);
             shown++;
         }
         if (count>shown) snprintf(label,sizeof label,"%d windows  /  +%d more",count,count-shown);
@@ -288,7 +347,7 @@ void overview_hide(int unused) {
         hover_lock_arm(); /* Destroying the cover must not change stationary hover focus. */
         XUngrabKeyboard(dpy,CurrentTime);
     }
-    active=0; commit_key=0; from_sel=-1;
+    active=0; commit_key=0; from_sel=-1; expose=0;
     /* Failed asynchronous creation can leave nonzero but invalid handles. */
     trap_errors(dpy);
     if (xd) XftDrawDestroy(xd);
@@ -320,8 +379,16 @@ void overview_show(int unused) {
     pending=curws; active=1; draw();
 }
 void overview_toggle(int unused) { if (active) overview_hide(unused); else overview_show(unused); }
+void expose_toggle(int unused) {
+    if (active) { overview_hide(unused); return; }
+    expose=1; esel=0;
+    int i=0;
+    for (Client *c=clients;c;c=c->next) if (c->ws==curws) { if (c==sel) esel=i; i++; }
+    overview_show(unused);
+    if (!active) expose=0;
+}
 void overview_select(int ws) {
-    if (!active || ws<0 || ws>=NWS) return;
+    if (!active || expose || ws<0 || ws>=NWS) return;
     if (ws!=pending && highlight_on()) {
         long long now=mono_ms();
         for (int i=0;i<MAXWS;i++) start_w[i]=highlight(i,now);
@@ -342,9 +409,15 @@ int overview_event(XEvent *e) {
     case Expose: if (e->xexpose.window==overlay) draw(); return e->xexpose.window==overlay;
     case KeyPress: {
         KeySym k=XLookupKeysym(&e->xkey,0);
-        if (k==XK_Escape || ((e->xkey.state&MOD) && k==XK_o)) overview_hide(0);
+        if (k==XK_Escape || ((e->xkey.state&MOD) && (k==XK_o || (expose && k==XK_w)))) overview_hide(0);
         else if (commit_key) return 1; /* Keep the grab through held-Enter repeats. */
         else if (k==XK_Return || k==XK_KP_Enter) commit_key=e->xkey.keycode;
+        else if (expose) {
+            if (k==XK_Left) expose_move(-1);
+            else if (k==XK_Right) expose_move(1);
+            else if (k==XK_Up) expose_move(-ecols);
+            else if (k==XK_Down) expose_move(ecols);
+        }
         else if (k==XK_Left) overview_select(pending-1);
         else if (k==XK_Right) overview_select(pending+1);
         else if (k==XK_Up) overview_select(pending-cols);
@@ -361,7 +434,7 @@ int overview_event(XEvent *e) {
                 if (next.type==KeyPress && next.xkey.keycode==commit_key &&
                     next.xkey.time==e->xkey.time) return 1;
             }
-            commit(None);
+            commit(expose?expose_pick():None);
         }
         return 1;
     case ButtonPress:
