@@ -29,7 +29,7 @@ trap 'exit 1' HUP INT TERM
 $CC $CFLAGS -std=c11 -Wall -Wextra -Werror test/overview-xvfb.c -o "$tmp/driver" -lX11
 make daniwm
 mkdir -p "$tmp/home" "$tmp/config/daniwm" "$tmp/bin"
-: > "$tmp/config/daniwm/config"
+printf 'bind+ = mod+w:expose_toggle\n' > "$tmp/config/daniwm/config"
 # session_init forks a detached shell that imports DISPLAY into session services.
 # Disable those commands explicitly, in addition to dropping all session env.
 for cmd in dbus-update-activation-environment systemctl; do

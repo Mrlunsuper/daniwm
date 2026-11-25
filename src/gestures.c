@@ -30,7 +30,8 @@ void gestures_configure(void)
         {XIAllMasterDevices, sizeof masters, masters},
         {XIAllDevices, sizeof devices, devices}
     };
-    int status, clean;
+    XIGrabModifiers mods = {XIAnyModifier, 0};
+    int status, clean, grab = -1;
     gestures_reset("config-reload");
     active = 0;
     if (!supported) {
@@ -45,12 +46,22 @@ void gestures_configure(void)
         XISetMask(devices, XI_HierarchyChanged);
     }
     /* Wildcard selectors are distinct from the explicit master selectors used
-     * for raw-button observation. Never replace those masks or grab input. */
+     * for raw-button observation. Never replace those masks. */
     trap_errors(dpy);
+    XIUngrabSwipeGestureBegin(dpy, XIAllMasterDevices, root, 1, &mods);
     status = XISelectEvents(dpy, root, masks, 2);
+    /* Root passive grab: apps that select swipes on their own window
+     * (Qt6, e.g. Telegram) would otherwise take them before root. */
+    if (SWIPE_ENABLED && status == Success) {
+        XIEventMask grab_mask = {XIAllMasterDevices, sizeof masters, masters};
+        mods.status = XIGrabSuccess;
+        grab = XIGrabSwipeGestureBegin(dpy, XIAllMasterDevices, root, XIGrabModeAsync,
+                                       XIGrabModeAsync, False, &grab_mask, 1, &mods);
+        if (grab == 0 && mods.status != XIGrabSuccess) grab = 1;
+    }
     clean = untrap_errors(dpy);
     active = SWIPE_ENABLED && status == Success && clean;
-    if (SWIPE_DEBUG) fprintf(stderr, "daniwm: swipe configure XI=%d.%d supported=%d enabled=%d active=%d status=%d trap-clean=%d\n", xi_major, xi_minor, supported, SWIPE_ENABLED, active, status, clean);
+    if (SWIPE_DEBUG) fprintf(stderr, "daniwm: swipe configure XI=%d.%d supported=%d enabled=%d active=%d status=%d grab=%d trap-clean=%d\n", xi_major, xi_minor, supported, SWIPE_ENABLED, active, status, grab, clean);
 }
 
 void gestures_init(int major, int minor)

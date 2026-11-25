@@ -6,6 +6,7 @@ unsigned nrules = 0, caprules = 0;
 char **termcmd = NULL;
 char **menucmd = NULL;
 char **scratchcmd = NULL;
+char **desktopcmd = NULL; /* right click on empty desktop; NULL = no action */
 unsigned int MOD = Mod4Mask;
 int BORDER = 2;
 unsigned long BORDER_FOCUS  = 0x7aa2f7;

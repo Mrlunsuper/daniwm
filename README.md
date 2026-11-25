@@ -55,10 +55,12 @@ values are rejected. `swipe_wrap` permits crossing the first/last workspace;
 loading settings and reconfigures delivery after workspace arrays are rebuilt.
 
 XI2.4 headers/server support and actual touchpad gesture delivery are required;
-compilation and offline tests do not establish physical delivery. Root observation
-may not deliver over application windows; applications or competing grabs may
-consume gestures. The Phase 1 adapter only selects events: it never grabs,
-freezes, or replays input. Run `make check-swipe` for its offline tests.
+compilation and offline tests do not establish physical delivery. Some apps
+(for example Qt6 apps such as Telegram) select swipe events on their own windows
+and would take them before root. So, when swipe is enabled, the WM also sets an
+async passive swipe grab on root. Apps then get no 3- or 4-finger swipes. The XI
+API has no finger-count filter, and the WM does not replay input. Run
+`make check-swipe` for its offline tests.
 Passive grabs in the separate diagnostic may intercept non-three-
 finger swipes too: the XI API has no finger-count grab filter, and rejecting them
 in the classifier cannot restore input to applications. Keep this opt-in off
@@ -147,13 +149,19 @@ cam kết thumbnail ẩn luôn live. Các lựa chọn kiến trúc chưa chốt
 
 ## Workspace overview
 
-The overview uses a theme-colored card grid with rounded surfaces, a highlighted pending selection, workspace numbers/names and a current-workspace marker. Window previews are centered in their cards, with labeled fallbacks when unavailable. Window counts and overflow indicators keep crowded workspaces readable; the last row is centered and spacing follows the configured UI scale. A footer shows the keyboard controls. No additional rendering dependency is required.
+The overview shows one rounded card per workspace over a dimmed copy of the screen. Each card has the workspace number and name, a `Current` marker on the current workspace, and one line per window: a colored class tag (for example `WCVF`) and the window title. A title that is too long ends with `…`. When a workspace has more windows than fit, the last line shows `+N more`. There are no window previews, so the overview needs no compositor and does no capture work.
 
-`Super+o` opens/toggles a workspace grid on the pointer monitor. Arrow keys change only the pending selection; Enter or a workspace click commits it. A window-card click commits its workspace, then focuses the still-managed client after checking its XID and workspace. Escape cancels without changing the original workspace or focus. Opening/browsing never maps hidden clients or focuses applications. Show/hide are idempotent; external workspace changes, client lifecycle changes, reload and monitor geometry changes close the overlay.
+`Super+o` opens/toggles a workspace grid on the pointer monitor. Arrow keys or the mouse pointer change only the pending selection; Enter or a workspace click commits it. A click on a window line commits its workspace, then focuses the still-managed client after checking its XID and workspace. Escape cancels without changing the original workspace or focus. Opening/browsing never maps hidden clients or focuses applications. Show/hide are idempotent; external workspace changes, client lifecycle changes, reload and monitor geometry changes close the overlay.
 
-The WM takes actual XComposite/XRender downscaled snapshots only when a compositor owns redirection and a client is viewable. Snapshots are also taken before workspace/monocle hiding and retained for hidden clients. The cache holds at most 64 opaque pixmaps, each at most 192×108 (about 5.1 MiB at 32 bits/pixel, excluding server overhead), with round-robin replacement and removal on unmanage. No application redirection ownership is changed. Without a compositor, or when capture fails, the overview remains usable as labeled cards without images; previews are cached, not live video. Large workspaces display as many cards as fit.
+Actions: `overview_show`, `overview_hide`, `overview_toggle`. Configurations with explicit `bind` entries replace defaults, so an existing live config needs `bind = mod+o:overview_toggle`; this repository's example includes it. No installed configuration is changed automatically. With `swipe_enabled = 1`, three-finger up/down show/hide this UI and left/right move its pending selection without switching the physical workspace. `make check-overview` runs isolated controller tests and a private Xvfb check.
 
-Actions: `overview_show`, `overview_hide`, `overview_toggle`. Configurations with explicit `bind` entries replace defaults, so an existing live config needs `bind = mod+o:overview_toggle`; this repository's example includes it. No installed configuration is changed automatically. With `swipe_enabled = 1`, three-finger up/down show/hide this UI and left/right move its pending selection without switching the physical workspace. `make check-overview` runs isolated controller/cache tests; real X rendering and compositor compatibility still need private-display visual verification.
+### Exposé (current workspace)
+
+The action `expose_toggle` shows the windows of the current workspace in a centered panel, like the macOS app switcher. The screen behind the panel is dimmed. Each window is a colored tile with a short label (for example `WCVF` or `ST` for `SaveTo`) and its class name below. The panel shows the workspace name on top and the title of the selected window at the bottom. The focused window is selected first. Arrow keys or the mouse pointer move the selection. Enter or a click focuses the window. Escape or `Super+w` closes the panel. There is no default key. Add it to your config:
+
+```ini
+bind+ = mod+w:expose_toggle
+```
 
 ## Build
 
@@ -425,6 +433,8 @@ fallback — `ico_clk` falls back to nothing, preserving the old clock look),
 vertical padding: text/icons are always vertically centered, so top/bottom air is just
 `bar_h` (taller bar = more air; tray icons stay `bar_h-10`, capped at 22px),
 `term/menu/scratch` (commands split with `wordexp`, quotes work),
+`desktop_click` (command for a right click on the empty desktop or a gap, e.g.
+`desktop_click = dani-run --fav`; unset = no action),
 `rename_cmd` (shell cmd for `ws_rename`, default `rofi -dmenu -i -p rename`;
 current name on stdin, stdout = new name; env `$DANIWM_WS_CUR`/`$DANIWM_WS_NUM`
 available, e.g. `rename_cmd = rofi -dmenu -p "rename ws$DANIWM_WS_NUM"`).

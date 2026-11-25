@@ -105,7 +105,25 @@ int main(void) {
     if (!closed) fail("Escape did not close overview");
     if (!desktop(&current) || current != original)
         fail("cancelling overview changed desktop");
+    key(root, XK_w, Mod4Mask);
+    shown = None;
+    for (int i = 0; i < 250; i++) {
+        shown = overlay();
+        if (shown) break;
+        pause_tick();
+    }
+    if (!shown) fail("Super+w did not map expose overlay");
+    key(shown, XK_w, Mod4Mask);
+    closed = 0;
+    for (int i = 0; i < 250; i++) {
+        if (!overlay()) { closed = 1; break; }
+        pause_tick();
+    }
+    if (!closed) fail("Super+w did not close expose");
+    if (!desktop(&current) || current != original)
+        fail("closing expose changed desktop");
     XCloseDisplay(d);
     puts("PASS: private Xvfb overview show / Escape / unchanged desktop");
+    puts("PASS: private Xvfb expose show / Super+w close / unchanged desktop");
     return 0;
 }

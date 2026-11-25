@@ -20,6 +20,7 @@ rename_cmd = rofi -dmenu -i -p rename  # prompt của ws_rename (stdout = tên m
                                      # $DANIWM_WS_CUR/_NUM dùng được trong cmd;
                                      # Esc = giữ tên cũ, Enter trống = về số)
 scratch = alacritty --class scratchpad   # giữ chữ "scratchpad" để toggle tìm được
+desktop_click = dani-run --fav           # bấm phải vào desktop trống; bỏ dòng = không làm gì
 
 # ---------- extra binds (giữ nguyên list `bind =` bên dưới) ----------
 # `bind =` thay TOÀN BỘ phím mặc định; `bind+` = thêm vào, giữ nguyên.

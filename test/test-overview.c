@@ -27,7 +27,7 @@ static struct { Pixmap dst; int x,y,w,h; } copy_rects[1024];
 static int ncopy;
 static char text_log[16384];
 static Window last_raised;
-static KeySym keymap[256]={[36]=XK_Return,[104]=XK_KP_Enter,[113]=XK_Left,[114]=XK_Right,[111]=XK_Up,[116]=XK_Down,[9]=XK_Escape,[32]=XK_o,[53]=XK_x};
+static KeySym keymap[256]={[36]=XK_Return,[104]=XK_KP_Enter,[113]=XK_Left,[114]=XK_Right,[111]=XK_Up,[116]=XK_Down,[9]=XK_Escape,[32]=XK_o,[53]=XK_x,[25]=XK_w};
 static void copy_area(Pixmap src, Pixmap dst, unsigned w, unsigned h, int x, int y) {
     assert(w>0 && h>0);
     if (src>1 && w<=192 && h<=108) copies++;
@@ -44,6 +44,7 @@ static void record_text(const FcChar8 *s, int n) {
         memcpy(text_log+used,s,n); text_log[used+n]='\n'; text_log[used+n+1]=0;
     }
 }
+static int live_masks(void);
 static int free_pixmap(void) { assert(!require_trap || trapped); return --pixmaps; }
 static int grab_result=GrabSuccess, trap_ok=1, compositor=1, draw_ok=1;
 static unsigned long serial=100;
@@ -62,7 +63,8 @@ Client *clients;
 struct MonitorGeom mons[MAXMONS]={{0,0,1000,800}};
 Client *find(Window w) { for(Client *c=clients;c;c=c->next) if(c->win==w) return c; return NULL; }
 void view(int ws) { assert(!overview_is_open()); curws=ws; views++; }
-void focus(Client *c) { assert(c && c->ws==curws); focuses++; }
+static Window focused;
+void focus(Client *c) { assert(c && c->ws==curws); focuses++; focused=c->win; }
 int mon_by_pointer(void) { return 0; }
 static const char *workspace_name="workspace";
 const char *ws_name(int ws) { (void)ws; return workspace_name; }
@@ -112,7 +114,26 @@ int untrap_errors(Display *d) { (void)d; assert(trapped); trapped=0; return trap
 #define XRenderSetPictureTransform(...) ((void)0)
 #define XRenderSetPictureFilter(...) ((void)0)
 #define XRenderComposite(...) ((void)0)
+static const char *fake_class;
+static int class_hint(XClassHint *ch) {
+    if (!fake_class) return 0;
+    ch->res_class=strdup(fake_class); ch->res_name=NULL; return 1;
+}
+#define XGetClassHint(d,w,ch) class_hint(ch)
+static XftFont big_stub;
+static int big_open;
+char *font_name;
+#define XftFontOpenName(...) (big_open++, &big_stub)
+#define XftFontClose(d,f) (assert((f)==&big_stub), big_open--)
+#define XftTextExtentsUtf8(d,f,s,n,g) ((g)->xOff=(short)((n)*7))
+#define XftCharExists(d,f,cp) ((cp)!=0x2733)
+#define XSetSubwindowMode(...) 0
+static int solid_fills, trifans;
+#define XRenderCreateSolidFill(...) (solid_fills++, ++serial)
+#define XRenderCompositeTriFan(d,op,src,dst,mf,xs,ys,pts,n) (assert((n)==70 && (dst)!=bpic), (void)trifans++)
+#define XRenderFindStandardFormat(...) ((XRenderPictFormat *)1)
 #include "../src/overview.c"
+static int live_masks(void) { int n=0; for (int k=0;k<NMASKS;k++) if (masks[k].r) n++; return n; }
 static Window role_window;
 void animation_overview_role(Window w) { role_window=w; }
 
@@ -163,8 +184,7 @@ static void test_detach(Client *c) { assert(clients==c); clients=c->next; }
 
 static void clean(void) {
     overview_hide(0);
-    for(int i=0;i<CACHE;i++) overview_drop(cache[i].id);
-    assert(!pixmaps && !windows && !gcs && !draws);
+    assert(!pixmaps && !windows && !gcs && !draws && !big_open);
 }
 static void key(KeySym k) {
     XEvent e={0}; e.type=KeyPress;
@@ -180,7 +200,7 @@ static void click_card(Window id) {
     }
     assert(!"missing card");
 }
-/* Preview copies and click targets must stay inside their workspace/card. */
+/* Click targets must stay inside their workspace card. */
 static void check_geometry(void) {
     int workspaces=0;
     for (int i=0;i<nhits;i++) {
@@ -197,18 +217,10 @@ static void check_geometry(void) {
         assert(parent);
     }
     if (width>=cols && height>=(NWS+cols-1)/cols) assert(workspaces==NWS);
-    for (int i=0;i<ncopy;i++) if (copy_rects[i].dst==backing) {
-        int inside=0;
-        for (int j=0;j<nhits;j++) if (hits[j].id &&
-            copy_rects[i].x>=hits[j].x && copy_rects[i].y>=hits[j].y &&
-            copy_rects[i].x+copy_rects[i].w<=hits[j].x+hits[j].w &&
-            copy_rects[i].y+copy_rects[i].h<=hits[j].y+hits[j].h-barfont->height)
-            inside=1;
-        assert(inside);
-    }
 }
 int main(void) {
     font.height=16; font.ascent=12; font.descent=4;
+    big_stub.height=32; big_stub.ascent=24; big_stub.descent=8;
     /* Fake display also makes accidental Default* macro dereferences harmless. */
     fake_display=calloc(1,sizeof *fake_display); assert(fake_display);
     fake_display->screens=&fake_screen; dpy=(Display *)fake_display;
@@ -241,12 +253,6 @@ int main(void) {
     overview_show(0); clients=NULL; click_card(42); assert(curws==1 && focuses==0); clean();
     clients=&c; overview_show(0); c.ws=3; click_card(42); assert(curws==1 && focuses==0); clean();
     c.ws=1; overview_show(0); click_card(42); assert(focuses==1); clean();
-    compositor=1;
-    for(int i=0;i<CACHE+17;i++) { c.win=1000+i; overview_capture(c.win); }
-    assert(pixmaps==CACHE);
-    c.win=1000+CACHE+16; overview_capture(c.win); assert(pixmaps==CACHE);
-    overview_drop(c.win); assert(pixmaps==CACHE-1); overview_drop(c.win); assert(pixmaps==CACHE-1);
-    trap_ok=0; require_trap=1; c.win=9000; overview_capture(c.win); assert(pixmaps==CACHE-1); trap_ok=1; require_trap=0;
     clean(); clients=NULL;
     overview_show(0); XEvent e={0}; e.type=GenericEvent; assert(!overview_event(&e));
     key(XK_x);
@@ -270,10 +276,10 @@ int main(void) {
     assert(!overview_event(&e));
     overview_show(0); key(XK_KP_Enter); key(XK_Escape); assert(!active && !commit_key);
     overview_show(0);
-    text(0,20,100,"ok\xc0\xaf\xed\xa0\x80\xf4\x90\x80\x80");
+    text_fit(barfont,0,20,100000,"ok\xc0\xaf\xed\xa0\x80\xf4\x90\x80\x80",&barcol.title,0);
     assert(rendered_len==11 && !memcmp(rendered,"ok?????????",11));
     char bounded[513]; memset(bounded,'a',sizeof bounded); bounded[511]='\xe2'; bounded[512]=0;
-    text(0,20,100,bounded); assert(rendered_len==512 && rendered[511]=='?');
+    text_fit(barfont,0,20,100000,bounded,&barcol.title,0); assert(rendered_len==512 && rendered[511]=='?');
     clean();
     Client full={0}, fl={0}; Dock dock={0};
     full.win=400; full.ws=curws; full.fullscreen=1; full.next=&fl;
@@ -285,32 +291,52 @@ int main(void) {
     NWS=9; mons[0].w=1280; mons[0].h=720;
     Client nine[9]={0};
     for (int i=0;i<9;i++) { nine[i].win=200+i; nine[i].ws=i; nine[i].next=i<8?&nine[i+1]:NULL; }
-    clients=nine; copies=ncopy=0; overview_show(0); assert(copies==9);
+    clients=nine; overview_show(0);
+    int rows9=0; for (int i=0;i<nhits;i++) if (hits[i].id) rows9++;
+    assert(rows9==9 && pixmaps==2+live_masks()); /* backing + dimmed screen copy, no previews */
     check_geometry(); clean(); clients=NULL;
     /* Default config has NULL workspace names: always render numbered labels. */
     workspace_name=NULL; text_log[0]=0;
     overview_show(0);
     assert(strstr(text_log,"Workspace 1\n") && strstr(text_log,"Workspace 9\n"));
-    assert(strstr(text_log,"Empty workspace") && strstr(text_log,"Esc: cancel"));
+    assert(strstr(text_log,"No windows"));
     clean(); workspace_name="Development"; text_log[0]=0;
     overview_show(0); assert(strstr(text_log,"Development\n")); clean();
     workspace_name="workspace";
-    /* Dense workspaces show an overflow count, never overlapping cards. */
+    /* Dense workspaces list as many windows as fit, then "+N more". */
     Client many[30]={0};
     NWS=5; mons[0].w=1920; mons[0].h=1080;
     for (int i=0;i<30;i++) { many[i].win=500+i; many[i].ws=0; many[i].next=i<29?&many[i+1]:NULL; }
-    clients=many; compositor=0; text_log[0]=0; ncopy=0;
+    clients=many; text_log[0]=0;
     overview_show(0); check_geometry();
-    assert(strstr(text_log,"30 windows  /  +") && strstr(text_log,"Preview unavailable"));
+    assert(strstr(text_log,"more\n"));
     int cards=0; for (int i=0;i<nhits;i++) if (hits[i].id) cards++;
-    assert(cards>=2 && cards<30);
+    assert(cards>=3 && cards<30);
+    for (int i=0;i<nhits;i++) for (int j=i+1;j<nhits;j++) if (hits[i].id && hits[j].id)
+        assert(hits[i].x+hits[i].w<=hits[j].x || hits[j].x+hits[j].w<=hits[i].x ||
+               hits[i].y+hits[i].h<=hits[j].y || hits[j].y+hits[j].h<=hits[i].y);
+    clean();
+    /* Three windows on the reported 1920x1200, 7-workspace setup all show. */
+    NWS=7; mons[0].w=1920; mons[0].h=1200; many[2].next=NULL; text_log[0]=0;
+    overview_show(0); check_geometry();
+    cards=0; for (int i=0;i<nhits;i++) if (hits[i].id) cards++;
+    assert(cards==3 && !strstr(text_log,"more\n"));
+    clean();
+    many[2].next=&many[3];
+    NWS=5; mons[0].w=1920; mons[0].h=1080;
+    overview_show(0);
     int firstcard=-1, secondcard=-1;
     for (int i=0;i<nhits;i++) if (hits[i].id) {
         if (firstcard<0) firstcard=i;
         else { secondcard=i; break; }
     }
-    assert(secondcard>=0 && hits[firstcard].y==hits[secondcard].y);
-    assert(hits[firstcard].x+hits[firstcard].w<hits[secondcard].x);
+    /* One line per window: the second line sits right below the first. */
+    assert(secondcard>=0 && hits[firstcard].x==hits[secondcard].x);
+    assert(hits[firstcard].y+hits[firstcard].h<=hits[secondcard].y);
+    /* Hovering a card selects its workspace. */
+    XEvent hv={0}; hv.type=MotionNotify; hv.xmotion.window=overlay;
+    for (int i=0;i<nhits;i++) if (!hits[i].id && hits[i].ws==2) { hv.xmotion.x=hits[i].x+1; hv.xmotion.y=hits[i].y+1; }
+    assert(overview_event(&hv) && pending==2);
     /* Gutters are not workspace targets; clicking them does not commit. */
     XEvent gutter={0}; gutter.type=ButtonPress; gutter.xbutton.window=overlay;
     assert(overview_event(&gutter) && overview_is_open());
@@ -382,7 +408,60 @@ int main(void) {
     /* Hide in the middle stops the move. */
     overview_show(0); overview_select(3); assert(from_sel>=0);
     overview_hide(0); assert(from_sel<0 && overview_next_ms()==-1);
-    clean(); free(fake_display);
+    clean();
+    /* Exposé: one tile per window of the current workspace only. */
+    ANIMATIONS=0; curws=0;
+    Client ex[5]={0};
+    for (int i=0;i<5;i++) { ex[i].win=700+i; ex[i].ws=i<4?0:1; ex[i].next=i<4?&ex[i+1]:NULL; }
+    clients=ex; sel=&ex[2]; compositor=0; fake_class="WCVF"; text_log[0]=0;
+    int px0=pixmaps, tf0=trifans;
+    expose_toggle(0); assert(overview_is_open() && expose && esel==2 && ecols==4);
+    assert(snap && pixmaps==px0+2+live_masks()); /* backing + dimmed screen copy */
+    assert(nhits==4 && strstr(text_log,"WCVF\n") && strstr(text_log,"4 windows"));
+    for (int i=0;i<nhits;i++) {
+        assert(hits[i].id==(Window)(700+i) && hits[i].ws==0);
+        assert(hits[i].x>=0 && hits[i].y>=0 && hits[i].x+hits[i].w<=width && hits[i].y+hits[i].h<=height);
+    }
+    overview_select(3); assert(pending==0);
+    key(XK_Right); assert(esel==3); key(XK_Right); assert(esel==3);
+    key(XK_Up); assert(esel==3); key(XK_Down); assert(esel==3);
+    key(XK_Left); key(XK_Left); key(XK_Left); assert(esel==0); key(XK_Left); assert(esel==0);
+    key(XK_Right); key(XK_Right); assert(esel==2);
+    assert(live_masks()>0 && trifans==tf0+live_masks()); /* one fan per radius, not per redraw */
+    int f0=focuses;
+    key(XK_Return);
+    XEvent er={0}; er.type=KeyRelease; er.xkey.keycode=36; er.xkey.time=300; queue_count=0;
+    assert(overview_event(&er));
+    assert(!overview_is_open() && !expose && focuses==f0+1 && focused==702 && curws==0);
+    expose_toggle(0); assert(big_open==1);
+    XEvent mv={0}; mv.type=MotionNotify; mv.xmotion.window=overlay;
+    mv.xmotion.x=hits[3].x+1; mv.xmotion.y=hits[3].y+1;
+    assert(overview_event(&mv) && esel==3);
+    mv.xmotion.x=0; mv.xmotion.y=0; assert(overview_event(&mv) && esel==3);
+    text_center(barfont,0,20,50,"abcdefghijkl",&barcol.title);
+    assert(rendered_len==7 && !memcmp(rendered,"abcd\xe2\x80\xa6",7));
+    text_center(barfont,0,20,500,"A \xe2\x9c\xb3 B",&barcol.title);
+    assert(rendered_len==3 && !memcmp(rendered,"A B",3));
+    overview_hide(0); assert(big_open==0 && !snap && pixmaps==px0);
+    char ab[5];
+    abbrev("WCVF",ab); assert(!strcmp(ab,"WCVF"));
+    abbrev("SaveTo",ab); assert(!strcmp(ab,"ST"));
+    abbrev("WCVStripe",ab); assert(!strcmp(ab,"WCVS"));
+    abbrev("Alacritty",ab); assert(!strcmp(ab,"AL"));
+    abbrev("brave-browser",ab); assert(!strcmp(ab,"BR"));
+    abbrev("",ab); assert(!strcmp(ab,""));
+    assert(tile_color("WCVF")==tile_color("WCVF"));
+    expose_toggle(0); click_card(701); assert(!expose && focused==701 && curws==0);
+    expose_toggle(0); key(XK_w); assert(!overview_is_open() && !expose);
+    expose_toggle(0); key(XK_Escape); assert(!overview_is_open() && !expose);
+    expose_toggle(0); expose_toggle(0); assert(!overview_is_open() && !expose);
+    grab_result=AlreadyGrabbed; expose_toggle(0); assert(!overview_is_open() && !expose);
+    grab_result=GrabSuccess;
+    overview_show(0); assert(overview_is_open() && !expose); clean();
+    curws=3; text_log[0]=0;
+    expose_toggle(0); assert(nhits==0 && strstr(text_log,"No windows")); clean();
+    clients=NULL; sel=NULL; fake_class=NULL; curws=0;
+    free(fake_display);
     puts("overview offline tests: OK");
     return 0;
 }
