@@ -26,7 +26,8 @@ struct Client {
 
 typedef enum { L_TILE = 0, L_MONOCLE = 1 } Layout;
 
-typedef struct { XftColor bg, ws_act, ws_acttx, ws_occ, ws_emp, mode, title, sys, urgent, sep, task_act, task_acttx, task_text; } BarColors;
+typedef struct { XftColor bg, ws_act, ws_acttx, ws_occ, ws_emp, mode, title, sys, urgent, sep, task_act, task_acttx, task_text,
+    acc, ico[5]; /* ico: cpu mem bat vol clock */ } BarColors;
 
 typedef struct { int left, right, top, bottom; } StrutMargin;
 

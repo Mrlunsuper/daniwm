@@ -19,6 +19,8 @@ unsigned long C_WS_ACT, C_WS_ACT_TX, C_WS_OCC, C_WS_EMP, C_MODE, C_TITLE, C_SYS,
 int h_ws_act, h_ws_act_tx, h_ws_occ, h_ws_emp, h_mode, h_title, h_sys, h_urgent, h_sep;
 unsigned long C_TASK_ACT, C_TASK_ACT_TX, C_TASK_TEXT;
 int h_task_act, h_task_act_tx, h_task_text;
+unsigned long C_ICO[5]; /* status icon colors: cpu mem bat vol clock */
+int h_ico[5];
 int BAR_WS_STYLE = 2;
 int BAR_TASK_STYLE = -1; /* follow BAR_WS_STYLE */
 char *BAR_MODULES = NULL;

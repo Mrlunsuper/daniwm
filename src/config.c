@@ -249,6 +249,7 @@ void config_defaults(void) {
     h_ws_act = h_ws_act_tx = h_ws_occ = h_ws_emp = h_mode = h_title = h_sys = 0;
     C_TASK_ACT = C_TASK_ACT_TX = C_TASK_TEXT = 0;
     h_task_act = h_task_act_tx = h_task_text = 0;
+    for (int i = 0; i < 5; i++) h_ico[i] = 0;
     C_URGENT = 0xeb6f92; C_SEP = 0; h_urgent = h_sep = 0; BAR_WS_STYLE = 2;
     BAR_TASK_STYLE = -1;
     BAR_H = 24; WS_W = 46; BAR_WS_PAD = 12; ui_scale = 1.0f;
@@ -289,6 +290,13 @@ static const char *config_path(char *buf, size_t n) {
     else if (home && *home) snprintf(buf, n, "%s/.config/daniwm/config", home);
     else return NULL;
     return buf;
+}
+/* Status icon color keys, same order as C_ICO[]. */
+static const char *ico_color_keys[5] = { "bar_cpu_icon", "bar_mem_icon", "bar_bat_icon",
+                                         "bar_vol_icon", "bar_clock_icon" };
+static int ico_color_key(const char *k) {
+    for (int i = 0; i < 5; i++) if (!strcmp(k, ico_color_keys[i])) return i;
+    return -1;
 }
 static void parse_scalar(char *key, char *val) {
     long v; float f; unsigned long h; int b; unsigned int m;
@@ -507,6 +515,9 @@ static void parse_scalar(char *key, char *val) {
         set_cmd(&scratchcmd, val);
     } else if (!strcmp(key, "desktop_click")) {
         set_cmd(&desktopcmd, val);
+    } else if (ico_color_key(key) >= 0) {
+        int i = ico_color_key(key);
+        if (parse_hex(val, &h)) { C_ICO[i] = h; h_ico[i] = 1; }
     }
 }
 static void parse_rule(const char *val, int lineno, const char *path) {
@@ -809,7 +820,8 @@ void load_config(const char *path) {
             strncmp(k, "ws_name", 7) && strncmp(k, "wsname", 6) &&
             strncmp(k, "ws_icon", 7) && strncmp(k, "wsicon", 6) &&
             strcmp(k, "term") &&
-            strcmp(k, "menu") && strcmp(k, "scratch") && strcmp(k, "desktop_click")) {
+            strcmp(k, "menu") && strcmp(k, "scratch") && strcmp(k, "desktop_click") &&
+            ico_color_key(k) < 0) {
             fprintf(stderr, "daniwm: %s:%u: unknown key '%s'\n", path, i + 1, k);
         }
     }

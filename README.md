@@ -419,7 +419,7 @@ most 160px wide, left-aligned, clicks past them are no-ops; buttons shrink to
 fit before any task is hidden),
 `bar_task_pad` (0–32, default 6 — text inset inside each task button),
 `bar_ws_task_gap` (0–64, default 12 — dead px between the ws/layout block and
-the tasklist, with a thin divider drawn in the middle when tasks show;
+the tasklist;
 clicks there are no-ops, so a wider value stops ws/task mis-clicks),
 `bar_task_style` (`follow` default = theo `bar_ws_style` | `pill` | `underline` | `block` | `none` = chỉ màu chữ),
 `bar_task_active` (nền task đang focus — pill/block/underline; bỏ trống = theo ws active / pill mờ),
@@ -444,11 +444,14 @@ per-component overrides fall back to those when unset:
 `bar_ws_active` (underline — or box in `block` mode — of current ws), `bar_ws_active_text` (label on it),
 `bar_ws_occ` (occupied ws label), `bar_ws_empty`, `bar_urgent` (urgent ws + low battery + MUTE),
 `bar_sep` (separators + bottom border), `bar_mode` (window count),
-`bar_title` (left window title with `…` fallback when crowded, default dim so status wins), `bar_sys` (sysmon values, default bright; icons use the accent color).
+`bar_title` (left window title with `…` fallback when crowded, default dim so status wins), `bar_sys` (sysmon values, default bright; icons use the accent color),
+`bar_cpu_icon/bar_mem_icon/bar_bat_icon/bar_vol_icon/bar_clock_icon` (per-module icon color,
+default `bar_acc`). The status modules sit in one rounded capsule; the active `pill`
+workspace shows its label in `bar_acc`.
 
 System tray: XEmbed (`_NET_SYSTEM_TRAY_Sn`) on the bar's right edge — `nm-applet --indicator`/
-`volumeicon`/`cbatticon` dock automatically; a vertical divider separates the tray
-from the clock (same chrome as the workspace separator); clicking the tray area
+`volumeicon`/`cbatticon` dock automatically; a gap separates the tray
+from the status capsule; clicking the tray area
 never leaks into workspace view; an ownerless selection is re-acquired automatically
 (e.g. after a standalone tray exits); `tray = 0` disables (reload applies live);
 `tray_size` (0 hoặc 8–64, default 0 = tự tính từ `bar_h`, tối đa 22 — cỡ icon tray), `tray_gap` (0–32, default 6 — khoảng cách giữa các icon tray, reload applies live).
