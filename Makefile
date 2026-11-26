@@ -114,7 +114,7 @@ daniwm: $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lXcomposite -lXrender -lm
 
 dani-run: src/run.o
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(CAIRO_LIBS) -lm
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(CAIRO_LIBS) -lXrender -lm
 
 dani-comp: src/comp.o src/animation.o src/exit-layer.o
 	$(CC) $(CFLAGS) -o $@ $^ $(COMP_LDFLAGS)
