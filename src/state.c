@@ -60,6 +60,7 @@ int ANIMATION_CLOSE_MS = 100;
 int ANIMATION_LAYOUT_MS = 0; /* best-effort, opt-in */
 int ANIMATION_WORKSPACE_MS = 0; /* 0..250, opt-in */
 int ANIMATION_OVERVIEW_MS = 0;  /* 0..250, opt-in */
+int CORNER_RADIUS = 0;         /* 0..24 px, rounded corners in dani-comp */
 int SWIPE_ENABLED = 0;
 double SWIPE_THRESHOLD = 80.0;
 int SWIPE_WRAP = 0;

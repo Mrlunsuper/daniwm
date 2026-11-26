@@ -5,6 +5,7 @@
 #include "animation-lifecycle.h"
 #include "workspace-animation.h"
 #include "overview-animation.h"
+#include "corner-settings.h"
 #include "xerr.h"
 #include <X11/Xatom.h>
 #include <time.h>
@@ -173,6 +174,9 @@ void animation_settings_publish(void) {
         (unsigned long)ANIMATION_OVERVIEW_MS};
     XChangeProperty(dpy, root, XInternAtom(dpy, OVERVIEW_SETTINGS_ATOM, False),
         XA_CARDINAL, 32, PropModeReplace, (unsigned char *)overview, 3);
+    unsigned long corner[] = {CORNER_SETTINGS_VERSION, checkwin, (unsigned long)CORNER_RADIUS};
+    XChangeProperty(dpy, root, XInternAtom(dpy, CORNER_SETTINGS_ATOM, False),
+        XA_CARDINAL, 32, PropModeReplace, (unsigned char *)corner, 3);
     XChangeProperty(dpy, root, XInternAtom(dpy, MONITOR_EPOCH_ATOM, False),
         XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&monitor_epoch, 1);
     XFlush(dpy);

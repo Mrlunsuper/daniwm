@@ -294,6 +294,7 @@ animation_open_ms = 140
 animation_close_ms = 100
 animation_workspace_ms = 0
 animation_overview_ms = 0
+corner_radius = 0
 ```
 
 Set `compositor = 1` and `animations = 1` to enable opening/remap fade-in and
@@ -390,7 +391,8 @@ plus bar font `size=`; fractional ok, e.g. `scale = 1.5`; reload applies live),
 (integer 0..1000, default 140), `animation_close_ms` (integer 0..1000, default 100),
 `animation_layout_ms` (integer 0..1000, default 0; best-effort movement duration),
 `animation_workspace_ms` (integer 0..250, default 0; workspace crossfade duration),
-`animation_overview_ms` (integer 0..250, default 0; overview fade and highlight duration).
+`animation_overview_ms` (integer 0..250, default 0; overview fade and highlight duration),
+`corner_radius` (integer 0..24, default 0; rounded window corners in dani-comp, reload applies live).
 Shadow/dim are standalone compositor flags,
 not WM scalar keys; standalone fade defaults to 160 ms.
 `focus` (`hover`| `click`|`both`, default `hover` — hover-to-focus vs click-to-focus), `tray` (system tray on/off, default on),

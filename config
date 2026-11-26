@@ -64,6 +64,7 @@ animation_close_ms = 100          # close/withdraw only; monocle/scratchpad vẫ
 animation_layout_ms = 0            # best-effort movement; 0 = instant, mismatch input/visual accepted
 animation_workspace_ms = 0         # crossfade khi đổi workspace; 0..250, 0 = instant; input sang ws mới ngay
 animation_overview_ms = 0          # overview fade in/out + highlight ô chọn; 0..250, 0 = instant
+corner_radius = 0                  # bo góc cửa sổ (px, 0..24, 0 = vuông); cần compositor = 1
 # Reload cập nhật motion, không start/stop compositor; dùng toggle hoặc startup.
 # Chạy tay: dani-comp --wm-settings để nhận config WM (CLI mặc định độc lập).
 # Toggle: bind = mod+c:compositor (chỉ dani-comp tương thích trên display này)

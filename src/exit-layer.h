@@ -22,6 +22,7 @@ typedef struct {
     int shaped;
     int workspace; /* part of a workspace crossfade, not a close */
     int overview;  /* overview fade-out, drawn above everything */
+    int radius, bw; /* rounded corners (0 = square) and border width */
     double alpha, dim;
     Animation animation;
 } ExitLayer;
