@@ -114,6 +114,11 @@ bar_show_layout    = 0        # icon tile/monocle + số cửa sổ (1/0)
 bar_mode           = F5F5F7   # số cửa sổ (icon tile/monocle dùng bar_acc)
 bar_title          = F5F5F7   # tiêu đề cửa sổ đang focus (sáng như macOS)
 bar_sys            = F5F5F7   # giá trị sysmon (icon dùng bar_acc)
+bar_cpu_icon       = 30D158   # màu icon từng module (mặc định = bar_acc)
+bar_mem_icon       = BF5AF2
+bar_bat_icon       = FFD60A
+bar_vol_icon       = 0A84FF
+bar_clock_icon     = 98989D
 # font bar: fontconfig pattern. bar_h=32 hợp với size=9.
 font = Noto Sans:size=9          # chữ sans như macOS; icon tự lấy từ Nerd Font
 # Không có Nerd Font vẫn đẹp (tự rớt về chữ C/M/B/V).

@@ -87,6 +87,8 @@ extern unsigned long C_WS_ACT, C_WS_ACT_TX, C_WS_OCC, C_WS_EMP, C_MODE, C_TITLE,
 extern int h_ws_act, h_ws_act_tx, h_ws_occ, h_ws_emp, h_mode, h_title, h_sys, h_urgent, h_sep;
 extern unsigned long C_TASK_ACT, C_TASK_ACT_TX, C_TASK_TEXT;
 extern int h_task_act, h_task_act_tx, h_task_text;
+extern unsigned long C_ICO[5];
+extern int h_ico[5];
 extern int BAR_WS_STYLE; /* 0=underline 1=block 2=pill (default) */
 extern int BAR_TASK_STYLE; /* -1=follow ws 0=underline 1=block 2=pill 3=none */
 extern char *BAR_MODULES;  /* order+visibility: e.g. "cpu mem bat vol clock" */
