@@ -1770,6 +1770,7 @@ static int power_kind(const char *name, const char **glyph) {
     };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++)
         if (has_ci(name, k[i].key)) { if (glyph) *glyph = k[i].g; return k[i].pal; }
+    if (!strcasecmp(name, "off")) { if (glyph) *glyph = k[0].g; return k[0].pal; } /* default entry */
     return -1;
 }
 /* tile color: power tint, else a stable pick from the name */
