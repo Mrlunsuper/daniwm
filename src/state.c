@@ -53,6 +53,7 @@ int gap_inner = 8;
 float def_mfact = 0.55f;
 int def_nmaster = 1;
 int COMPOSITOR = 0;
+int COMP_VSYNC = 1;            /* 0: dani-comp skips XPresent vblank sync */
 int ANIMATIONS = 0;
 int REDUCE_MOTION = 0;
 int ANIMATION_OPEN_MS = ANIMATION_OPEN_DEFAULT;

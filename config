@@ -65,6 +65,7 @@ animation_layout_ms = 0            # best-effort movement; 0 = instant, mismatch
 animation_workspace_ms = 0         # crossfade khi đổi workspace; 0..250, 0 = instant; input sang ws mới ngay
 animation_overview_ms = 0          # overview fade in/out + highlight ô chọn; 0..250, 0 = instant
 corner_radius = 0                  # bo góc cửa sổ (px, 0..24, 0 = vuông); cần compositor = 1
+comp_vsync = 1                     # 0 = không chờ vblank: gõ/cuộn ít trễ hơn, có thể xé hình; áp dụng khi dani-comp khởi động lại
 # Reload cập nhật motion, không start/stop compositor; dùng toggle hoặc startup.
 # Chạy tay: dani-comp --wm-settings để nhận config WM (CLI mặc định độc lập).
 # Toggle: bind = mod+c:compositor (chỉ dani-comp tương thích trên display này)

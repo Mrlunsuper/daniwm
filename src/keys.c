@@ -266,6 +266,7 @@ void compositor_start(void) {
     if (pid == 0) {
         if (dpy) close(ConnectionNumber(dpy));
         setsid();
+        if (!COMP_VSYNC) setenv("DANI_COMP_NO_PRESENT", "1", 1); /* lower latency, may tear */
         char self[1152], sibling[1152];
         snprintf(self, sizeof(self), "%s", progpath[0] ? progpath : "dani-comp");
         char *slash = strrchr(self, '/');

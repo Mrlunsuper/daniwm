@@ -236,7 +236,7 @@ void config_defaults(void) {
     for (int i = 0; i < MAXWS; i++) { free(ws_icons[i]); ws_icons[i] = NULL; }
     free(RENAME_CMD); RENAME_CMD = xstrdup("rofi -dmenu -i -p rename");
     MOD = Mod4Mask; BORDER = 2; NWS = 5;
-    COMPOSITOR = 0; ANIMATIONS = 0; REDUCE_MOTION = 0;
+    COMPOSITOR = 0; COMP_VSYNC = 1; ANIMATIONS = 0; REDUCE_MOTION = 0;
     ANIMATION_OPEN_MS = ANIMATION_OPEN_DEFAULT;
     ANIMATION_CLOSE_MS = ANIMATION_CLOSE_DEFAULT;
     ANIMATION_LAYOUT_MS = 0;
@@ -445,6 +445,8 @@ static void parse_scalar(char *key, char *val) {
         else fprintf(stderr, "daniwm: bad focus '%s' (want hover|click|both)\n", val);
     } else if (!strcmp(key, "compositor")) {
         if (parse_bool(val, &b)) COMPOSITOR = b;
+    } else if (!strcmp(key, "comp_vsync")) {
+        if (parse_bool(val, &b)) COMP_VSYNC = b;
         else fprintf(stderr, "daniwm: bad compositor '%s' (want boolean)\n", val);
     } else if (!strcmp(key, "animations")) {
         if (parse_bool(val, &b)) ANIMATIONS = b;
@@ -814,7 +816,7 @@ void load_config(const char *path) {
             strcmp(k, "ico_mute") && strcmp(k, "ico_clk") && strcmp(k, "bar_pad_l") &&
             strcmp(k, "bar_pad_r") && strcmp(k, "scale") && strcmp(k, "font") && strcmp(k, "ws_w") && strcmp(k, "bar_ws_pad") && strcmp(k, "ws_pad") && strcmp(k, "tray") && strcmp(k, "tray_size") && strcmp(k, "tray_icon_size") && strcmp(k, "tray_gap") && strcmp(k, "tray_pad") &&
             strcmp(k, "tray_spacing") && strcmp(k, "tray_icons_gap") && strcmp(k, "bar_on") && strcmp(k, "focus") && strcmp(k, "gaps_on") &&
-            strcmp(k, "compositor") && strcmp(k, "animations") &&
+            strcmp(k, "compositor") && strcmp(k, "comp_vsync") && strcmp(k, "animations") &&
             strcmp(k, "reduce_motion") && strcmp(k, "animation_open_ms") &&
             strcmp(k, "animation_close_ms") && strcmp(k, "animation_layout_ms") &&
             strcmp(k, "animation_workspace_ms") && strcmp(k, "animation_overview_ms") &&
