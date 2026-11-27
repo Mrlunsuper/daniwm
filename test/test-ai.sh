@@ -379,7 +379,10 @@ proc = subprocess.run([sys.executable, script], input=b'{"interval":"2h"}',
 if proc.returncode == 0:
     data = json.loads(proc.stdout)
     assert data.get("symbol") == "BTCUSDT"
-    assert "klines" in data and data["klines"]["interval"] == "2h"
+    if data.get("errors"):
+        print("btc tool skipped network check (%s)" % data["errors"][0])
+    else:
+        assert "klines" in data and data["klines"]["interval"] == "2h"
 else:
     print("btc tool skipped network check (rc=%d)" % proc.returncode)
 proc = subprocess.run([sys.executable, script], input=b'{"symbol":"BTC USDT"}',
