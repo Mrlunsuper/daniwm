@@ -295,7 +295,18 @@ static int dirty = 1;       /* cần repaint */
 static int stack_dirty = 1; /* geometry/stacking đổi: cần pre-pass + re-query root */
 /* cache để khỏi round-trip/alloc mỗi frame */
 static Picture shadow_fill[7] = { None, None, None, None, None, None, None }; /* solid fill 7 lớp bóng */
-static Picture shadow_corner = None; /* the 7 layers stacked, for rounded corners */
+static Picture shadow_black = None; /* opaque black, drawn through the corner shadow mask */
+typedef struct { int grow; int dy; unsigned short alpha; } ShadowLayer;
+#define SHADOW_LAYERS 7
+static const ShadowLayer shadow_layers[SHADOW_LAYERS] = {
+    { 12, 5, 0x0600 }, /* ngoài cùng, nhạt nhất */
+    { 10, 4, 0x0800 },
+    { 8, 4, 0x0a00 },
+    { 6, 3, 0x0c00 },
+    { 4, 2, 0x0e00 },
+    { 3, 2, 0x1000 },
+    { 2, 1, 0x1200 }, /* sát cửa sổ, đậm nhất */
+};
 /* mask alpha: các cửa sổ khác nhau có alpha khác nhau (active/inactive/
  * opacity riêng) nên cache 4 giá trị gần nhất thay vì 1. */
 #define ALPHA_SLOTS 8
@@ -1278,15 +1289,7 @@ static void fill_round(Picture src, int x, int y, int w, int h, int r) {
 
 /* r > 0: rounded window, so the shadow is rounded and also fills the corners. */
 static void paint_shadow(int x, int y, int w, int h, int r) {
-    static const struct { int grow; int dy; unsigned short alpha; } layers[] = {
-        { 12, 5, 0x0600 }, /* ngoài cùng, nhạt nhất */
-        { 10, 4, 0x0800 },
-        { 8, 4, 0x0a00 },
-        { 6, 3, 0x0c00 },
-        { 4, 2, 0x0e00 },
-        { 3, 2, 0x1000 },
-        { 2, 1, 0x1200 }, /* sát cửa sổ, đậm nhất */
-    };
+    const ShadowLayer *layers = shadow_layers;
     /* P5: cửa sổ (mờ đục) sẽ phủ phần giữa -> chỉ vẽ vành bóng, khỏi blend
      * phần bị che (overdraw phí). Vành = bao ngoài trừ hộp cửa sổ = 4 rect. */
     int ox = x - 12, oy = y - 12 + 5, ow = w + 24, oh = h + 24; /* bao ngoài mọi lớp */
@@ -1307,7 +1310,7 @@ static void paint_shadow(int x, int y, int w, int h, int r) {
     }
     if (nr == 0) return;
     XRenderSetPictureClipRectangles(dpy, back_pict, 0, 0, ring, nr);
-    for (unsigned i = 0; i < sizeof(layers) / sizeof(layers[0]); i++) {
+    for (unsigned i = 0; i < SHADOW_LAYERS; i++) {
         if (shadow_fill[i] == None) {
             XRenderColor c = { .red = 0, .green = 0, .blue = 0, .alpha = layers[i].alpha };
             shadow_fill[i] = XRenderCreateSolidFill(dpy, &c);
@@ -1325,19 +1328,16 @@ static void paint_shadow(int x, int y, int w, int h, int r) {
             (unsigned)(w + layers[i].grow * 2), (unsigned)(h + layers[i].grow * 2));
     }
     back_clip_reset(); /* trả clip về hộp damage (hoặc None) */
-    /* Rounded: every layer covers the 4 corner squares, so fill them with
-     * the stacked shadow, only outside the arc (never under the window). */
-    Picture outside = r > 0 ? corner_mask(r, r, 2, 1.0) : None;
-    if (outside && shadow_corner == None) {
-        double keep = 1.0;
-        for (unsigned i = 0; i < sizeof(layers) / sizeof(layers[0]); i++)
-            keep *= 1.0 - layers[i].alpha / 65535.0;
-        XRenderColor c = { .alpha = (unsigned short)((1.0 - keep) * 65535.0) };
-        shadow_corner = XRenderCreateSolidFill(dpy, &c);
+    /* Rounded: the 4 corner squares get the real shadow, only outside the
+     * arc (never under the window); the mask holds its per-pixel alpha. */
+    Picture cs = r > 0 ? corner_mask(r, r, 2, 1.0) : None;
+    if (cs && shadow_black == None) {
+        XRenderColor c = { .alpha = 0xffff };
+        shadow_black = XRenderCreateSolidFill(dpy, &c);
     }
-    for (int k = 0; k < 4 && outside && shadow_corner; k++) {
+    for (int k = 0; k < 4 && cs && shadow_black; k++) {
         int qx = k & 1, qy = k >> 1;
-        XRenderComposite(dpy, PictOpOver, shadow_corner, outside, back_pict, 0, 0, qx * r, qy * r,
+        XRenderComposite(dpy, PictOpOver, shadow_black, cs, back_pict, 0, 0, qx * r, qy * r,
             x + (qx ? w - r : 0), y + (qy ? h - r : 0), (unsigned)r, (unsigned)r);
     }
 }
@@ -1408,7 +1408,8 @@ static Picture alpha_mask(double a) {
 /* ---- rounded corners ---- */
 /* Corner coverage masks (A8, 2r x 2r, circles centered at (r, r)), built on
  * the CPU once each. kind 0: inside radius ri; 1: inside r but outside ri (the
- * border arc); 2: outside ri. spic holds the mask times a fading window alpha. */
+ * border arc); 2: shadow outside ri (all shadow layers, as alpha).
+ * spic holds the mask times a fading window alpha. */
 #define CORNER_MASKS 16
 static struct { int r, ri, kind; Pixmap pix, spix; Picture pic, spic; } cmasks[CORNER_MASKS];
 static Pixmap border_pix = None;  /* 1x1 repeat: sampled window border color */
@@ -1432,16 +1433,24 @@ static Picture corner_mask(int r, int ri, int kind, double a) {
         int d = 2 * r;
         unsigned char *data = a8 ? malloc((size_t)d * (size_t)d) : NULL;
         if (!data) return None;
-        /* 8x8 supersampled coverage */
+        /* 8x8 supersampled coverage. For kind 2 the 2r box is a 2r window:
+         * each shadow layer is then a circle of radius r+grow, dy lower. */
         for (int y = 0; y < d; y++) for (int x = 0; x < d; x++) {
-            int n = 0;
+            double cov = 0.0;
             for (int sy = 0; sy < 8; sy++) for (int sx = 0; sx < 8; sx++) {
                 double px = x + (sx + 0.5) / 8.0 - r, py = y + (sy + 0.5) / 8.0 - r;
                 double dd = px * px + py * py;
                 int in_r = dd <= (double)r * r, in_ri = dd <= (double)ri * ri;
-                if (kind == 0 ? in_ri : kind == 1 ? in_r && !in_ri : !in_ri) n++;
+                if (kind == 2) {
+                    double keep = 1.0;
+                    for (int i = 0; i < SHADOW_LAYERS && !in_ri; i++) {
+                        double ly = py - shadow_layers[i].dy, lr = r + shadow_layers[i].grow;
+                        if (px * px + ly * ly <= lr * lr) keep *= 1.0 - shadow_layers[i].alpha / 65535.0;
+                    }
+                    cov += in_ri ? 0.0 : 1.0 - keep;
+                } else if (kind == 0 ? in_ri : in_r && !in_ri) cov += 1.0;
             }
-            data[(size_t)y * (size_t)d + (size_t)x] = (unsigned char)(n * 255 / 64);
+            data[(size_t)y * (size_t)d + (size_t)x] = (unsigned char)(cov * 255.0 / 64.0 + 0.5);
         }
         XImage *img = XCreateImage(dpy, DefaultVisual(dpy, screen), 8, ZPixmap, 0,
             (char *)data, (unsigned)d, (unsigned)d, 8, d);
