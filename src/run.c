@@ -111,7 +111,12 @@ static int nfb;
 static int text_fb_done;
 static XftColor c_bg, c_fg, c_acc, c_dim;
 static XftColor c_band, c_div, c_sel, c_selout;
-static XftColor c_love, c_gold, c_pine, c_foam;
+/* macOS system colors, same family as the bar icons: icon tiles + power tints */
+enum { PAL_BLUE, PAL_PURPLE, PAL_RED, PAL_ORANGE, PAL_YELLOW, PAL_GREEN, PAL_TEAL, PAL_INDIGO, NPAL };
+static const unsigned long pal_hex[NPAL] = {
+    0x0A84FF, 0xBF5AF2, 0xFF453A, 0xFF9F0A, 0xFFD60A, 0x30D158, 0x64D2FF, 0x5E5CE6,
+};
+static XftColor c_pal[NPAL];
 static int opt_width = 560; /* drun window width */
 static int opt_drun_icons = 1; /* Nerd glyph per .desktop app in the drun list */
 static int opt_opacity = 100; /* window opacity %, _NET_WM_WINDOW_OPACITY (100 = opaque).
@@ -1296,7 +1301,42 @@ static unsigned long mix_hex(unsigned long a, unsigned long b, int pct_b) {
          | (((((a >> 8) & 0xff) * pct_a + ((b >> 8) & 0xff) * pct_b) / 100) << 8)
          | (((a & 0xff) * pct_a + (b & 0xff) * pct_b) / 100);
 }
-/* rounded rectangle fill on the window (4 arcs + 2 strips, no XRender needed) */
+/* Antialiased circle masks for rounded corners, one per radius (like bar.c). */
+static const double quarter[17] = {1,0.99518473,0.98078528,0.95694034,0.92387953,
+    0.88192126,0.83146961,0.77301045,0.70710678,0.63439328,0.55557023,0.47139674,
+    0.38268343,0.29028468,0.19509032,0.09801714,0};
+#define RUN_NMASKS 8
+static struct { int r; Pixmap pix; Picture pic; } rmasks[RUN_NMASKS];
+static Picture winpic = None; /* win as a Render picture */
+static Picture round_mask(int r) {
+    int k = 0;
+    while (k < RUN_NMASKS && rmasks[k].r && rmasks[k].r != r) k++;
+    if (k == RUN_NMASKS) return None;
+    if (rmasks[k].r) return rmasks[k].pic;
+    XRenderPictFormat *a8 = XRenderFindStandardFormat(dpy, PictStandardA8);
+    if (!a8) return None;
+    Pixmap pix = XCreatePixmap(dpy, win, (unsigned)(2 * r), (unsigned)(2 * r), 8);
+    Picture pic = XRenderCreatePicture(dpy, pix, a8, 0, NULL);
+    XRenderColor clear = {0, 0, 0, 0}, white = {0xffff, 0xffff, 0xffff, 0xffff};
+    XRenderFillRectangle(dpy, PictOpSrc, pic, &clear, 0, 0, (unsigned)(2 * r), (unsigned)(2 * r));
+    XPointFixed pt[2 + 4 * 17];
+    int n = 0;
+    pt[n].x = pt[n].y = XDoubleToFixed(r); n++;
+    for (int q = 0; q < 4; q++) for (int i = 0; i <= 16; i++) {
+        double c = quarter[i], sn = quarter[16 - i];
+        double dx = q == 0 ? sn : q == 1 ? c : q == 2 ? -sn : -c;
+        double dy = q == 0 ? -c : q == 1 ? sn : q == 2 ? c : -sn;
+        pt[n].x = XDoubleToFixed(r + dx * r); pt[n++].y = XDoubleToFixed(r + dy * r);
+    }
+    pt[n++] = pt[1];
+    Picture fill = XRenderCreateSolidFill(dpy, &white);
+    XRenderCompositeTriFan(dpy, PictOpOver, fill, pic, a8, 0, 0, pt, n);
+    XRenderFreePicture(dpy, fill);
+    rmasks[k].r = r; rmasks[k].pix = pix; rmasks[k].pic = pic;
+    return pic;
+}
+/* rounded rectangle fill on the window; antialiased corners when XRender works.
+ * pixel is 0xRRGGBB (TrueColor), same as bar.c. */
 static void fill_rrect(unsigned long pixel, int x, int y, int w, int h, int r) {
     XSetForeground(dpy, gc, pixel);
     if (w < 3 || h < 3 || r < 1) {
@@ -1307,6 +1347,20 @@ static void fill_rrect(unsigned long pixel, int x, int y, int w, int h, int r) {
     if (r > w / 2) r = w / 2;
     XFillRectangle(dpy, win, gc, (unsigned)(x + r), (unsigned)y, (unsigned)(w - 2 * r), (unsigned)h);
     XFillRectangle(dpy, win, gc, (unsigned)x, (unsigned)(y + r), (unsigned)w, (unsigned)(h - 2 * r));
+    Picture m = winpic ? round_mask(r) : None;
+    if (m) {
+        XRenderColor rc = {(unsigned short)((pixel >> 16 & 255) * 257),
+                           (unsigned short)((pixel >> 8 & 255) * 257),
+                           (unsigned short)((pixel & 255) * 257), 0xffff};
+        Picture fill = XRenderCreateSolidFill(dpy, &rc);
+        unsigned ur = (unsigned)r;
+        XRenderComposite(dpy, PictOpOver, fill, m, winpic, 0, 0, 0, 0, x, y, ur, ur);
+        XRenderComposite(dpy, PictOpOver, fill, m, winpic, 0, 0, r, 0, x + w - r, y, ur, ur);
+        XRenderComposite(dpy, PictOpOver, fill, m, winpic, 0, 0, 0, r, x, y + h - r, ur, ur);
+        XRenderComposite(dpy, PictOpOver, fill, m, winpic, 0, 0, r, r, x + w - r, y + h - r, ur, ur);
+        XRenderFreePicture(dpy, fill);
+        return;
+    }
     XFillArc(dpy, win, gc, x, y, 2 * r, 2 * r, 90 * 64, 90 * 64);
     XFillArc(dpy, win, gc, x + w - 2 * r, y, 2 * r, 2 * r, 0, 90 * 64);
     XFillArc(dpy, win, gc, x + w - 2 * r, y + h - 2 * r, 2 * r, 2 * r, 270 * 64, 90 * 64);
@@ -1700,13 +1754,32 @@ static int has_ci(const char *hay, const char *needle) {
         if (!strncasecmp(p, needle, n)) return 1;
     return 0;
 }
-/* power grid: give each action its own Rosé Pine tint */
-static XftColor *power_color(const char *name) {
-    if (has_ci(name, "suspend") || has_ci(name, "lock")) return &c_foam;
-    if (has_ci(name, "logout")) return &c_gold;
-    if (has_ci(name, "reboot") || has_ci(name, "restart")) return &c_pine;
-    if (has_ci(name, "off") || has_ci(name, "shutdown")) return &c_love;
-    return &c_acc;
+/* power actions: tint + default Nerd glyph by name; -1 when not a power action */
+static int power_kind(const char *name, const char **glyph) {
+    static const struct { const char *key; int pal; const char *g; } k[] = {
+        { "shutdown",  PAL_RED,    "\xef\x80\x91" }, /* U+F011 power-off */
+        { "power off", PAL_RED,    "\xef\x80\x91" },
+        { "poweroff",  PAL_RED,    "\xef\x80\x91" },
+        { "reboot",    PAL_GREEN,  "\xef\x80\x9e" }, /* U+F01E rotate */
+        { "restart",   PAL_GREEN,  "\xef\x80\x9e" },
+        { "logout",    PAL_YELLOW, "\xef\x82\x8b" }, /* U+F08B sign-out */
+        { "log out",   PAL_YELLOW, "\xef\x82\x8b" },
+        { "lock",      PAL_BLUE,   "\xef\x80\xa3" }, /* U+F023 lock */
+        { "suspend",   PAL_PURPLE, "\xef\x86\x86" }, /* U+F186 moon */
+        { "sleep",     PAL_PURPLE, "\xef\x86\x86" },
+    };
+    for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++)
+        if (has_ci(name, k[i].key)) { if (glyph) *glyph = k[i].g; return k[i].pal; }
+    if (!strcasecmp(name, "off")) { if (glyph) *glyph = k[0].g; return k[0].pal; } /* default entry */
+    return -1;
+}
+/* tile color: power tint, else a stable pick from the name */
+static int tile_pal(const char *name) {
+    int p = power_kind(name, NULL);
+    unsigned h = 2166136261u;
+    if (p >= 0) return p;
+    for (const unsigned char *s = (const unsigned char *)name; *s; s++) h = (h ^ *s) * 16777619u;
+    return (int)(h % NPAL);
 }
 /* Nerd glyph prompt per mode, ASCII fallback when the font lacks the glyph */
 static const char *mode_glyph(void) {
@@ -1770,13 +1843,14 @@ static void draw(void) {
     XSetForeground(dpy, gc, c_bg.pixel);
     XFillRectangle(dpy, win, gc, 0, 0, (unsigned)WW, (unsigned)HH);
 
-    /* ---- input band ---- */
-    XSetForeground(dpy, gc, c_band.pixel);
-    XFillRectangle(dpy, win, gc, 0, 0, (unsigned)WW, (unsigned)input_h);
+    /* ---- input band: rounded search field ---- */
+    int bm = input_h >= 40 ? 10 : 4;          /* field margin */
+    int bx = 12, bw = WW - 24, bh = input_h - 2 * bm;
+    fill_rrect(c_band.pixel, bx, bm, bw, bh, bh / 2 < 10 ? bh / 2 : 10);
     base = input_h / 2 + (f_main ? (f_main->ascent - f_main->descent) / 2 : 5);
     {
         const char *gly = mode_glyph();
-        int tx = 16;
+        int tx = bx + 14;
         runs_draw(NULL, &c_acc, tx, base, gly);
         tx += runs_w(NULL, gly) + 12;
         runs_draw(NULL, &c_fg, tx, base, query);
@@ -1786,10 +1860,11 @@ static void draw(void) {
     {
         static const char *badge[4] = { "drun", "fav", "power", "calc" };
         const char *b = badge[mode];
-        runs_draw(NULL, &c_acc, WW - 16 - runs_w(NULL, b), base, b);
+        int tw = runs_w(NULL, b), ph = bh - 12, pw = tw + 20;
+        int px = bx + bw - 6 - pw;
+        if (ph >= 12) fill_rrect(c_sel.pixel, px, bm + 6, pw, ph, ph / 2);
+        runs_draw(NULL, &c_acc, px + 10, base, b);
     }
-    XSetForeground(dpy, gc, c_div.pixel);
-    XFillRectangle(dpy, win, gc, 0, input_h - 1, (unsigned)WW, 1);
 
     if (mode == MODE_DRUN) {
         int icol = opt_drun_icons ? 40 : 0;   /* icon column width */
@@ -1823,7 +1898,7 @@ static void draw(void) {
                 if (idx == sel)
                     pill(opt_margin + opt_pad_l, y,
                          WW - 2 * opt_margin - opt_pad_l - opt_pad_r,
-                         row_h - opt_row_gap, 0, c_sel.pixel, c_selout.pixel);
+                         row_h - opt_row_gap, 10, c_sel.pixel, c_selout.pixel);
                 if (icol > 0) {
 #ifdef HAVE_CAIRO
                     if (isf) {
@@ -1873,31 +1948,39 @@ static void draw(void) {
             const char *ic;
             int iw, ty;
             if (idx >= nfilt) break;
-            if (idx == sel) {
-                pill(cx + 6, cy + 2, cell_w - 12, cell_h - 4, 0,
+            const char *name = vec[filt[idx]].name, *own = vec[filt[idx]].icon, *pg = NULL;
+            int pk = power_kind(name, &pg);
+            int compact = cell_w < 80 || cell_h < 80;
+            if (idx == sel)
+                pill(cx + 6, cy + 2, cell_w - 12, cell_h - 4, compact ? 6 : 12,
                     c_sel.pixel, c_selout.pixel);
-            }
-            first_letter(vec[filt[idx]].name, fl, sizeof(fl));
-            ic = pick_icon(vec[filt[idx]].icon, fl);
-            XftFont *icon_font = cell_w < 80 || cell_h < 80 ? f_main : f_big;
-            char compact_icon[32];
-            if (runs_w(icon_font, ic) > cell_w - 8) {
-                first_letter(vec[filt[idx]].name, compact_icon, sizeof(compact_icon));
-                ic = compact_icon;
-            }
-            iw = runs_w(icon_font, ic);
-            int icon_y = cy + (cell_h < 80 ? cell_h / 2 : 48);
-            if (idx == sel) {
-                runs_draw(icon_font, &c_fg, cx + (cell_w - iw) / 2, icon_y, ic);
+            first_letter(name, fl, sizeof(fl));
+            ic = pick_icon(own && *own ? own : pg, fl);
+            if (compact) {
+                if (runs_w(f_main, ic) > cell_w - 8) ic = fl;
+                iw = runs_w(f_main, ic);
+                runs_draw(f_main, idx == sel ? &c_fg : pk >= 0 ? &c_pal[pk] : &c_acc,
+                    cx + (cell_w - iw) / 2, cy + cell_h / 2, ic);
+                ellipsize(name, cell_w - 8, label, sizeof(label));
+                ty = cy + cell_h - 8;
             } else {
-                XftColor *cc = (mode == MODE_POWER) ? power_color(vec[filt[idx]].name) : &c_acc;
-                runs_draw(icon_font, cc, cx + (cell_w - iw) / 2, icon_y, ic);
+                /* rounded color tile above the label, both centered in the cell */
+                int lh = f_main ? f_main->ascent + f_main->descent : 16;
+                int ts = cell_h - 24 - lh, p = tile_pal(name);
+                if (ts > 56) ts = 56;
+                if (ts > cell_w - 24) ts = cell_w - 24;
+                int top = cy + (cell_h - ts - 8 - lh) / 2, tx0 = cx + (cell_w - ts) / 2;
+                XftFont *icon_font = ts >= 44 ? f_big : f_main;
+                fill_rrect(mix_hex(T_BG, pal_hex[p], idx == sel ? 34 : 22), tx0, top, ts, ts, ts / 4);
+                if (runs_w(icon_font, ic) > ts - 4) ic = fl;
+                iw = runs_w(icon_font, ic);
+                runs_draw(icon_font, &c_pal[p], cx + (cell_w - iw) / 2,
+                    top + ts / 2 + (icon_font->ascent - icon_font->descent) / 2, ic);
+                ellipsize(name, cell_w - 24, label, sizeof(label));
+                ty = top + ts + 8 + (f_main ? f_main->ascent : 12);
             }
-            ellipsize(vec[filt[idx]].name, cell_w - (cell_w < 80 ? 8 : 24), label, sizeof(label));
             iw = runs_w(NULL, label);
-            ty = cy + cell_h - (cell_h < 80 ? 8 : 28);
             runs_draw(NULL, idx == sel ? &c_fg : &c_dim, cx + (cell_w - iw) / 2, ty, label);
-            (void)fl;
         }
         if (!nfilt) {
             runs_draw(NULL, &c_dim, 26,
@@ -2187,14 +2270,15 @@ int main(int argc, char **argv) {
     xft_alloc(T_FG, &c_fg);
     xft_alloc(T_ACC, &c_acc);
     xft_alloc(T_DIM, &c_dim);
-    xft_alloc(mix_hex(T_BG, T_FG, 5), &c_band);
+    xft_alloc(mix_hex(T_BG, T_FG, 8), &c_band);
     xft_alloc(mix_hex(T_BG, T_FG, 8), &c_div);
     xft_alloc(mix_hex(T_BG, T_ACC, 22), &c_sel);   /* soft iris tint (mostly bg) */
     xft_alloc(mix_hex(T_ACC, T_BG, 55), &c_selout); /* 1px accent ring */
-    xft_alloc(0xeb6f92, &c_love); /* Rosé Pine love  */
-    xft_alloc(0xf6c177, &c_gold); /* Rosé Pine gold  */
-    xft_alloc(0x31748f, &c_pine); /* Rosé Pine pine  */
-    xft_alloc(0x9ccfd8, &c_foam); /* Rosé Pine foam  */
+    for (int i = 0; i < NPAL; i++) xft_alloc(pal_hex[i], &c_pal[i]);
+    {
+        XRenderPictFormat *pf = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
+        if (pf) winpic = XRenderCreatePicture(dpy, win, pf, 0, NULL);
+    }
     XSetWindowBackground(dpy, win, c_bg.pixel);
     XClearWindow(dpy, win);
 

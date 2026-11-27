@@ -58,6 +58,7 @@
 #include "exit-layer.h"
 #include "workspace-animation.h"
 #include "overview-animation.h"
+#include "corner-settings.h"
 
 static Display *dpy;
 static Window root;
@@ -96,6 +97,8 @@ static unsigned exit_bpp[33], exit_pad[33];
 static Atom A_WS_SETTINGS, A_WS_TXN, A_MON_EPOCH;
 static int opt_workspace_ms;
 static Atom A_OV_SETTINGS, A_OV_ROLE;
+static Atom A_CORNER_SETTINGS;
+static int opt_radius = 0; /* rounded corner radius, 0 = square */
 static int opt_overview_ms;
 /* Outgoing images of one workspace switch, held until all members unmap
  * and the desktop commits. Then they enter the exit pool together. */
@@ -275,6 +278,10 @@ struct Win {
 };
 static Win *wins;
 static uint64_t next_generation;
+static void corner_masks_free(void);
+static Picture corner_mask(int r, int ri, int kind, double a);
+static int win_rounded(const Win *w);
+static int corner_radius(int fw, int fh);
 static void layout_release(Win *w);
 typedef struct {
     unsigned count;
@@ -288,6 +295,18 @@ static int dirty = 1;       /* cần repaint */
 static int stack_dirty = 1; /* geometry/stacking đổi: cần pre-pass + re-query root */
 /* cache để khỏi round-trip/alloc mỗi frame */
 static Picture shadow_fill[7] = { None, None, None, None, None, None, None }; /* solid fill 7 lớp bóng */
+static Picture shadow_black = None; /* opaque black, drawn through the corner shadow mask */
+typedef struct { int grow; int dy; unsigned short alpha; } ShadowLayer;
+#define SHADOW_LAYERS 7
+static const ShadowLayer shadow_layers[SHADOW_LAYERS] = {
+    { 12, 5, 0x0600 }, /* ngoài cùng, nhạt nhất */
+    { 10, 4, 0x0800 },
+    { 8, 4, 0x0a00 },
+    { 6, 3, 0x0c00 },
+    { 4, 2, 0x0e00 },
+    { 3, 2, 0x1000 },
+    { 2, 1, 0x1200 }, /* sát cửa sổ, đậm nhất */
+};
 /* mask alpha: các cửa sổ khác nhau có alpha khác nhau (active/inactive/
  * opacity riêng) nên cache 4 giá trị gần nhất thay vì 1. */
 #define ALPHA_SLOTS 8
@@ -575,6 +594,19 @@ static void animation_settings_read(void) {
         overview = (int)((unsigned long *)data)[2];
     if (data) XFree(data);
     if (!enabled || reduced) overview = 0;
+    int radius = 0;
+    data = NULL;
+    if (owner && A_CORNER_SETTINGS && XGetWindowProperty(dpy, root, A_CORNER_SETTINGS, 0,
+        3, False, XA_CARDINAL, &type, &format, &n, &extra, &data) == Success &&
+        type == XA_CARDINAL && format == 32 &&
+        corner_settings_valid((unsigned long *)data, n, extra, owner))
+        radius = (int)((unsigned long *)data)[2];
+    if (data) XFree(data);
+    if (radius != opt_radius) {
+        corner_masks_free();
+        opt_radius = radius;
+        dirty = full_dirty = 1;
+    }
     int changed = enabled != opt_fade || reduced != opt_reduce_motion ||
         duration != opt_fade_ms || closing != opt_close_ms || owner != settings_owner ||
         workspace != opt_workspace_ms || overview != opt_overview_ms;
@@ -984,6 +1016,8 @@ static int exit_layer_from(Win *w, long long now, ExitLayer *layer) {
         animation_value(&w->opening, w->id, w->generation, now);
     layer->dim = win_dim(w);
     layer->shaped = w->shaped; layer->nclip = (unsigned)w->n_clip;
+    layer->bw = w->bw;
+    layer->radius = win_rounded(w) ? corner_radius(layer->width, layer->height) : 0;
     for (unsigned i = 0; i < layer->nclip; i++) {
         layer->clip[i].x = w->clip_rects[i].x;
         layer->clip[i].y = w->clip_rects[i].y;
@@ -1232,16 +1266,30 @@ static void recapture_background(int w, int h, int depth) {
  * (đuôi gaussian: rìa ngoài chỉ ~2% nên không còn viền cứng, gần cửa sổ
  * đậm dần ~30% như picom radius 12). Mỗi lớp 1 lần composite, chỉ trong
  * vành bóng nên nhẹ hơn blur convolution nhiều. */
-static void paint_shadow(int x, int y, int w, int h) {
-    static const struct { int grow; int dy; unsigned short alpha; } layers[] = {
-        { 12, 5, 0x0600 }, /* ngoài cùng, nhạt nhất */
-        { 10, 4, 0x0800 },
-        { 8, 4, 0x0a00 },
-        { 6, 3, 0x0c00 },
-        { 4, 2, 0x0e00 },
-        { 3, 2, 0x1000 },
-        { 2, 1, 0x1200 }, /* sát cửa sổ, đậm nhất */
-    };
+/* Rounded rect of a solid source on back_pict (3 body rects + 4 masked corners). */
+static void fill_round(Picture src, int x, int y, int w, int h, int r) {
+    Picture m = corner_mask(r, r, 0, 1.0);
+    if (!m) {
+        XRenderComposite(dpy, PictOpOver, src, None, back_pict, 0, 0, 0, 0,
+            x, y, (unsigned)w, (unsigned)h);
+        return;
+    }
+    XRenderComposite(dpy, PictOpOver, src, None, back_pict, 0, 0, 0, 0,
+        x, y + r, (unsigned)w, (unsigned)(h - 2 * r));
+    XRenderComposite(dpy, PictOpOver, src, None, back_pict, 0, 0, 0, 0,
+        x + r, y, (unsigned)(w - 2 * r), (unsigned)r);
+    XRenderComposite(dpy, PictOpOver, src, None, back_pict, 0, 0, 0, 0,
+        x + r, y + h - r, (unsigned)(w - 2 * r), (unsigned)r);
+    for (int k = 0; k < 4; k++) {
+        int qx = k & 1, qy = k >> 1;
+        XRenderComposite(dpy, PictOpOver, src, m, back_pict, 0, 0, qx * r, qy * r,
+            x + (qx ? w - r : 0), y + (qy ? h - r : 0), (unsigned)r, (unsigned)r);
+    }
+}
+
+/* r > 0: rounded window, so the shadow is rounded and also fills the corners. */
+static void paint_shadow(int x, int y, int w, int h, int r) {
+    const ShadowLayer *layers = shadow_layers;
     /* P5: cửa sổ (mờ đục) sẽ phủ phần giữa -> chỉ vẽ vành bóng, khỏi blend
      * phần bị che (overdraw phí). Vành = bao ngoài trừ hộp cửa sổ = 4 rect. */
     int ox = x - 12, oy = y - 12 + 5, ow = w + 24, oh = h + 24; /* bao ngoài mọi lớp */
@@ -1262,19 +1310,36 @@ static void paint_shadow(int x, int y, int w, int h) {
     }
     if (nr == 0) return;
     XRenderSetPictureClipRectangles(dpy, back_pict, 0, 0, ring, nr);
-    for (unsigned i = 0; i < sizeof(layers) / sizeof(layers[0]); i++) {
+    for (unsigned i = 0; i < SHADOW_LAYERS; i++) {
         if (shadow_fill[i] == None) {
             XRenderColor c = { .red = 0, .green = 0, .blue = 0, .alpha = layers[i].alpha };
             shadow_fill[i] = XRenderCreateSolidFill(dpy, &c);
         }
         Picture p = shadow_fill[i];
         if (!p) continue;
+        if (r > 0) {
+            fill_round(p, x - layers[i].grow, y - layers[i].grow + layers[i].dy,
+                w + layers[i].grow * 2, h + layers[i].grow * 2, r + layers[i].grow);
+            continue;
+        }
         XRenderComposite(dpy, PictOpOver, p, None, back_pict,
             0, 0, 0, 0,
             x - layers[i].grow, y - layers[i].grow + layers[i].dy,
             (unsigned)(w + layers[i].grow * 2), (unsigned)(h + layers[i].grow * 2));
     }
     back_clip_reset(); /* trả clip về hộp damage (hoặc None) */
+    /* Rounded: the 4 corner squares get the real shadow, only outside the
+     * arc (never under the window); the mask holds its per-pixel alpha. */
+    Picture cs = r > 0 ? corner_mask(r, r, 2, 1.0) : None;
+    if (cs && shadow_black == None) {
+        XRenderColor c = { .alpha = 0xffff };
+        shadow_black = XRenderCreateSolidFill(dpy, &c);
+    }
+    for (int k = 0; k < 4 && cs && shadow_black; k++) {
+        int qx = k & 1, qy = k >> 1;
+        XRenderComposite(dpy, PictOpOver, shadow_black, cs, back_pict, 0, 0, qx * r, qy * r,
+            x + (qx ? w - r : 0), y + (qy ? h - r : 0), (unsigned)r, (unsigned)r);
+    }
 }
 
 /* gắn (lại) pixmap khi chưa có. Còn pict là còn đúng: mọi đổi geometry
@@ -1338,6 +1403,148 @@ static Picture alpha_mask(double a) {
     alpha_slot[s] = XRenderCreateSolidFill(dpy, &mc);
     alpha_val[s] = a;
     return alpha_slot[s];
+}
+
+/* ---- rounded corners ---- */
+/* Corner coverage masks (A8, 2r x 2r, circles centered at (r, r)), built on
+ * the CPU once each. kind 0: inside radius ri; 1: inside r but outside ri (the
+ * border arc); 2: shadow outside ri (all shadow layers, as alpha).
+ * spic holds the mask times a fading window alpha. */
+#define CORNER_MASKS 16
+static struct { int r, ri, kind; Pixmap pix, spix; Picture pic, spic; } cmasks[CORNER_MASKS];
+static Pixmap border_pix = None;  /* 1x1 repeat: sampled window border color */
+static Picture border_pict = None;
+static void corner_masks_free(void) {
+    for (int i = 0; i < CORNER_MASKS; i++) {
+        if (!cmasks[i].r) continue;
+        XRenderFreePicture(dpy, cmasks[i].pic); XFreePixmap(dpy, cmasks[i].pix);
+        XRenderFreePicture(dpy, cmasks[i].spic); XFreePixmap(dpy, cmasks[i].spix);
+        cmasks[i].r = 0;
+    }
+}
+static Picture corner_mask(int r, int ri, int kind, double a) {
+    int k = 0;
+    if (r < 1 || ri < 0 || ri > r) return None;
+    while (k < CORNER_MASKS && cmasks[k].r &&
+           (cmasks[k].r != r || cmasks[k].ri != ri || cmasks[k].kind != kind)) k++;
+    if (k == CORNER_MASKS) return None;
+    if (!cmasks[k].r) {
+        XRenderPictFormat *a8 = XRenderFindStandardFormat(dpy, PictStandardA8);
+        int d = 2 * r;
+        unsigned char *data = a8 ? malloc((size_t)d * (size_t)d) : NULL;
+        if (!data) return None;
+        /* 8x8 supersampled coverage. For kind 2 the 2r box is a 2r window:
+         * each shadow layer is then a circle of radius r+grow, dy lower. */
+        for (int y = 0; y < d; y++) for (int x = 0; x < d; x++) {
+            double cov = 0.0;
+            for (int sy = 0; sy < 8; sy++) for (int sx = 0; sx < 8; sx++) {
+                double px = x + (sx + 0.5) / 8.0 - r, py = y + (sy + 0.5) / 8.0 - r;
+                double dd = px * px + py * py;
+                int in_r = dd <= (double)r * r, in_ri = dd <= (double)ri * ri;
+                if (kind == 2) {
+                    double keep = 1.0;
+                    for (int i = 0; i < SHADOW_LAYERS && !in_ri; i++) {
+                        double ly = py - shadow_layers[i].dy, lr = r + shadow_layers[i].grow;
+                        if (px * px + ly * ly <= lr * lr) keep *= 1.0 - shadow_layers[i].alpha / 65535.0;
+                    }
+                    cov += in_ri ? 0.0 : 1.0 - keep;
+                } else if (kind == 0 ? in_ri : in_r && !in_ri) cov += 1.0;
+            }
+            data[(size_t)y * (size_t)d + (size_t)x] = (unsigned char)(cov * 255.0 / 64.0 + 0.5);
+        }
+        XImage *img = XCreateImage(dpy, DefaultVisual(dpy, screen), 8, ZPixmap, 0,
+            (char *)data, (unsigned)d, (unsigned)d, 8, d);
+        if (!img) { free(data); return None; }
+        Pixmap pix = XCreatePixmap(dpy, root, (unsigned)d, (unsigned)d, 8);
+        Pixmap spix = XCreatePixmap(dpy, root, (unsigned)d, (unsigned)d, 8);
+        GC g = XCreateGC(dpy, pix, 0, NULL);
+        XPutImage(dpy, pix, g, img, 0, 0, 0, 0, (unsigned)d, (unsigned)d);
+        XFreeGC(dpy, g);
+        XDestroyImage(img); /* frees data */
+        cmasks[k].r = r; cmasks[k].ri = ri; cmasks[k].kind = kind;
+        cmasks[k].pix = pix; cmasks[k].spix = spix;
+        cmasks[k].pic = XRenderCreatePicture(dpy, pix, a8, 0, NULL);
+        cmasks[k].spic = XRenderCreatePicture(dpy, spix, a8, 0, NULL);
+    }
+    if (a >= 0.999) return cmasks[k].pic;
+    Picture am = alpha_mask(a);
+    if (!am) return None;
+    XRenderComposite(dpy, PictOpSrc, am, cmasks[k].pic, cmasks[k].spic,
+        0, 0, 0, 0, 0, 0, (unsigned)(2 * r), (unsigned)(2 * r));
+    return cmasks[k].spic;
+}
+/* Rounded: normal windows and dialogs (dani-run); not docks, menus, overview. */
+static int win_rounded(const Win *w) {
+    if (opt_radius <= 0 || w->dock || w->fullscreen || w->shaped || w->overview) return 0;
+    if (w->override && w->wintype != A_WM_WINTYPE_DIALOG) return 0;
+    return 1;
+}
+/* opt_radius clamped to the footprint; 0 = draw square */
+static int corner_radius(int fw, int fh) {
+    int r = opt_radius;
+    if (r > fw / 2) r = fw / 2;
+    if (r > fh / 2) r = fh / 2;
+    return r >= 2 ? r : 0;
+}
+/* Clip back_pict to the footprint minus its 4 corner squares. */
+static void clip_body(int x, int y, int w, int h, int r) {
+    XRectangle body[3] = {
+        { (short)x, (short)(y + r), (unsigned short)w, (unsigned short)(h - 2 * r) },
+        { (short)(x + r), (short)y, (unsigned short)(w - 2 * r), (unsigned short)r },
+        { (short)(x + r), (short)(y + h - r), (unsigned short)(w - 2 * r), (unsigned short)r },
+    };
+    XRectangle out[3];
+    int m = 0;
+    for (int i = 0; i < 3; i++) {
+        if (!body[i].width || !body[i].height) continue;
+        if (!cur_clip_on) out[m++] = body[i];
+        else if (rect_intersect(&body[i], &cur_clip, &out[m])) m++;
+    }
+    XRenderSetPictureClipRectangles(dpy, back_pict, 0, 0, out, m);
+}
+static const int corner_qx[4] = {0, 1, 0, 1}, corner_qy[4] = {0, 0, 1, 1};
+/* The 4 corners through circle masks. With a border, the content fills the
+ * inner circle and the border color (sampled on the left edge) fills the arc
+ * between the two circles, so neither shows through the other while fading. */
+static void paint_corners(Picture src, int x, int y, int w, int h, int bw, int r,
+                          double a, double dimf) {
+    int ri = bw <= 0 ? r : bw >= r ? 0 : r - bw;
+    Picture body = corner_mask(r, ri, 0, a);
+    for (int k = 0; k < 4; k++) {
+        int cx = corner_qx[k] ? w - r : 0, cy = corner_qy[k] ? h - r : 0;
+        if (!body) /* no mask: square, never a hole */
+            XRenderComposite(dpy, PictOpOver, src, a < 0.999 ? alpha_mask(a) : None, back_pict,
+                cx, cy, 0, 0, x + cx, y + cy, (unsigned)r, (unsigned)r);
+        else if (ri > 0)
+            XRenderComposite(dpy, PictOpOver, src, body, back_pict, cx, cy,
+                corner_qx[k] * r, corner_qy[k] * r, x + cx, y + cy, (unsigned)r, (unsigned)r);
+    }
+    if (!body) return;
+    if (ri < r) {
+        if (border_pict == None) {
+            XRenderPictFormat *argb = XRenderFindStandardFormat(dpy, PictStandardARGB32);
+            XRenderPictureAttributes pa = {0};
+            pa.repeat = RepeatNormal;
+            border_pix = argb ? XCreatePixmap(dpy, root, 1, 1, 32) : None;
+            if (border_pix) border_pict = XRenderCreatePicture(dpy, border_pix, argb, CPRepeat, &pa);
+        }
+        Picture arc = border_pict ? corner_mask(r, ri, 1, a) : None;
+        if (arc)
+            XRenderComposite(dpy, PictOpSrc, src, None, border_pict, 0, h / 2, 0, 0, 0, 0, 1, 1);
+        for (int k = 0; k < 4 && arc; k++)
+            XRenderComposite(dpy, PictOpOver, border_pict, arc, back_pict, 0, 0,
+                corner_qx[k] * r, corner_qy[k] * r,
+                x + (corner_qx[k] ? w - r : 0), y + (corner_qy[k] ? h - r : 0),
+                (unsigned)r, (unsigned)r);
+    }
+    if (dimf < 1.0) {
+        Picture blk = alpha_mask((1.0 - dimf) * a), full = corner_mask(r, r, 0, 1.0);
+        for (int k = 0; k < 4 && blk && full; k++)
+            XRenderComposite(dpy, PictOpOver, blk, full, back_pict, 0, 0,
+                corner_qx[k] * r, corner_qy[k] * r,
+                x + (corner_qx[k] ? w - r : 0), y + (corner_qy[k] ? h - r : 0),
+                (unsigned)r, (unsigned)r);
+    }
 }
 
 /* P6: shape có thể được set ngay sau map và ShapeNotify bị bỏ lỡ (race
@@ -1410,6 +1617,8 @@ static void paint_exits(Window before, long long now, unsigned char *drawn, int 
                 clips[i] = (XRectangle){(short)(s->x + s->clip[i].x),
                     (short)(s->y + s->clip[i].y), s->clip[i].width, s->clip[i].height};
             XRenderSetPictureClipRectangles(dpy, back_pict, 0, 0, clips, (int)s->nclip);
+        } else if (s->radius) {
+            clip_body(s->x, s->y, s->width, s->height, s->radius);
         }
         XRenderComposite(dpy, PictOpOver, s->picture, alpha_mask(a), back_pict,
             0, 0, 0, 0, s->x, s->y, (unsigned)s->width, (unsigned)s->height);
@@ -1418,6 +1627,8 @@ static void paint_exits(Window before, long long now, unsigned char *drawn, int 
                 s->picture, back_pict, 0, 0, 0, 0, s->x, s->y,
                 (unsigned)s->width, (unsigned)s->height);
         back_clip_reset();
+        if (s->radius && !s->shaped)
+            paint_corners(s->picture, s->x, s->y, s->width, s->height, s->bw, s->radius, a, s->dim);
     }
 }
 
@@ -1540,6 +1751,10 @@ static void repaint(void) {
         if (!ow || !ow->mapped || ow->pict == None) continue;
         if (!win_is_opaque(ow, now)) continue;
         int ofw = ow->w + 2 * ow->bw, ofh = ow->h + 2 * ow->bh;
+        int orr = win_rounded(ow) ? corner_radius(ofw, ofh) : 0;
+        /* rounded: the box must miss the corners, or the cutouts show stale pixels */
+        if (orr && !(box.y >= ow->y + orr && box.y + box.height <= ow->y + ofh - orr) &&
+            !(box.x >= ow->x + orr && box.x + box.width <= ow->x + ofw - orr)) continue;
         if (ow->x <= box.x && ow->y <= box.y &&
             ow->x + ofw >= box.x + box.width &&
             ow->y + ofh >= box.y + box.height) {
@@ -1635,7 +1850,8 @@ static void repaint(void) {
         if (opt_debug >= 2)
             fprintf(stderr, "dani-comp: draw 0x%lx at %d,%d %dx%d a=%.2f shaped=%d\n",
                 (unsigned long)w->id, dx, dy, fw, fh, a, w->shaped);
-        if (should_shadow(w) && a > 0.05) paint_shadow(dx, dy, fw, fh);
+        int rr = win_rounded(w) ? corner_radius(fw, fh) : 0;
+        if (should_shadow(w) && a > 0.05) paint_shadow(dx, dy, fw, fh, rr);
         /* shaped window: clip picture ĐÍCH (back_buf) theo bounding shape
          * dịch sang toạ độ root — clip trên picture nguồn bị Xvfb bỏ qua
          * với pixmap redirect (đã đo thử; picom cũng clip phía đích). */
@@ -1660,6 +1876,7 @@ static void repaint(void) {
                 had_clip = 1;
             }
         }
+        if (rr) { clip_body(dx, dy, fw, fh, rr); had_clip = 1; }
         if (a >= 0.999) {
             XRenderComposite(dpy, PictOpOver, draw_pict, None, back_pict,
                 0, 0, 0, 0, dx, dy, (unsigned)fw, (unsigned)fh);
@@ -1682,6 +1899,7 @@ static void repaint(void) {
         }
         if (had_clip)
             back_clip_reset(); /* trả clip về hộp damage (hoặc None) */
+        if (rr) paint_corners(draw_pict, dx, dy, fw, fh, bw2, rr, a, dimf);
         /* closing_detach drains async X errors before it takes these references. */
         if ((opt_close_ms > 0 || opt_workspace_ms > 0 || opt_overview_ms > 0) &&
             opt_fade && !opt_reduce_motion)
@@ -1810,8 +2028,8 @@ static void usage(const char *prog) {
         "dani-comp — compositor đơn giản cho daniwm\n"
         "usage: %s [-d display] [--shadow/--no-shadow] [--fade/--no-fade]\n"
         "         [--dim 0.5..1] [--fade-ms 0..1000] [--close-ms 0..1000]\n"
-        "         [--reduce-motion] [--wm-settings] [-v] [-h]\n"
-        "  --dim 0.92  độ sáng cửa sổ inactive (0 hoặc 1 = tắt dim)\n", prog);
+        "         [--reduce-motion] [--radius 0..%d] [--wm-settings] [-v] [-h]\n"
+        "  --dim 0.92  độ sáng cửa sổ inactive (0 hoặc 1 = tắt dim)\n", prog, CORNER_RADIUS_MAX);
 }
 
 int main(int argc, char **argv) {
@@ -1859,6 +2077,10 @@ int main(int argc, char **argv) {
             opt_close_ms = (int)duration;
         } else if (!strcmp(argv[i], "--reduce-motion")) {
             opt_reduce_motion = opt_force_reduce_motion = 1;
+        } else if (!strcmp(argv[i], "--radius") && i + 1 < argc) {
+            opt_radius = atoi(argv[++i]);
+            if (opt_radius < 0) opt_radius = 0;
+            if (opt_radius > CORNER_RADIUS_MAX) opt_radius = CORNER_RADIUS_MAX;
         } else if (!strcmp(argv[i], "--wm-settings")) {
             opt_wm_settings = 1;
         } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
@@ -1954,6 +2176,7 @@ int main(int argc, char **argv) {
     A_WS_TXN = XInternAtom(dpy, WORKSPACE_ANIMATION_ATOM, False);
     A_MON_EPOCH = XInternAtom(dpy, MONITOR_EPOCH_ATOM, False);
     A_OV_SETTINGS = XInternAtom(dpy, OVERVIEW_SETTINGS_ATOM, False);
+    A_CORNER_SETTINGS = XInternAtom(dpy, CORNER_SETTINGS_ATOM, False);
     A_OV_ROLE = XInternAtom(dpy, OVERVIEW_ROLE_ATOM, False);
     int formats_n;
     XPixmapFormatValues *formats = XListPixmapFormats(dpy, &formats_n);
@@ -2305,7 +2528,7 @@ int main(int argc, char **argv) {
                 } else if (opt_wm_settings && e->window == root &&
                     (e->atom == A_ANIMATION_SETTINGS || e->atom == A_CLOSE_SETTINGS ||
                      e->atom == A_LAYOUT_SETTINGS || e->atom == A_WS_SETTINGS ||
-                     e->atom == A_OV_SETTINGS)) {
+                     e->atom == A_OV_SETTINGS || e->atom == A_CORNER_SETTINGS)) {
                     animation_settings_read();
                 } else if (e->window == root && e->atom == A_LAYOUT_TRANSACTION) {
                     layout_transaction_read();
